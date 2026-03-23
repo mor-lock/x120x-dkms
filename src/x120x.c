@@ -163,8 +163,13 @@ MODULE_PARM_DESC(voltage_empty_mv,
  */
 #define MAX17043_VCELL_TO_UV(raw)	(((raw) >> 4) * 1250)
 
-/* SOC: 16-bit fixed-point; integer part in bits [15:8] */
+/* SOC: 16-bit fixed-point; integer part in [15:8], fraction in [7:0] (/256).
+ * _INT gives integer percent for the capacity property.
+ * _256 gives the raw 16-bit value (0..25600 for 0..100%) for full precision
+ * energy and rate computations.
+ */
 #define MAX17043_SOC_INT(raw)		((int)((raw) >> 8))
+#define MAX17043_SOC_256(raw)		((int)(raw))
 
 /* Trigger a quick-start if initial SoC is outside this range (%) */
 #define MAX17043_SOC_MIN_PLAUSIBLE	1
@@ -226,7 +231,8 @@ struct x120x_chip {
 
 	struct mutex		 lock;
 	int			 voltage_uv;
-	int			 capacity_pct;
+	int			 capacity_pct;	/* integer percent 0-100        */
+	int			 capacity_256;	/* full precision: raw SOC word */
 	int			 ac_online;
 	bool			 charge_disabled;
 	bool			 present;
@@ -242,7 +248,7 @@ struct x120x_chip {
 	 * estimate despite the 1%%-step SoC resolution of the MAX17043.
 	 * Sign convention: negative = discharging, positive = charging.
 	 */
-#define X120X_RATE_SAMPLES	32
+#define X120X_RATE_SAMPLES	20		/* ~10 s at 500 ms poll cadence */
 	s64			 rate_energy[X120X_RATE_SAMPLES];
 	s64			 rate_time[X120X_RATE_SAMPLES];
 	int			 rate_head;
@@ -351,7 +357,7 @@ static void x120x_poll_work(struct work_struct *work)
 	struct x120x_chip *chip =
 		container_of(work, struct x120x_chip, work.work);
 	unsigned int vcell_raw, soc_raw;
-	int new_uv, new_pct, new_ac, ret;
+	int new_uv, new_pct, new_256, new_ac, ret;
 	bool new_present, new_chrg_disabled;
 	bool bat_changed, ac_changed, chrg_changed;
 
@@ -395,6 +401,7 @@ static void x120x_poll_work(struct work_struct *work)
 	new_present       = true;
 	new_uv            = MAX17043_VCELL_TO_UV(vcell_raw);
 	new_pct           = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
+	new_256           = clamp(MAX17043_SOC_256(soc_raw), 0, 25600);
 	new_ac            = x120x_gpio_get(chip->gpio_ac);
 	if (new_ac < 0)
 		new_ac = 0;	/* unreadable: assume on battery (safe) */
@@ -404,13 +411,15 @@ static void x120x_poll_work(struct work_struct *work)
 	chip->i2c_errors  = 0;
 	bat_changed       = (chip->present      != new_present  ||
 			     chip->voltage_uv   != new_uv       ||
-			     chip->capacity_pct != new_pct);
+			     chip->capacity_pct != new_pct      ||
+			     chip->capacity_256 != new_256);
 	ac_changed        = (chip->ac_online    != new_ac);
 	chrg_changed      = (chip->charge_disabled != new_chrg_disabled);
 
 	chip->present         = new_present;
 	chip->voltage_uv      = new_uv;
 	chip->capacity_pct    = new_pct;
+	chip->capacity_256    = new_256;
 	chip->ac_online       = new_ac;
 	chip->charge_disabled = new_chrg_disabled;
 
@@ -422,7 +431,8 @@ static void x120x_poll_work(struct work_struct *work)
 		 * energy_now   = energy_full × soc% / 100
 		 */
 		s64 e_full = (s64)battery_mah * 3700;
-		s64 e_now  = div_s64(e_full * new_pct, 100);
+		/* Use full 16-bit SOC precision (0..25600 = 0..100%) */
+		s64 e_now  = div_s64(e_full * new_256, 25600);
 		ktime_t now = ktime_get();
 		s64 now_us  = ktime_to_us(now);
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * x120x-overlay.dts - Device tree overlay for Suptronics X120x UPS HAT
+ * x120x-overlay.dts - Device tree overlay for SupTronics X120x UPS HAT
  *
  * Tested on Raspberry Pi 5 (BCM2712).  Should also work on Pi 4/3/2/1
  * with the compatible strings listed below.

@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: GPL-2.0-or-later OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/suptronics,x120x.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: SupTronics X120x UPS HAT series for Raspberry Pi
+
+maintainers:
+  - Edvard Fielding <mor-lock@users.noreply.github.com>
+
+description: |
+  The SupTronics X120x series are uninterruptible power supply expansion
+  boards designed for the Raspberry Pi.  Distributed by Geekworm.
+
+  Supported models and their connection method:
+
+    X1200  Raspberry Pi 5, bottom-mount, pogo pins, 2x 18650 cells
+    X1201  Raspberry Pi 5, bottom-mount, pogo pins, 2x 18650 cells (ultra-thin)
+    X1202  Raspberry Pi 5, bottom-mount, pogo pins, 4x 18650 cells
+    X1203  Raspberry Pi 5, bottom-mount, pogo pins, external battery pack
+    X1205  Raspberry Pi 5, bottom-mount, pogo pins, 2x 21700 cells
+    X1206  Raspberry Pi 5, bottom-mount, pogo pins, 4x 21700 cells
+    X1207  Raspberry Pi 5, bottom-mount, pogo pins, PoE-powered, 1x 21700 cell
+    X1208  Raspberry Pi 5, bottom-mount, pogo pins, 1x 21700 cell + NVMe slot
+    X1209  Raspberry Pi 5/4B/3B+/3B, 40-pin GPIO header, external Li-ion
+
+  All models share an identical software interface:
+    - MAX17043/MAX17044 fuel gauge over I2C (default address 0x36)
+    - GPIO6  AC-present detection (high = mains OK, low = on battery)
+    - GPIO16 Charge control (low = charging enabled, high = disabled)
+
+  NOTE on register layout: The register addresses used on these boards
+  differ from the MAX17043 datasheet.  On all X120x boards VCELL is at
+  register 0x02 and SOC is at register 0x04, as confirmed by SupTronics'
+  published software (github.com/suptronics/x120x).  This driver follows
+  the observed hardware behaviour.
+
+  The driver registers three power_supply devices:
+
+    x120x-battery   capacity, voltage, status, capacity_level
+    x120x-ac        online (mains present/absent)
+    x120x-charger   charge_type (FAST/LONGLIFE), writeable
+
+  Writing POWER_SUPPLY_CHARGE_TYPE_LONGLIFE to the charger device
+  inhibits charging (GPIO16 high); writing FAST re-enables it.  This
+  integrates with UPower's EnableChargeThreshold D-Bus method and the
+  native battery health preservation UI in GNOME 48+ and KDE Plasma.
+
+properties:
+  compatible:
+    const: suptronics,x120x
+
+  reg:
+    description: I2C address of the MAX17043/MAX17044 fuel gauge.
+    enum: [0x32, 0x36, 0x55, 0x62]
+
+  ac-present-gpios:
+    description: |
+      GPIO driven by the board to indicate mains/USB-C input status.
+      Active-high: high = power supply present, low = on battery.
+      Corresponds to BCM GPIO 6 on the Raspberry Pi.
+    maxItems: 1
+
+  charge-ctrl-gpios:
+    description: |
+      GPIO used to enable or inhibit battery charging.
+      Active-high for inhibit: low = charging enabled (default),
+      high = charging disabled (conservation mode).
+      Corresponds to BCM GPIO 16 on the Raspberry Pi.
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        ups@36 {
+            compatible = "suptronics,x120x";
+            reg = <0x36>;
+            ac-present-gpios  = <&gpio 6  GPIO_ACTIVE_HIGH>;
+            charge-ctrl-gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
+        };
+    };

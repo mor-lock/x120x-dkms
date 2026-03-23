@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * x120x.c — Power supply driver for Suptronics X120x UPS HAT series
+ * x120x.c - Power supply driver for SupTronics X120x UPS HAT series
  *
- * Supported hardware:
- *   X1200, X1201, X1202, X1203, X1205, X1206 (and compatible variants)
+ * Supported hardware (all share identical GPIO and I2C interface):
  *
- * The X120x connects to the Raspberry Pi via pogo pins (not the 40-pin
- * header) and exposes four signals:
+ *   X1200, X1201, X1202, X1203, X1205, X1206  (Raspberry Pi 5, bottom-mount
+ *                                               via pogo pins)
+ *   X1207  (Raspberry Pi 5, PoE-powered, pogo pins)
+ *   X1208  (Raspberry Pi 5, UPS + NVMe combo, pogo pins)
+ *   X1209  (Raspberry Pi 5/4B/3B+/3B, 40-pin GPIO header)
  *
- *   GPIO2 / GPIO3  I²C bus (SDA/SCL) to MAX17043 fuel gauge
+ * The boards expose four signals to the Raspberry Pi:
+ *
+ *   GPIO2 / GPIO3  I2C SDA/SCL to MAX17043 fuel gauge (address 0x36)
  *   GPIO6          AC-present: high = mains OK, low = on battery
  *   GPIO16         Charge control: low = charging enabled (default),
  *                                  high = charging disabled
@@ -27,20 +31,28 @@
  * D-Bus method) and integrates natively with the "preserve battery"
  * toggle in GNOME 48+ Settings and KDE Plasma Power Management.
  *
- * Register map (MAX17043/MAX17044)
- * ─────────────────────────────────
- *   0x00-0x01  VCELL    12-bit ADC, upper 12 bits, 1.25 mV/LSB
- *   0x02-0x03  SOC      16-bit fixed-point: [15:8] integer %, [7:0] /256
- *   0x04-0x05  MODE     quick-start, sleep
- *   0x06-0x07  VERSION  chip ID
- *   0x0C-0x0D  CONFIG   alert threshold, sleep, alert flag
- *   0xFE-0xFF  COMMAND  power-on reset
+ * Register map (MAX17043 as used on X120x boards)
+ * ------------------------------------------------
+ * NOTE: The register layout used on SupTronics X120x boards differs
+ * from the MAX17043 datasheet.  On these boards, as confirmed by
+ * SupTronics' own software (github.com/suptronics/x120x), the
+ * registers are mapped as follows:
+ *
+ *   0x02-0x03  VCELL   12-bit ADC, upper 12 bits, 1.25 mV/LSB
+ *   0x04-0x05  SOC     16-bit fixed-point: [15:8] integer %, [7:0] /256
+ *   0x06-0x07  VERSION chip ID
+ *   0x0C-0x0D  CONFIG  alert threshold, sleep, alert flag
+ *   0xFE-0xFF  COMMAND power-on reset / quick-start
+ *
+ * The datasheet defines VCELL at 0x00 and SOC at 0x02, but this driver
+ * uses 0x02 and 0x04 to match observed hardware behaviour on all known
+ * X120x board revisions.
  *
  *   VCELL conversion: uV = (raw >> 4) * 1250
  *   SOC  conversion: pct = raw >> 8  (integer part only)
  *
  * Device tree instantiation (preferred)
- * ──────────────────────────────────────
+ * --------------------------------------
  *   &i2c1 {
  *       x120x: ups@36 {
  *           compatible = "suptronics,x120x";
@@ -51,7 +63,7 @@
  *   };
  *
  * Module parameter instantiation (no DT overlay required)
- * ─────────────────────────────────────────────────────────
+ * --------------------------------------------------------
  *   modprobe x120x i2c_bus=1 gpio_ac=6 gpio_charge_ctrl=16
  *
  * Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
@@ -100,12 +112,14 @@ MODULE_PARM_DESC(gpio_charge_ctrl,
 	"BCM GPIO for charge control: low=enabled high=disabled (default 16)");
 
 /* -------------------------------------------------------------------------
- * MAX17043 register definitions
+ * MAX17043 register definitions (X120x board layout)
+ *
+ * These offsets match SupTronics' published software for all X120x boards
+ * and differ from the MAX17043 datasheet by one register pair.
  * ---------------------------------------------------------------------- */
 
-#define MAX17043_REG_VCELL		0x00
-#define MAX17043_REG_SOC		0x02
-#define MAX17043_REG_MODE		0x04
+#define MAX17043_REG_VCELL		0x02
+#define MAX17043_REG_SOC		0x04
 #define MAX17043_REG_VERSION		0x06
 #define MAX17043_REG_CONFIG		0x0C
 #define MAX17043_REG_COMMAND		0xFE
@@ -114,27 +128,30 @@ MODULE_PARM_DESC(gpio_charge_ctrl,
 #define MAX17043_MODE_QUICKSTART	0x4000
 #define MAX17043_CONFIG_ALRT		BIT(5)
 
-/* VCELL: upper 12 bits valid, 1.25 mV/LSB, kernel convention is uV */
+/*
+ * VCELL: upper 12 bits valid, 1.25 mV/LSB, kernel convention is uV.
+ *   uV = (raw >> 4) * 1250
+ */
 #define MAX17043_VCELL_TO_UV(raw)	(((raw) >> 4) * 1250)
 
 /* SOC: 16-bit fixed-point; integer part in bits [15:8] */
 #define MAX17043_SOC_INT(raw)		((int)((raw) >> 8))
 
-/* Quick-start if initial SoC is outside this plausible range (%) */
+/* Trigger a quick-start if initial SoC is outside this range (%) */
 #define MAX17043_SOC_MIN_PLAUSIBLE	1
 #define MAX17043_SOC_MAX_PLAUSIBLE	100
 
 /* -------------------------------------------------------------------------
  * Voltage thresholds for CAPACITY_LEVEL (uV, on-battery only)
  *
- * Derived from Li-ion cell behaviour on the X120x 21700 pack.  Cell
- * voltage is used in preference to SoC% because the MAX17043 SoC
- * estimate degrades at low charge and may oscillate when cells are
- * failing.  Voltage is the reliable ground truth at the low end.
+ * Derived from Li-ion cell behaviour on the X120x series.  Voltage is
+ * used in preference to SoC% because the MAX17043 SoC estimate degrades
+ * at low charge and may oscillate when cells are failing.  Voltage is
+ * the reliable ground truth at the critical end of the range.
  *
  * Thresholds apply only when ac_online == 0.  On grid, a sub-threshold
- * voltage indicates a dead or damaged pack and must not trigger a
- * spurious CRITICAL shutdown.
+ * voltage indicates a dead or damaged pack — not normal discharge — and
+ * must not trigger a spurious CRITICAL shutdown.
  * ---------------------------------------------------------------------- */
 
 #define X120X_UV_CRITICAL	3200000		/* 3.20 V: initiate shutdown  */
@@ -144,7 +161,7 @@ MODULE_PARM_DESC(gpio_charge_ctrl,
 /* Mark battery absent after this many consecutive I2C failures */
 #define X120X_MAX_ERRORS	5
 
-/* Polling interval */
+/* Hardware polling interval */
 #define X120X_POLL_MS		500
 
 /* -------------------------------------------------------------------------
@@ -160,7 +177,7 @@ MODULE_PARM_DESC(gpio_charge_ctrl,
  * @charger:		charger power_supply device (GPIO16 charge control)
  * @gpio_ac:		descriptor for AC-present GPIO (GPIO6), may be NULL
  * @gpio_chrg:		descriptor for charge-control GPIO (GPIO16), may be NULL
- * @lock:		mutex protecting all cached fields
+ * @lock:		mutex protecting all cached fields below
  * @voltage_uv:		last good VCELL reading in uV
  * @capacity_pct:	last good SOC reading in integer percent (0-100)
  * @ac_online:		1 if mains present, 0 if on battery
@@ -222,7 +239,7 @@ static int x120x_quick_start(struct x120x_chip *chip)
 {
 	int ret;
 
-	ret = regmap_write(chip->regmap, MAX17043_REG_MODE,
+	ret = regmap_write(chip->regmap, MAX17043_REG_COMMAND,
 			   MAX17043_MODE_QUICKSTART);
 	if (ret)
 		dev_warn(&chip->client->dev,
@@ -238,7 +255,7 @@ static int x120x_quick_start(struct x120x_chip *chip)
  *
  * The ALRT flag is set by the chip when SoC crosses the configured alert
  * threshold.  The X120x does not wire the ALRT pin to the Pi, but
- * clearing the flag on probe keeps the chip in a known state.
+ * clearing the flag on probe keeps the chip in a known clean state.
  *
  * Return: 0 on success, negative errno on error.
  */
@@ -259,11 +276,10 @@ static int x120x_clear_alert(struct x120x_chip *chip)
 /* -------------------------------------------------------------------------
  * GPIO helpers
  *
- * Use the descriptor API (DT path) when a descriptor is available;
- * fall back to the legacy number-based API for the module-parameter
- * instantiation path.  gpiod_get/set_value_cansleep() may sleep and
- * must not be called under a spinlock.  We use a mutex for chip->lock
- * so this is safe from the workqueue context.
+ * Use the descriptor API (DT path) when available; fall back to the
+ * legacy number-based API for the module-parameter path.
+ * gpiod_get/set_value_cansleep() may sleep and must not be called
+ * under a spinlock.  We use a mutex for chip->lock so this is safe.
  * ---------------------------------------------------------------------- */
 
 static int x120x_gpio_get(struct gpio_desc *desc, int legacy_num)
@@ -295,10 +311,9 @@ static void x120x_poll_work(struct work_struct *work)
 	bool bat_changed, ac_changed, chrg_changed;
 
 	/* ----------------------------------------------------------------
-	 * Read fuel gauge over I2C.
-	 * On failure increment the error counter; once it exceeds the
-	 * threshold mark the battery absent so userspace is not left with
-	 * stale readings.
+	 * Read fuel gauge.  On failure, increment the error counter and
+	 * mark battery absent once the threshold is exceeded so userspace
+	 * is not left reading stale values indefinitely.
 	 * -------------------------------------------------------------- */
 	ret = regmap_read(chip->regmap, MAX17043_REG_VCELL, &vcell_raw);
 	if (ret) {
@@ -309,7 +324,7 @@ static void x120x_poll_work(struct work_struct *work)
 			       chip->present);
 		if (bat_changed)
 			chip->present = false;
-		ac_changed = false;
+		ac_changed   = false;
 		chrg_changed = false;
 		mutex_unlock(&chip->lock);
 		goto notify;
@@ -332,13 +347,14 @@ static void x120x_poll_work(struct work_struct *work)
 		goto notify;
 	}
 
-	new_present      = true;
-	new_uv           = MAX17043_VCELL_TO_UV(vcell_raw);
-	new_pct          = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
-	new_ac           = x120x_gpio_get(chip->gpio_ac, gpio_ac);
+	new_present       = true;
+	new_uv            = MAX17043_VCELL_TO_UV(vcell_raw);
+	new_pct           = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
+	new_ac            = x120x_gpio_get(chip->gpio_ac, gpio_ac);
 	if (new_ac < 0)
-		new_ac = 0;	/* unreadable GPIO: assume on battery (safe) */
-	new_chrg_disabled = !!x120x_gpio_get(chip->gpio_chrg, gpio_charge_ctrl);
+		new_ac = 0;	/* unreadable: assume on battery (safe) */
+	new_chrg_disabled = !!x120x_gpio_get(chip->gpio_chrg,
+					      gpio_charge_ctrl);
 
 	mutex_lock(&chip->lock);
 	chip->i2c_errors  = 0;
@@ -358,8 +374,8 @@ static void x120x_poll_work(struct work_struct *work)
 notify:
 	/*
 	 * Emit uevents only when state actually changed to avoid storms.
-	 * An AC change implies battery status (CHARGING/DISCHARGING) also
-	 * changed, so force bat_changed in that case.
+	 * An AC change also implies battery STATUS changed, so force
+	 * bat_changed in that case.
 	 */
 	if (chrg_changed)
 		power_supply_changed(chip->charger);
@@ -374,7 +390,7 @@ notify:
 }
 
 /* -------------------------------------------------------------------------
- * power_supply callbacks — battery
+ * power_supply callbacks - battery
  * ---------------------------------------------------------------------- */
 
 static enum power_supply_property x120x_battery_props[] = {
@@ -430,6 +446,16 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_CAPACITY_LEVEL:
+		/*
+		 * Use cell voltage rather than SoC% for level classification.
+		 * The MAX17043 SoC estimate degrades at low charge — it may
+		 * report 0% while voltage is still safe, or oscillate when
+		 * cells are failing.  Voltage is the reliable ground truth.
+		 *
+		 * Thresholds apply only on battery: on grid, a low voltage
+		 * indicates a dead pack, not normal discharge, and must not
+		 * trigger a spurious CRITICAL shutdown.
+		 */
 		if (!present) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN;
 		} else if (!ac_online && voltage_uv > 0 &&
@@ -438,7 +464,8 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		} else if (!ac_online && voltage_uv > 0 &&
 			   voltage_uv <= X120X_UV_LOW) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_LOW;
-		} else if (ac_online && capacity_pct >= X120X_SOC_FULL_PCT) {
+		} else if (ac_online &&
+			   capacity_pct >= X120X_SOC_FULL_PCT) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_FULL;
 		} else {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_NORMAL;
@@ -469,7 +496,7 @@ static void x120x_battery_external_power_changed(struct power_supply *psy)
 }
 
 /* -------------------------------------------------------------------------
- * power_supply callbacks — AC adapter
+ * power_supply callbacks - AC adapter
  * ---------------------------------------------------------------------- */
 
 static enum power_supply_property x120x_ac_props[] = {
@@ -493,19 +520,18 @@ static int x120x_ac_get_property(struct power_supply *psy,
 }
 
 /* -------------------------------------------------------------------------
- * power_supply callbacks — charger (GPIO16 charge control)
+ * power_supply callbacks - charger (GPIO16 charge control)
  *
  * GPIO16 polarity: low = charging enabled, high = charging disabled.
  *
  * charge_type mapping:
- *   FAST      GPIO16 low  — normal charging
- *   LONGLIFE  GPIO16 high — conservation mode (charging inhibited)
+ *   FAST      GPIO16 low  - normal charging enabled
+ *   LONGLIFE  GPIO16 high - conservation mode (charging inhibited)
  *
  * This convention is compatible with UPower's EnableChargeThreshold
- * D-Bus method and the battery health preservation UI in GNOME 48+
- * and KDE Plasma.  UPower writes LONGLIFE to enable preservation and
- * FAST to disable it; userspace policy (e.g. a daemon watching SoC)
- * decides when to toggle.
+ * D-Bus method and the battery preservation UI in GNOME 48+ and KDE
+ * Plasma.  UPower writes LONGLIFE to enable conservation mode and
+ * FAST to disable it.
  * ---------------------------------------------------------------------- */
 
 static enum power_supply_property x120x_charger_props[] = {
@@ -529,7 +555,6 @@ static int x120x_charger_get_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
-		/* Charger is online whenever mains is present */
 		val->intval = ac_online;
 		break;
 
@@ -576,6 +601,7 @@ static int x120x_charger_set_property(struct power_supply *psy,
 		return -EINVAL;
 	}
 
+	/* GPIO16: low = enabled, high = disabled */
 	x120x_gpio_set(chip->gpio_chrg, gpio_charge_ctrl, disable ? 1 : 0);
 
 	mutex_lock(&chip->lock);
@@ -645,6 +671,7 @@ static int x120x_resume(struct device *dev)
 {
 	struct x120x_chip *chip = i2c_get_clientdata(to_i2c_client(dev));
 
+	/* Poll immediately on resume so sysfs reflects current state */
 	schedule_delayed_work(&chip->work, 0);
 	return 0;
 }
@@ -670,12 +697,12 @@ static int x120x_probe(struct i2c_client *client,
 	if (!chip)
 		return -ENOMEM;
 
-	chip->client = client;
+	chip->client  = client;
 	chip->present = true;
 	mutex_init(&chip->lock);
 	i2c_set_clientdata(client, chip);
 
-	/* ── regmap ─────────────────────────────────────────────────── */
+	/* -- regmap -------------------------------------------------------- */
 	chip->regmap = devm_regmap_init_i2c(client, &x120x_regmap_config);
 	if (IS_ERR(chip->regmap)) {
 		ret = PTR_ERR(chip->regmap);
@@ -683,7 +710,7 @@ static int x120x_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	/* ── Verify chip identity ───────────────────────────────────── */
+	/* -- Verify chip identity ----------------------------------------- */
 	ret = regmap_read(chip->regmap, MAX17043_REG_VERSION, &version);
 	if (ret) {
 		dev_err(dev, "failed to read chip version: %d\n", ret);
@@ -692,7 +719,7 @@ static int x120x_probe(struct i2c_client *client,
 	dev_info(dev, "MAX1704x at 0x%02x version 0x%03x\n",
 		 client->addr, version & MAX17043_VERSION_MASK);
 
-	/* ── GPIO6 — AC present ─────────────────────────────────────── */
+	/* -- GPIO6: AC present -------------------------------------------- */
 	chip->gpio_ac = devm_gpiod_get_optional(dev, "ac-present", GPIOD_IN);
 	if (IS_ERR(chip->gpio_ac)) {
 		ret = PTR_ERR(chip->gpio_ac);
@@ -704,15 +731,15 @@ static int x120x_probe(struct i2c_client *client,
 					    GPIOF_IN, "x120x-ac-present");
 		if (ret)
 			dev_warn(dev,
-				 "GPIO %d (AC-present) unavailable: %d — "
+				 "GPIO %d (AC-present) unavailable: %d - "
 				 "ac_online will always be 0\n",
 				 gpio_ac, ret);
 	}
 
-	/* ── GPIO16 — charge control ────────────────────────────────── */
+	/* -- GPIO16: charge control --------------------------------------- */
 	/*
-	 * Request as output-low so the hardware default (charging enabled)
-	 * is preserved across a driver reload.
+	 * Request as output-low so charging remains enabled across a
+	 * driver reload, preserving the hardware default.
 	 */
 	chip->gpio_chrg = devm_gpiod_get_optional(dev, "charge-ctrl",
 						   GPIOD_OUT_LOW);
@@ -727,16 +754,20 @@ static int x120x_probe(struct i2c_client *client,
 					    "x120x-charge-ctrl");
 		if (ret)
 			dev_warn(dev,
-				 "GPIO %d (charge-ctrl) unavailable: %d — "
+				 "GPIO %d (charge-ctrl) unavailable: %d - "
 				 "charge_type will be read-only\n",
 				 gpio_charge_ctrl, ret);
 	}
 
-	/* ── Initial chip setup ─────────────────────────────────────── */
+	/* -- Initial chip setup ------------------------------------------- */
 	ret = x120x_clear_alert(chip);
 	if (ret)
 		dev_warn(dev, "failed to clear ALRT flag: %d\n", ret);
 
+	/*
+	 * If the initial SoC is implausible the chip has not converged.
+	 * Issue a quick-start and allow 150 ms for the estimate to settle.
+	 */
 	ret = regmap_read(chip->regmap, MAX17043_REG_SOC, &soc_raw);
 	if (!ret) {
 		soc_pct = MAX17043_SOC_INT(soc_raw);
@@ -750,13 +781,12 @@ static int x120x_probe(struct i2c_client *client,
 		}
 	}
 
-	/* ── Register power_supply devices ─────────────────────────── */
+	/* -- Register power_supply devices -------------------------------- */
 
 	/*
 	 * supplied_to wires the notification chain so that when the AC
-	 * adapter or charger calls power_supply_changed(), the battery's
-	 * external_power_changed callback is invoked and it re-polls
-	 * immediately rather than waiting up to POLL_MS.
+	 * adapter or charger device calls power_supply_changed(), the
+	 * battery's external_power_changed callback fires immediately.
 	 */
 	ac_cfg.drv_data        = chip;
 	ac_cfg.supplied_to     = (char **)x120x_ac_supplied_to;
@@ -791,11 +821,12 @@ static int x120x_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	/* ── Start polling ──────────────────────────────────────────── */
+	/* -- Start polling ------------------------------------------------ */
 	INIT_DELAYED_WORK(&chip->work, x120x_poll_work);
 	schedule_delayed_work(&chip->work, 0);
 
-	dev_info(dev, "x120x UPS ready (battery=%s ac=%s charger=%s)\n",
+	dev_info(dev,
+		 "x120x UPS ready (battery=%s ac=%s charger=%s)\n",
 		 x120x_battery_desc.name,
 		 x120x_ac_desc.name,
 		 x120x_charger_desc.name);
@@ -842,7 +873,8 @@ static struct i2c_driver x120x_driver = {
  *
  * When no DT overlay is present the driver instantiates its own i2c_client
  * by probing the addresses in i2c_addrs[].  This allows `modprobe x120x`
- * to work on stock Raspberry Pi OS without any DT or config.txt changes.
+ * to work on stock Raspberry Pi OS without any DT or config.txt changes,
+ * which is the expected experience for most users.
  * ---------------------------------------------------------------------- */
 
 static struct i2c_client *x120x_i2c_client;
@@ -879,7 +911,7 @@ static int __init x120x_init(void)
 
 	if (!x120x_i2c_client)
 		pr_info("x120x: no fuel gauge found on i2c-%d "
-			"(tried addrs: %d candidates)\n",
+			"(tried %d candidate address(es))\n",
 			i2c_bus, i2c_addrs_count);
 
 	return 0;
@@ -898,7 +930,7 @@ module_init(x120x_init);
 module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
-MODULE_DESCRIPTION("Suptronics X120x UPS HAT power supply driver");
+MODULE_DESCRIPTION("SupTronics X120x UPS HAT power supply driver");
 MODULE_LICENSE("GPL v2");
 
 /*
@@ -908,9 +940,9 @@ MODULE_LICENSE("GPL v2");
  * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
  * NON-INFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY — INCLUDING BUT
+ * BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY - INCLUDING BUT
  * NOT LIMITED TO LOSS OF DATA, HARDWARE DAMAGE, FINANCIAL LOSS, OR
- * CONSEQUENTIAL DAMAGES OF ANY KIND — WHETHER IN AN ACTION OF CONTRACT,
+ * CONSEQUENTIAL DAMAGES OF ANY KIND - WHETHER IN AN ACTION OF CONTRACT,
  * TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THIS
  * SOFTWARE OR THE USE OR MISUSE THEREOF.
  *

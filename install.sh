@@ -69,7 +69,7 @@ done
 # Step 1: Dependencies
 # -------------------------------------------------------------------------
 
-info "Step 1/7 — Installing dependencies..."
+info "Step 1/8 — Installing dependencies..."
 apt-get install -y dkms raspberrypi-kernel-headers \
     || die "apt-get install failed"
 ok "Dependencies installed"
@@ -80,7 +80,7 @@ ok "Dependencies installed"
 
 DKMS_SRC="/usr/src/${PKG_NAME}-${PKG_VERSION}"
 
-info "Step 2/7 — Copying source to DKMS tree (${DKMS_SRC})..."
+info "Step 2/8 — Copying source to DKMS tree (${DKMS_SRC})..."
 rm -rf "${DKMS_SRC}"
 cp -r "${SRC_DIR}" "${DKMS_SRC}"
 ok "Source copied"
@@ -89,7 +89,7 @@ ok "Source copied"
 # Step 3: Build and install kernel module
 # -------------------------------------------------------------------------
 
-info "Step 3/7 — Building kernel module (this takes about a minute)..."
+info "Step 3/8 — Building kernel module (this takes about a minute)..."
 
 # Remove any previous installation cleanly
 if dkms status "${PKG_NAME}/${PKG_VERSION}" 2>/dev/null | grep -q installed; then
@@ -110,7 +110,7 @@ ok "Kernel module built and installed"
 # Step 4: Compile device tree overlay
 # -------------------------------------------------------------------------
 
-info "Step 4/7 — Compiling device tree overlay..."
+info "Step 4/8 — Compiling device tree overlay..."
 
 if ! command -v dtc &>/dev/null; then
     info "  dtc not found, installing device-tree-compiler..."
@@ -127,7 +127,7 @@ ok "Overlay compiled"
 # Step 5: Install overlay
 # -------------------------------------------------------------------------
 
-info "Step 5/7 — Installing device tree overlay to ${OVERLAYS_DIR}..."
+info "Step 5/8 — Installing device tree overlay to ${OVERLAYS_DIR}..."
 cp x120x.dtbo "${OVERLAYS_DIR}/" \
     || die "Failed to copy overlay to ${OVERLAYS_DIR}"
 ok "Overlay installed"
@@ -136,7 +136,7 @@ ok "Overlay installed"
 # Step 6: Enable overlay in config.txt
 # -------------------------------------------------------------------------
 
-info "Step 6/7 — Enabling overlay in ${CONFIG_TXT}..."
+info "Step 6/8 — Enabling overlay in ${CONFIG_TXT}..."
 
 if grep -q "dtoverlay=x120x" "${CONFIG_TXT}"; then
     ok "dtoverlay=x120x already present in ${CONFIG_TXT}"
@@ -156,7 +156,7 @@ fi
 # Step 7: Bootloader check (Pi 5 only)
 # -------------------------------------------------------------------------
 
-info "Step 7/7 — Checking bootloader configuration..."
+info "Step 7/8 — Checking bootloader configuration..."
 
 if grep -q "Raspberry Pi 5" /proc/cpuinfo 2>/dev/null; then
     CURRENT_EEPROM=$(rpi-eeprom-config 2>/dev/null || true)
@@ -191,6 +191,27 @@ if grep -q "Raspberry Pi 5" /proc/cpuinfo 2>/dev/null; then
 else
     ok "Not a Pi 5 — bootloader check skipped"
 
+fi
+
+# -------------------------------------------------------------------------
+# Step 8: Configure low-battery shutdown via systemd-logind
+# -------------------------------------------------------------------------
+
+info "Step 8/8 — Configuring low-battery shutdown..."
+
+LOGIND_CONF="/etc/systemd/logind.conf"
+if grep -q "^HandleLowBattery=poweroff" "${LOGIND_CONF}" 2>/dev/null; then
+    ok "HandleLowBattery=poweroff already set in ${LOGIND_CONF}"
+else
+    # Append a drop-in line. Comment out any existing HandleLowBattery line
+    # first to avoid duplicates.
+    sed -i 's/^HandleLowBattery=/#HandleLowBattery=/' "${LOGIND_CONF}" 2>/dev/null || true
+    echo "" >> "${LOGIND_CONF}"
+    echo "# Added by x120x-dkms installer — clean shutdown when battery reaches" >> "${LOGIND_CONF}"
+    echo "# capacity_level=Critical (cell voltage ≤ 3.20 V on battery)." >> "${LOGIND_CONF}"
+    echo "# To disable: set HandleLowBattery=ignore in ${LOGIND_CONF}" >> "${LOGIND_CONF}"
+    echo "HandleLowBattery=poweroff" >> "${LOGIND_CONF}"
+    ok "HandleLowBattery=poweroff set in ${LOGIND_CONF}"
 fi
 
 # -------------------------------------------------------------------------

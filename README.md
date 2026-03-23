@@ -85,12 +85,20 @@ hardware — works without any custom userspace code.
 
 ### systemd-logind shutdown
 
-On headless systems without a desktop environment, `systemd-logind` can
-initiate a clean shutdown when `capacity_level` reaches `Critical`
-(voltage ≤ 3.20 V on battery).  Enable in `/etc/systemd/logind.conf`:
+On headless systems, `systemd-logind` initiates a clean shutdown when
+`capacity_level` reaches `Critical` (cell voltage ≤ 3.20 V on battery).
+
+The install script enables this automatically by setting the following
+in `/etc/systemd/logind.conf`:
 
 ```ini
 HandleLowBattery=poweroff
+```
+
+To disable it, change the line to:
+
+```ini
+HandleLowBattery=ignore
 ```
 
 ## Hardware interface
@@ -268,13 +276,33 @@ PSU_MAX_CURRENT=5000
 
 Save and exit.
 
-#### Step 8 — Reboot
+#### Step 8 — Configure low-battery shutdown
+
+The driver reports `capacity_level=Critical` when the cell voltage drops
+to or below 3.20 V on battery.  To trigger a clean OS shutdown at that
+point, add the following to `/etc/systemd/logind.conf`:
+
+```bash
+sudo nano /etc/systemd/logind.conf
+```
+
+Add or update:
+
+```ini
+HandleLowBattery=poweroff
+```
+
+To disable this behaviour at any time, change the value to `ignore`.
+
+The install script does this automatically.
+
+#### Step 9 — Reboot
 
 ```bash
 sudo reboot
 ```
 
-#### Step 9 — Verify
+#### Step 10 — Verify
 
 After the reboot, check that everything is working:
 

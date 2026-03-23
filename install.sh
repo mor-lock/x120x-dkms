@@ -141,9 +141,14 @@ info "Step 6/7 — Enabling overlay in ${CONFIG_TXT}..."
 if grep -q "dtoverlay=x120x" "${CONFIG_TXT}"; then
     ok "dtoverlay=x120x already present in ${CONFIG_TXT}"
 else
-    echo "" >> "${CONFIG_TXT}"
-    echo "# SupTronics X120x UPS HAT driver" >> "${CONFIG_TXT}"
-    echo "dtoverlay=x120x" >> "${CONFIG_TXT}"
+    # Always append at the bottom. If the last section header in the
+    # file is not [all], insert [all] first so the overlay applies to
+    # all boards unconditionally (including Pi 5).
+    LAST_SECTION=$(grep "^\[" "${CONFIG_TXT}" | tail -1)
+    if [ "${LAST_SECTION}" != "[all]" ]; then
+        printf '\n[all]\n' >> "${CONFIG_TXT}"
+    fi
+    printf '# SupTronics X120x UPS HAT driver\ndtoverlay=x120x\n'         >> "${CONFIG_TXT}"
     ok "Added dtoverlay=x120x to ${CONFIG_TXT}"
 fi
 

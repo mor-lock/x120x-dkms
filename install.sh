@@ -129,7 +129,6 @@ ok "Overlay compiled"
 
 MODPROBE_CONF="/etc/modprobe.d/x120x.conf"
 INPUT_MAH=1000
-INPUT_VFULL=4200
 INPUT_VEMPTY=3200
 
 info "Step 5/9 — Writing battery configuration to ${MODPROBE_CONF}..."
@@ -139,7 +138,6 @@ cat > "${MODPROBE_CONF}" << MODPROBE_EOF
 #
 # battery_mah     — total pack capacity in mAh
 #                   (number of cells × per-cell capacity)
-# voltage_full_mv — cell voltage at 100% SoC in mV (typically 4200)
 # voltage_empty_mv — cell voltage at shutdown threshold in mV (typically 3200)
 #
 # After editing, reload the driver:
@@ -260,7 +258,6 @@ echo
 echo -e "  ${BLD}Battery configuration written to:${RST} ${MODPROBE_CONF}"
 echo
 echo -e "    battery_mah      = ${INPUT_MAH} mAh"
-echo -e "    voltage_full_mv  = ${INPUT_VFULL} mV"
 echo -e "    voltage_empty_mv = ${INPUT_VEMPTY} mV"
 echo
 echo -e "  To change these values, edit ${MODPROBE_CONF} and reboot."

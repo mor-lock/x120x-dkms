@@ -54,7 +54,7 @@
  * ─────────────────────────────────────────────────────────
  *   modprobe x120x i2c_bus=1 gpio_ac=6 gpio_charge_ctrl=16
  *
- * Copyright (C) 2025 Edvard Fielding <mor-lock@users.noreply.github.com>
+ * Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
  *
  * DISCLAIMER: This software is provided "as is" without warranty of any
  * kind.  The author is not liable for any damages arising from its use.

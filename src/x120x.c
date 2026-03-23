@@ -236,9 +236,18 @@ struct x120x_chip {
 	s64			 energy_now_uwh;	 /* µWh = energy_full × soc%/100 */
 	s64			 energy_full_uwh;	 /* µWh = battery_mah × 3700 mV  */
 	s64			 energy_empty_uwh;	 /* µWh = 0 (UPower floor)        */
-	s64			 energy_prev_uwh;	 /* previous sample for rate      */
-	ktime_t			 energy_prev_time;	 /* timestamp of previous sample  */
-	int			 energy_rate_uw;	 /* µW, smoothed EMA derivative   */
+	/*
+	 * Rate estimation: circular buffer of (energy, time) samples.
+	 * Slope across the full window gives a stable low-noise power
+	 * estimate despite the 1%%-step SoC resolution of the MAX17043.
+	 * Sign convention: negative = discharging, positive = charging.
+	 */
+#define X120X_RATE_SAMPLES	32
+	s64			 rate_energy[X120X_RATE_SAMPLES];
+	s64			 rate_time[X120X_RATE_SAMPLES];
+	int			 rate_head;
+	int			 rate_count;
+	int			 energy_rate_uw;
 
 	struct delayed_work	 work;
 };
@@ -405,45 +414,48 @@ static void x120x_poll_work(struct work_struct *work)
 	chip->ac_online       = new_ac;
 	chip->charge_disabled = new_chrg_disabled;
 
-	/*
-	 * Energy accounting.
-	 *
-	 * energy_full  = battery_mah × 3700 mV  (µWh, nominal)
-	 * energy_empty = 0
-	 * energy_now   = energy_full × soc% / 100
-	 *
-	 * energy_rate  = dE/dt smoothed with a simple EMA (α = 0.2).
-	 *                Positive = charging, negative = discharging.
-	 *                Units: µW.
-	 */
 	{
 		/*
-		 * energy_full_design = battery_mah × 4200 mV (at full charge)
-		 * energy_full        = battery_mah × 3700 mV (nominal)
-		 * energy_empty       = 0  (floor — lets UPower use energy_now /
-		 *                          energy_full directly for percentage)
-		 * energy_now         = energy_full × soc% / 100
+		 * energy_full  = battery_mah × 3700 mV (nominal)
+		 * energy_empty = 0  (floor — lets UPower use energy_now /
+		 *                    energy_full directly for percentage)
+		 * energy_now   = energy_full × soc% / 100
 		 */
 		s64 e_full = (s64)battery_mah * 3700;
-		s64 e_now         = div_s64(e_full * new_pct, 100);
-		ktime_t now       = ktime_get();
-		s64 dt_us         = ktime_to_us(ktime_sub(now,
-					 chip->energy_prev_time));
+		s64 e_now  = div_s64(e_full * new_pct, 100);
+		ktime_t now = ktime_get();
+		s64 now_us  = ktime_to_us(now);
 
-		if (dt_us > 0 && chip->energy_prev_time != 0) {
-			/* instantaneous rate in µW = µWh × 3600 × 1e6 / dt_us */
-			s64 de   = e_now - chip->energy_prev_uwh;
-			s64 rate = div_s64(de * 3600LL * 1000000LL, dt_us);
-			/* EMA α=0.2: smooth out per-poll noise */
-			chip->energy_rate_uw = (int)div_s64(
-				2 * rate + 8 * (s64)chip->energy_rate_uw, 10);
+		/*
+		 * Store sample in circular buffer, then estimate power from
+		 * oldest-to-newest slope across the whole window.  This gives
+		 * a stable reading despite the 1%%-step SoC output of the
+		 * MAX17043.  Sign: negative = discharging, positive = charging.
+		 *
+		 * slope (uW) = dE (uWh) / dt (us) * 3600 * 1e6
+		 */
+		{
+			int head = chip->rate_head;
+			chip->rate_energy[head] = e_now;
+			chip->rate_time[head]   = now_us;
+			chip->rate_head = (head + 1) % X120X_RATE_SAMPLES;
+			if (chip->rate_count < X120X_RATE_SAMPLES)
+				chip->rate_count++;
+
+			if (chip->rate_count >= 2) {
+				/* oldest entry is rate_head (next to be overwritten) */
+				int oldest = chip->rate_head % chip->rate_count;
+				s64 de = e_now - chip->rate_energy[oldest];
+				s64 dt = now_us - chip->rate_time[oldest];
+				if (dt > 0)
+					chip->energy_rate_uw = (int)div_s64(
+						de * 3600LL * 1000000LL, dt);
+			}
 		}
 
-		chip->energy_full_uwh = e_full;
+		chip->energy_full_uwh  = e_full;
 		chip->energy_empty_uwh = 0;
-		chip->energy_now_uwh         = e_now;
-		chip->energy_prev_uwh        = e_now;
-		chip->energy_prev_time       = now;
+		chip->energy_now_uwh   = e_now;
 	}
 
 	mutex_unlock(&chip->lock);

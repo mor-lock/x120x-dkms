@@ -241,12 +241,13 @@ struct x120x_chip {
 	int			 i2c_errors;
 
 	/* Energy tracking for UPower / desktop environment integration */
-	s64			 energy_now_uwh;	/* µWh, derived from SoC%      */
-	s64			 energy_full_uwh;	/* µWh = battery_mah × v_full  */
-	s64			 energy_empty_uwh;	/* µWh = battery_mah × v_empty */
-	s64			 energy_prev_uwh;	/* previous sample for rate    */
-	ktime_t			 energy_prev_time;	/* timestamp of previous sample*/
-	int			 energy_rate_uw;	/* µW, smoothed derivative     */
+	s64			 energy_now_uwh;	  /* µWh = energy_full × soc%/100  */
+	s64			 energy_full_uwh;	  /* µWh = battery_mah × 3700 mV   */
+	s64			 energy_full_design_uwh; /* µWh = battery_mah × v_full_mv  */
+	s64			 energy_empty_uwh;	  /* µWh = 0 (UPower floor)         */
+	s64			 energy_prev_uwh;	  /* previous sample for rate       */
+	ktime_t			 energy_prev_time;	  /* timestamp of previous sample   */
+	int			 energy_rate_uw;	  /* µW, smoothed EMA derivative    */
 
 	struct delayed_work	 work;
 };
@@ -426,28 +427,35 @@ static void x120x_poll_work(struct work_struct *work)
 	 *                Units: µW.
 	 */
 	{
-		s64 e_full  = (s64)battery_mah * voltage_full_mv;
-		s64 e_empty = (s64)battery_mah * voltage_empty_mv;
-		s64 e_now   = e_empty +
-			      div_s64((e_full - e_empty) * new_pct, 100);
-		ktime_t now = ktime_get();
-		s64 dt_us   = ktime_to_us(ktime_sub(now,
-					chip->energy_prev_time));
+		/*
+		 * energy_full_design = battery_mah × 4200 mV (at full charge)
+		 * energy_full        = battery_mah × 3700 mV (nominal)
+		 * energy_empty       = 0  (floor — lets UPower use energy_now /
+		 *                          energy_full directly for percentage)
+		 * energy_now         = energy_full × soc% / 100
+		 */
+		s64 e_full_design = (s64)battery_mah * voltage_full_mv;
+		s64 e_full        = (s64)battery_mah * 3700;
+		s64 e_now         = div_s64(e_full * new_pct, 100);
+		ktime_t now       = ktime_get();
+		s64 dt_us         = ktime_to_us(ktime_sub(now,
+					 chip->energy_prev_time));
 
 		if (dt_us > 0 && chip->energy_prev_time != 0) {
-			/* instantaneous rate in µW = µWh × 3600 / dt_s */
+			/* instantaneous rate in µW = µWh × 3600 × 1e6 / dt_us */
 			s64 de   = e_now - chip->energy_prev_uwh;
 			s64 rate = div_s64(de * 3600LL * 1000000LL, dt_us);
-			/* EMA: new = 0.2 × instant + 0.8 × prev */
+			/* EMA α=0.2: smooth out per-poll noise */
 			chip->energy_rate_uw = (int)div_s64(
-				2 * rate + 8 * chip->energy_rate_uw, 10);
+				2 * rate + 8 * (s64)chip->energy_rate_uw, 10);
 		}
 
-		chip->energy_full_uwh  = e_full;
-		chip->energy_empty_uwh = e_empty;
-		chip->energy_now_uwh   = e_now;
-		chip->energy_prev_uwh  = e_now;
-		chip->energy_prev_time = ktime_get();
+		chip->energy_full_design_uwh = e_full_design;
+		chip->energy_full_uwh        = e_full;
+		chip->energy_empty_uwh       = 0;
+		chip->energy_now_uwh         = e_now;
+		chip->energy_prev_uwh        = e_now;
+		chip->energy_prev_time       = now;
 	}
 
 	mutex_unlock(&chip->lock);
@@ -495,7 +503,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 {
 	struct x120x_chip *chip = power_supply_get_drvdata(psy);
 	int ac_online, capacity_pct, voltage_uv, energy_rate_uw;
-	s64 energy_now_uwh, energy_full_uwh, energy_empty_uwh;
+	s64 energy_now_uwh, energy_full_uwh;
 	bool present, charge_disabled;
 
 	mutex_lock(&chip->lock);
@@ -504,10 +512,9 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	voltage_uv       = chip->voltage_uv;
 	present          = chip->present;
 	charge_disabled  = chip->charge_disabled;
-	energy_now_uwh   = chip->energy_now_uwh;
-	energy_full_uwh  = chip->energy_full_uwh;
-	energy_empty_uwh = chip->energy_empty_uwh;
-	energy_rate_uw   = chip->energy_rate_uw;
+	energy_now_uwh  = chip->energy_now_uwh;
+	energy_full_uwh = chip->energy_full_uwh;
+	energy_rate_uw  = chip->energy_rate_uw;
 	mutex_unlock(&chip->lock);
 
 	switch (psp) {
@@ -570,8 +577,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		 * Clamp to [energy_empty, energy_full] to avoid impossible
 		 * values from rounding.
 		 */
-		val->intval = (int)clamp(energy_now_uwh,
-					 energy_empty_uwh, energy_full_uwh);
+		val->intval = (int)clamp(energy_now_uwh, (s64)0, energy_full_uwh);
 		break;
 
 	case POWER_SUPPLY_PROP_ENERGY_FULL:
@@ -579,12 +585,11 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
-		/* Design capacity equals full capacity — we have no ageing data */
-		val->intval = (int)energy_full_uwh;
+		val->intval = (int)chip->energy_full_design_uwh;
 		break;
 
 	case POWER_SUPPLY_PROP_ENERGY_EMPTY:
-		val->intval = (int)energy_empty_uwh;
+		val->intval = 0;
 		break;
 
 	case POWER_SUPPLY_PROP_POWER_NOW:

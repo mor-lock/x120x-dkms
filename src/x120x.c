@@ -116,6 +116,38 @@ module_param(gpio_charge_ctrl, int, 0444);
 MODULE_PARM_DESC(gpio_charge_ctrl,
 	"BCM GPIO for charge control: low=enabled high=disabled (default 16)");
 
+/*
+ * Battery pack energy parameters.
+ *
+ * battery_mah  — total pack capacity in mAh (default 1000).
+ *                Set this to your actual pack capacity so that UPower
+ *                and desktop environments can display meaningful energy
+ *                values and time-to-empty / time-to-full estimates.
+ *                Example: 4× 5000 mAh cells → battery_mah=20000
+ *
+ * voltage_full_mv — cell voltage at 100% SoC in mV (default 4200).
+ *                   Used to compute energy_full = battery_mah × voltage_full_mv.
+ *
+ * voltage_empty_mv — cell voltage at 0% SoC / shutdown threshold in mV
+ *                    (default 3200).  Used to compute energy_empty.
+ *
+ * All three are written to /etc/modprobe.d/x120x.conf by the installer.
+ */
+static int battery_mah = 1000;
+module_param(battery_mah, int, 0444);
+MODULE_PARM_DESC(battery_mah,
+	"Total battery pack capacity in mAh (default 1000)");
+
+static int voltage_full_mv = 4200;
+module_param(voltage_full_mv, int, 0444);
+MODULE_PARM_DESC(voltage_full_mv,
+	"Cell voltage at full charge in mV (default 4200)");
+
+static int voltage_empty_mv = 3200;
+module_param(voltage_empty_mv, int, 0444);
+MODULE_PARM_DESC(voltage_empty_mv,
+	"Cell voltage at shutdown threshold in mV (default 3200)");
+
 /* -------------------------------------------------------------------------
  * MAX17043 register definitions (X120x board layout)
  *
@@ -207,6 +239,14 @@ struct x120x_chip {
 	bool			 charge_disabled;
 	bool			 present;
 	int			 i2c_errors;
+
+	/* Energy tracking for UPower / desktop environment integration */
+	s64			 energy_now_uwh;	/* µWh, derived from SoC%      */
+	s64			 energy_full_uwh;	/* µWh = battery_mah × v_full  */
+	s64			 energy_empty_uwh;	/* µWh = battery_mah × v_empty */
+	s64			 energy_prev_uwh;	/* previous sample for rate    */
+	ktime_t			 energy_prev_time;	/* timestamp of previous sample*/
+	int			 energy_rate_uw;	/* µW, smoothed derivative     */
 
 	struct delayed_work	 work;
 };
@@ -372,6 +412,44 @@ static void x120x_poll_work(struct work_struct *work)
 	chip->capacity_pct    = new_pct;
 	chip->ac_online       = new_ac;
 	chip->charge_disabled = new_chrg_disabled;
+
+	/*
+	 * Energy accounting.
+	 *
+	 * energy_full  = battery_mah × voltage_full_mv  (µWh)
+	 * energy_empty = battery_mah × voltage_empty_mv (µWh)
+	 * energy_now   = energy_empty +
+	 *                (energy_full - energy_empty) × soc% / 100
+	 *
+	 * energy_rate  = dE/dt smoothed with a simple EMA (α = 0.2).
+	 *                Positive = charging, negative = discharging.
+	 *                Units: µW.
+	 */
+	{
+		s64 e_full  = (s64)battery_mah * voltage_full_mv;
+		s64 e_empty = (s64)battery_mah * voltage_empty_mv;
+		s64 e_now   = e_empty +
+			      div_s64((e_full - e_empty) * new_pct, 100);
+		ktime_t now = ktime_get();
+		s64 dt_us   = ktime_to_us(ktime_sub(now,
+					chip->energy_prev_time));
+
+		if (dt_us > 0 && chip->energy_prev_time != 0) {
+			/* instantaneous rate in µW = µWh × 3600 / dt_s */
+			s64 de   = e_now - chip->energy_prev_uwh;
+			s64 rate = div_s64(de * 3600LL * 1000000LL, dt_us);
+			/* EMA: new = 0.2 × instant + 0.8 × prev */
+			chip->energy_rate_uw = (int)div_s64(
+				2 * rate + 8 * chip->energy_rate_uw, 10);
+		}
+
+		chip->energy_full_uwh  = e_full;
+		chip->energy_empty_uwh = e_empty;
+		chip->energy_now_uwh   = e_now;
+		chip->energy_prev_uwh  = e_now;
+		chip->energy_prev_time = ktime_get();
+	}
+
 	mutex_unlock(&chip->lock);
 
 notify:
@@ -402,6 +480,11 @@ static enum power_supply_property x120x_battery_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
+	POWER_SUPPLY_PROP_ENERGY_NOW,
+	POWER_SUPPLY_PROP_ENERGY_FULL,
+	POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN,
+	POWER_SUPPLY_PROP_ENERGY_EMPTY,
+	POWER_SUPPLY_PROP_POWER_NOW,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_SCOPE,
 };
@@ -411,15 +494,20 @@ static int x120x_battery_get_property(struct power_supply *psy,
 				       union power_supply_propval *val)
 {
 	struct x120x_chip *chip = power_supply_get_drvdata(psy);
-	int ac_online, capacity_pct, voltage_uv;
+	int ac_online, capacity_pct, voltage_uv, energy_rate_uw;
+	s64 energy_now_uwh, energy_full_uwh, energy_empty_uwh;
 	bool present, charge_disabled;
 
 	mutex_lock(&chip->lock);
-	ac_online       = chip->ac_online;
-	capacity_pct    = chip->capacity_pct;
-	voltage_uv      = chip->voltage_uv;
-	present         = chip->present;
-	charge_disabled = chip->charge_disabled;
+	ac_online        = chip->ac_online;
+	capacity_pct     = chip->capacity_pct;
+	voltage_uv       = chip->voltage_uv;
+	present          = chip->present;
+	charge_disabled  = chip->charge_disabled;
+	energy_now_uwh   = chip->energy_now_uwh;
+	energy_full_uwh  = chip->energy_full_uwh;
+	energy_empty_uwh = chip->energy_empty_uwh;
+	energy_rate_uw   = chip->energy_rate_uw;
 	mutex_unlock(&chip->lock);
 
 	switch (psp) {
@@ -473,6 +561,39 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		} else {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_NORMAL;
 		}
+		break;
+
+	case POWER_SUPPLY_PROP_ENERGY_NOW:
+		/*
+		 * energy_now in µWh.  The power_supply ABI uses µWh as the
+		 * unit for energy properties (confusingly named _NOW/_FULL).
+		 * Clamp to [energy_empty, energy_full] to avoid impossible
+		 * values from rounding.
+		 */
+		val->intval = (int)clamp(energy_now_uwh,
+					 energy_empty_uwh, energy_full_uwh);
+		break;
+
+	case POWER_SUPPLY_PROP_ENERGY_FULL:
+		val->intval = (int)energy_full_uwh;
+		break;
+
+	case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
+		/* Design capacity equals full capacity — we have no ageing data */
+		val->intval = (int)energy_full_uwh;
+		break;
+
+	case POWER_SUPPLY_PROP_ENERGY_EMPTY:
+		val->intval = (int)energy_empty_uwh;
+		break;
+
+	case POWER_SUPPLY_PROP_POWER_NOW:
+		/*
+		 * Instantaneous power in µW.  Positive = charging,
+		 * negative = discharging.  Derived from the smoothed
+		 * energy_rate computed in the polling loop.
+		 */
+		val->intval = energy_rate_uw;
 		break;
 
 	case POWER_SUPPLY_PROP_TECHNOLOGY:

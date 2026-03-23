@@ -1,7 +1,8 @@
 # x120x-dkms — SupTronics X120x UPS HAT kernel driver
 
 A DKMS kernel driver for the SupTronics X120x UPS HAT series on
-Raspberry Pi.  Distributed by Geekworm.
+Raspberry Pi.  The UPS boards are designed by SupTronics and distributed
+by Geekworm.
 
 Provides native Linux power supply integration equivalent to a laptop
 battery — no vendor scripts, no custom daemons, no polling loops.

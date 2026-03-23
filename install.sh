@@ -146,7 +146,7 @@ cat > "${MODPROBE_CONF}" << MODPROBE_EOF
 #   sudo rmmod x120x && sudo modprobe x120x
 # Or simply reboot.
 
-options x120x battery_mah=${INPUT_MAH} voltage_full_mv=${INPUT_VFULL} voltage_empty_mv=${INPUT_VEMPTY}
+options x120x battery_mah=${INPUT_MAH} voltage_empty_mv=${INPUT_VEMPTY}
 MODPROBE_EOF
 ok "Battery configuration written"
 

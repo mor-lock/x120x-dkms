@@ -112,10 +112,9 @@ software.  This driver follows the observed hardware behaviour.
 The fuel gauge default I²C address is `0x36`.  The driver probes
 `0x36, 0x55, 0x32, 0x62` in order to cover all known board revisions.
 
-## Required bootloader setting (Raspberry Pi 5)
+## Required bootloader settings (Raspberry Pi 5)
 
-For the UPS to reliably restart the Pi after a shutdown, the Pi must
-fully remove power from the SoC when Linux halts:
+Two bootloader settings are recommended for reliable UPS operation:
 
 ```bash
 sudo rpi-eeprom-config -e
@@ -125,10 +124,18 @@ Add:
 
 ```
 POWER_OFF_ON_HALT=1
+PSU_MAX_CURRENT=5000
 ```
 
-Save and reboot.  Without this the Pi remains partially powered after
-shutdown and the UPS cannot restart it when mains power returns.
+- `POWER_OFF_ON_HALT=1` — ensures the Pi fully cuts power to the SoC
+  when Linux halts, so the UPS can restart it cleanly when mains power
+  returns.  Without this the Pi remains partially powered after shutdown
+  and cannot be restarted by the UPS.
+- `PSU_MAX_CURRENT=5000` — tells the Pi that its power supply can
+  deliver 5 A, suppressing spurious low-power warnings when drawing
+  high current through the UPS board.
+
+Save and reboot.
 
 ## Installation
 
@@ -222,11 +229,16 @@ sudo nano /boot/firmware/config.txt
 sudo nano /boot/config.txt
 ```
 
-Add this line at the end of the file:
+Add these lines at the end of the file:
 
 ```
+[all]
 dtoverlay=x120x
 ```
+
+The `[all]` section header ensures the overlay is applied on all Pi
+models.  Without it, any `[cm4]` or `[cm5]` conditional blocks earlier
+in the file will prevent the overlay from loading on a Pi 5.
 
 Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 

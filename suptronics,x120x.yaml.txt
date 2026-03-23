@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: GPL-2.0-or-later OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/suptronics,x120x.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Suptronics X120x UPS HAT for Raspberry Pi 5
+
+maintainers:
+  - Edvard Fielding <mor-lock@users.noreply.github.com>
+
+description: |
+  The Suptronics X120x series (X1200, X1201, X1202, X1203, X1205, X1206)
+  are uninterruptible power supply expansion boards designed for the
+  Raspberry Pi 5.  They attach via pogo pins rather than the 40-pin GPIO
+  header, leaving the header free for other accessories.
+
+  The boards use a Maxim MAX17043 or MAX17044 fuel gauge over I2C to
+  report battery state-of-charge and cell voltage.  Two additional GPIO
+  lines provide AC-present detection and charge control.
+
+  The driver registers three power_supply devices:
+
+    x120x-battery   capacity, voltage, status, capacity_level
+    x120x-ac        online (mains present/absent)
+    x120x-charger   charge_type (FAST/LONGLIFE), writeable
+
+  Writing POWER_SUPPLY_CHARGE_TYPE_LONGLIFE to the charger device
+  inhibits charging (GPIO16 high); writing FAST re-enables it.  This
+  integrates with UPower's EnableChargeThreshold D-Bus method and the
+  battery health preservation UI in GNOME 48+ and KDE Plasma.
+
+properties:
+  compatible:
+    const: suptronics,x120x
+
+  reg:
+    description: I2C address of the MAX17043/MAX17044 fuel gauge.
+    enum: [0x32, 0x36, 0x55, 0x62]
+
+  ac-present-gpios:
+    description: |
+      GPIO driven by the HAT to indicate mains/USB-C input status.
+      Active-high: high = power supply present, low = on battery.
+      Corresponds to BCM GPIO 6 on the Raspberry Pi 5.
+    maxItems: 1
+
+  charge-ctrl-gpios:
+    description: |
+      GPIO used to enable or inhibit battery charging.
+      Active-high for inhibit: low = charging enabled (default),
+      high = charging disabled (conservation mode).
+      Corresponds to BCM GPIO 16 on the Raspberry Pi 5.
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        ups@36 {
+            compatible = "suptronics,x120x";
+            reg = <0x36>;
+            ac-present-gpios  = <&gpio 6  GPIO_ACTIVE_HIGH>;
+            charge-ctrl-gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
+        };
+    };

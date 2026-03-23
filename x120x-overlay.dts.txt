@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * x120x-overlay.dts - Device tree overlay for Suptronics X120x UPS HAT
+ *
+ * Tested on Raspberry Pi 5 (BCM2712).  Should also work on Pi 4/3/2/1
+ * with the compatible strings listed below.
+ *
+ * Installation
+ * ------------
+ * 1. Compile:
+ *      dtc -@ -I dts -O dtb -o x120x.dtbo x120x-overlay.dts
+ *
+ * 2. Install:
+ *      sudo cp x120x.dtbo /boot/firmware/overlays/   # Pi 5
+ *      sudo cp x120x.dtbo /boot/overlays/            # Pi 4 and earlier
+ *
+ * 3. Enable in /boot/firmware/config.txt (Pi 5) or /boot/config.txt:
+ *      dtoverlay=x120x
+ *
+ *    Optional parameters (shown with defaults):
+ *      dtoverlay=x120x,addr=0x36,gpio_ac=6,gpio_charge_ctrl=16
+ *
+ * 4. Reboot.
+ *
+ * Verify:
+ *      ls /sys/class/power_supply/
+ *      upower -e
+ *      upower -i /org/freedesktop/UPower/devices/battery_x120x_battery
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	compatible = "brcm,bcm2712",    /* Raspberry Pi 5      */
+		     "brcm,bcm2711",    /* Raspberry Pi 4      */
+		     "brcm,bcm2837",    /* Raspberry Pi 3      */
+		     "brcm,bcm2836",    /* Raspberry Pi 2      */
+		     "brcm,bcm2835";    /* Raspberry Pi 1/Zero */
+
+	fragment@0 {
+		target = <&i2c1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			x120x: ups@36 {
+				compatible = "suptronics,x120x";
+				reg = <0x36>;
+
+				/*
+				 * GPIO6:  AC-present (high = mains OK)
+				 * GPIO16: charge control (low  = charging enabled,
+				 *                         high = charging disabled)
+				 */
+				ac-present-gpios  = <&gpio 6  GPIO_ACTIVE_HIGH>;
+				charge-ctrl-gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
+
+				status = "okay";
+			};
+		};
+	};
+
+	__overrides__ {
+		/* I2C address override for non-standard board revisions */
+		addr             = <&x120x>, "reg:0";
+		/* GPIO overrides for custom wiring */
+		gpio_ac          = <&x120x>, "ac-present-gpios:4";
+		gpio_charge_ctrl = <&x120x>, "charge-ctrl-gpios:4";
+	};
+};

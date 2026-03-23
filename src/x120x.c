@@ -251,6 +251,7 @@ struct x120x_chip {
 	s64			 rate_prev_energy_uwh;	/* energy at last SOC change    */
 	s64			 rate_prev_time_us;	/* ktime_us at last SOC change  */
 	int			 energy_rate_uw;		/* µW, updated on each event    */
+	s64			 rate_last_change_us;		/* ktime_us of last SOC change  */
 
 	struct delayed_work	 work;
 };
@@ -398,7 +399,7 @@ static void x120x_poll_work(struct work_struct *work)
 	new_present       = true;
 	new_uv            = MAX17043_VCELL_TO_UV(vcell_raw);
 	new_pct           = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
-	new_256           = clamp(MAX17043_SOC_256(soc_raw), 0, 25600);
+	new_256           = MAX17043_SOC_256(soc_raw); /* raw, unclamped for rate */
 	new_ac            = x120x_gpio_get(chip->gpio_ac);
 	if (new_ac < 0)
 		new_ac = 0;	/* unreadable: assume on battery (safe) */
@@ -419,6 +420,21 @@ static void x120x_poll_work(struct work_struct *work)
 	chip->capacity_256    = new_256;
 	chip->ac_online       = new_ac;
 	chip->charge_disabled = new_chrg_disabled;
+
+	/*
+	 * Grid state change: any rate computed across the transition is
+	 * meaningless (charging → discharging or vice versa).  Zero the
+	 * rate immediately and snapshot the current SOC and timestamp as
+	 * the baseline for the next measurement on the new side.
+	 * The 10 s minimum guard will then apply to the first new sample.
+	 */
+	if (ac_changed) {
+		chip->energy_rate_uw      = 0;
+		chip->rate_prev_energy_uwh = div_s64((s64)chip->energy_full_uwh *
+						  new_256, 25600);
+		chip->rate_prev_time_us    = now_us;
+		chip->rate_last_change_us  = now_us;
+	}
 
 	{
 		/*
@@ -450,13 +466,37 @@ static void x120x_poll_work(struct work_struct *work)
 			if (chip->rate_prev_time_us != 0 &&
 			    dt >= 10LL * USEC_PER_SEC) {
 				s64 de = e_now - chip->rate_prev_energy_uwh;
+				/*
+				 * Clamp dt to 90 s maximum.  If the zero-rate
+				 * timeout fired between two SOC changes (e.g. at
+				 * t=90s with the next change at t=120s), using
+				 * the full 120s window would dilute the rate with
+				 * a period of zero current.  Clamping to 90s gives
+				 * a rate representative of the most recent active
+				 * charging window rather than the full silent gap.
+				 */
+				if (dt > 90LL * USEC_PER_SEC)
+					dt = 90LL * USEC_PER_SEC;
 				chip->energy_rate_uw = (int)div_s64(
 					de * 3600LL * USEC_PER_SEC, dt);
 			}
 
 			/* Always update prev on any SOC change, even discarded */
-			chip->rate_prev_energy_uwh = e_now;
-			chip->rate_prev_time_us    = now_us;
+			chip->rate_prev_energy_uwh  = e_now;
+			chip->rate_prev_time_us     = now_us;
+			chip->rate_last_change_us   = now_us;
+		} else if (chip->rate_last_change_us != 0 &&
+			   now_us - chip->rate_last_change_us >
+			   90LL * USEC_PER_SEC) {
+			/*
+			 * SOC unchanged for >90 s: charge current is zero
+			 * (battery full, or negligible load).  Zero the rate
+			 * but do NOT update rate_prev_time_us — if SOC resumes
+			 * changing, dt will be computed from the last real
+			 * measurement and then clamped to 90 s (see above).
+			 */
+			chip->energy_rate_uw      = 0;
+			chip->rate_last_change_us = 0; /* disarm until next change */
 		}
 
 		chip->energy_full_uwh  = e_full;

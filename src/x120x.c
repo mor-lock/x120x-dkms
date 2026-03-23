@@ -428,14 +428,6 @@ static void x120x_poll_work(struct work_struct *work)
 	 * the baseline for the next measurement on the new side.
 	 * The 10 s minimum guard will then apply to the first new sample.
 	 */
-	if (ac_changed) {
-		chip->energy_rate_uw      = 0;
-		chip->rate_prev_energy_uwh = div_s64((s64)chip->energy_full_uwh *
-						  new_256, 25600);
-		chip->rate_prev_time_us    = now_us;
-		chip->rate_last_change_us  = now_us;
-	}
-
 	{
 		/*
 		 * energy_full  = battery_mah × 3700 mV (nominal)
@@ -443,11 +435,18 @@ static void x120x_poll_work(struct work_struct *work)
 		 *                    energy_full directly for percentage)
 		 * energy_now   = energy_full × soc% / 100
 		 */
-		s64 e_full = (s64)battery_mah * 3700;
+		s64 e_full  = (s64)battery_mah * 3700;
 		/* Use full 16-bit SOC precision (0..25600 = 0..100%) */
-		s64 e_now  = div_s64(e_full * new_256, 25600);
+		s64 e_now   = div_s64(e_full * new_256, 25600);
 		ktime_t now = ktime_get();
 		s64 now_us  = ktime_to_us(now);
+
+		if (ac_changed) {
+			chip->energy_rate_uw       = 0;
+			chip->rate_prev_energy_uwh = e_now;
+			chip->rate_prev_time_us    = now_us;
+			chip->rate_last_change_us  = now_us;
+		}
 
 		/*
 		 * Event-driven rate estimation.

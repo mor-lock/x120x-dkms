@@ -372,12 +372,27 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 
 ## Module parameters
 
-| Parameter          | Default                    | Description                     |
-|--------------------|----------------------------|---------------------------------|
-| `i2c_bus`          | `1`                        | I²C bus number                  |
-| `i2c_addrs`        | `0x36,0x55,0x32,0x62`      | Fuel gauge addresses to probe   |
-| `gpio_ac`          | `6`                        | BCM GPIO for AC-present         |
-| `gpio_charge_ctrl` | `16`                       | BCM GPIO for charge control     |
+| Parameter           | Default               | Description                          |
+|---------------------|-----------------------|--------------------------------------|
+| `i2c_bus`           | `1`                   | I²C bus number                       |
+| `i2c_addrs`         | `0x36,0x55,0x32,0x62` | Fuel gauge addresses to probe        |
+| `gpio_ac`           | `6`                   | BCM GPIO for AC-present              |
+| `gpio_charge_ctrl`  | `16`                  | BCM GPIO for charge control          |
+| `battery_mah`       | `1000`                | Total pack capacity in mAh           |
+| `voltage_full_mv`   | `4200`                | Cell voltage at full charge (mV)     |
+| `voltage_empty_mv`  | `3200`                | Cell voltage at shutdown threshold (mV) |
+
+The install script writes these to `/etc/modprobe.d/x120x.conf`.  To
+change them after installation, edit that file and reboot:
+
+```
+# /etc/modprobe.d/x120x.conf
+options x120x battery_mah=20000 voltage_full_mv=4200 voltage_empty_mv=3200
+```
+
+Set `battery_mah` to your total pack capacity — number of cells
+multiplied by per-cell capacity.  For example, an X1206 with four
+5000 mAh cells: `battery_mah=20000`.
 
 ## Companion daemon
 

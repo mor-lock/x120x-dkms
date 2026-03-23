@@ -11,17 +11,23 @@ battery — no vendor scripts, no custom daemons, no polling loops.
 All models share an identical software interface and are fully supported
 by this driver:
 
-| Model  | Pi compatibility         | Connection  | Battery            |
-|--------|--------------------------|-------------|--------------------|
-| X1200  | Raspberry Pi 5           | Pogo pins   | 2× 18650           |
-| X1201  | Raspberry Pi 5           | Pogo pins   | 2× 18650 (thin)    |
-| X1202  | Raspberry Pi 5           | Pogo pins   | 4× 18650           |
-| X1203  | Raspberry Pi 5           | Pogo pins   | External Li-ion    |
-| X1205  | Raspberry Pi 5           | Pogo pins   | 2× 21700           |
-| X1206  | Raspberry Pi 5           | Pogo pins   | 4× 21700           |
-| X1207  | Raspberry Pi 5           | 40-pin GPIO | 1× 21700 (PoE)     |
-| X1208  | Raspberry Pi 5           | 40-pin GPIO | 1× 21700 + NVMe    |
-| X1209  | Raspberry Pi 5/4B/3B+/3B | 40-pin GPIO | External Li-ion    |
+| Model  | Pi compatibility         | Connection              | Battery            |
+|--------|--------------------------|-------------------------|--------------------|
+| X1200  | Raspberry Pi 5           | Pogo pins               | 2× 18650           |
+| X1201  | Raspberry Pi 5           | Pogo pins               | 2× 18650 (thin)    |
+| X1202  | Raspberry Pi 5           | Pogo pins               | 4× 18650           |
+| X1203  | Raspberry Pi 5           | Pogo pins               | External Li-ion    |
+| X1205  | Raspberry Pi 5           | Pogo pins               | 2× 21700           |
+| X1206  | Raspberry Pi 5           | Pogo pins               | 4× 21700           |
+| X1207  | Raspberry Pi 5           | 40-pin header + pogo¹   | 1× 21700 (PoE)     |
+| X1208  | Raspberry Pi 5           | 40-pin header + pogo¹   | 1× 21700 + NVMe    |
+| X1209  | Raspberry Pi 5/4B/3B+/3B | 40-pin header + pogo²   | External Li-ion    |
+
+¹ Connects via the 40-pin GPIO header.  A single additional pogo pin
+  carries the power button signal to the Pi 5's PSW through-hole.
+
+² Connects via the 40-pin GPIO header.  An optional pogo pin enables
+  the power button function on Pi 5; not required on Pi 4/3.
 
 ### Not supported by this driver
 
@@ -125,52 +131,182 @@ shutdown and the UPS cannot restart it when mains power returns.
 
 ## Installation
 
-### Prerequisites
+### Quick install (recommended)
+
+Clone the repository and run the install script:
 
 ```bash
+git clone https://github.com/mor-lock/x120x-dkms.git
+cd x120x-dkms
+sudo bash install.sh
+```
+
+The script handles everything and tells you what it is doing at each
+step.  Reboot when it finishes.
+
+---
+
+### Manual installation (step by step)
+
+If you prefer to understand each step or the install script is not
+suitable for your setup, follow these instructions.
+
+#### Step 1 — Install dependencies
+
+```bash
+sudo apt update
 sudo apt install dkms raspberrypi-kernel-headers
 ```
 
-### Install via DKMS
+`dkms` manages the kernel module and rebuilds it automatically after
+kernel updates.  `raspberrypi-kernel-headers` provides the kernel
+headers needed to compile the module.
+
+#### Step 2 — Copy source to the DKMS tree
+
+DKMS expects the source under `/usr/src/<name>-<version>/`:
 
 ```bash
 sudo cp -r . /usr/src/x120x-0.1.0
+```
+
+#### Step 3 — Build and install the kernel module
+
+```bash
 sudo dkms add x120x/0.1.0
 sudo dkms build x120x/0.1.0
 sudo dkms install x120x/0.1.0
 ```
 
-### Device tree overlay (recommended)
+You will see compiler output scroll past — this is normal.  The build
+takes about a minute on a Raspberry Pi 5.  It should end with
+`DKMS: install completed`.
 
-Compile and install:
+Verify the module is installed:
+
+```bash
+dkms status
+```
+
+You should see `x120x/0.1.0, <kernel-version>, aarch64: installed`.
+
+#### Step 4 — Compile the device tree overlay
+
+The overlay tells the kernel how the board is wired (I²C address,
+GPIO assignments) so the driver can claim the hardware correctly.
 
 ```bash
 dtc -@ -I dts -O dtb -o x120x.dtbo x120x-overlay.dts
-sudo cp x120x.dtbo /boot/firmware/overlays/   # Pi 5
-# or: sudo cp x120x.dtbo /boot/overlays/      # Pi 4 and earlier
 ```
 
-Add to `/boot/firmware/config.txt` (Pi 5) or `/boot/config.txt`:
+#### Step 5 — Install the overlay
+
+```bash
+# Raspberry Pi 5 (Raspberry Pi OS Bookworm):
+sudo cp x120x.dtbo /boot/firmware/overlays/
+
+# Raspberry Pi 4 and earlier:
+sudo cp x120x.dtbo /boot/overlays/
+```
+
+#### Step 6 — Enable the overlay at boot
+
+Open the boot configuration file:
+
+```bash
+# Raspberry Pi 5:
+sudo nano /boot/firmware/config.txt
+
+# Raspberry Pi 4 and earlier:
+sudo nano /boot/config.txt
+```
+
+Add this line at the end of the file:
 
 ```
 dtoverlay=x120x
 ```
 
-Reboot.
+Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 
-### Without device tree (module parameters)
+#### Step 7 — Configure the bootloader (Raspberry Pi 5 only)
+
+Two bootloader settings are recommended for reliable UPS operation.
+Both are set in the same file:
 
 ```bash
-sudo modprobe x120x i2c_bus=1 gpio_ac=6 gpio_charge_ctrl=16
+sudo rpi-eeprom-config -e
 ```
 
-To make permanent, create `/etc/modprobe.d/x120x.conf`:
+Add these lines:
 
 ```
-options x120x i2c_bus=1 gpio_ac=6 gpio_charge_ctrl=16
+POWER_OFF_ON_HALT=1
+PSU_MAX_CURRENT=5000
 ```
 
-And add `x120x` to `/etc/modules`.
+- `POWER_OFF_ON_HALT=1` — ensures the Pi fully cuts power to the SoC
+  when Linux halts, so the UPS can restart it cleanly when mains power
+  returns.  Without this the Pi remains partially powered after shutdown
+  and cannot be restarted by the UPS.
+- `PSU_MAX_CURRENT=5000` — tells the Pi that its power supply can
+  deliver 5 A, suppressing spurious low-power warnings when drawing
+  high current through the UPS board.
+
+Save and exit.
+
+#### Step 8 — Reboot
+
+```bash
+sudo reboot
+```
+
+#### Step 9 — Verify
+
+After the reboot, check that everything is working:
+
+```bash
+# Confirm the overlay loaded and the driver initialised
+dmesg | grep x120x
+
+# Check the three power_supply devices exist
+ls /sys/class/power_supply/
+
+# Read live values
+cat /sys/class/power_supply/x120x-battery/capacity
+cat /sys/class/power_supply/x120x-battery/voltage_now
+cat /sys/class/power_supply/x120x-ac/online
+
+# Full UPower view
+upower -i /org/freedesktop/UPower/devices/battery_x120x_battery
+```
+
+Expected output from `dmesg | grep x120x`:
+
+```
+x120x: loading out-of-tree module taints kernel.
+x120x 1-0036: MAX1704x at 0x36 version 0x000
+x120x 1-0036: x120x UPS ready (battery=x120x-battery ac=x120x-ac charger=x120x-charger)
+```
+
+The "taints kernel" message is normal for any out-of-tree module.
+
+`voltage_now` is reported in µV — divide by 1,000,000 for volts.
+A healthy fully charged cell reads approximately 4,150,000 (4.15 V).
+
+### Without device tree (I²C only, no GPIO)
+
+If you cannot or do not want to use the device tree overlay, the driver
+can be loaded manually.  I²C readings (capacity and voltage) will work
+but `ac_online` will always read 0 because GPIO6 cannot be claimed
+without the overlay on kernel 6.12+.
+
+```bash
+sudo modprobe x120x
+```
+
+To load automatically at boot without the overlay, add `x120x` to
+`/etc/modules`.
 
 ## Verifying operation
 

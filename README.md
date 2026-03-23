@@ -19,8 +19,8 @@ by this driver:
 | X1203  | Raspberry Pi 5           | Pogo pins   | External Li-ion    |
 | X1205  | Raspberry Pi 5           | Pogo pins   | 2× 21700           |
 | X1206  | Raspberry Pi 5           | Pogo pins   | 4× 21700           |
-| X1207  | Raspberry Pi 5           | Pogo pins   | 1× 21700 (PoE)     |
-| X1208  | Raspberry Pi 5           | Pogo pins   | 1× 21700 + NVMe    |
+| X1207  | Raspberry Pi 5           | 40-pin GPIO | 1× 21700 (PoE)     |
+| X1208  | Raspberry Pi 5           | 40-pin GPIO | 1× 21700 + NVMe    |
 | X1209  | Raspberry Pi 5/4B/3B+/3B | 40-pin GPIO | External Li-ion    |
 
 ### Not supported by this driver

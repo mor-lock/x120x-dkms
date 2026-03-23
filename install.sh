@@ -153,7 +153,7 @@ fi
 
 info "Step 7/7 — Checking bootloader configuration..."
 
-if grep -q "bcm2712" /proc/cpuinfo 2>/dev/null; then
+if grep -q "Raspberry Pi 5" /proc/cpuinfo 2>/dev/null; then
     CURRENT_EEPROM=$(rpi-eeprom-config 2>/dev/null || true)
     NEEDS_UPDATE=0
 
@@ -185,6 +185,7 @@ if grep -q "bcm2712" /proc/cpuinfo 2>/dev/null; then
     fi
 else
     ok "Not a Pi 5 — bootloader check skipped"
+
 fi
 
 # -------------------------------------------------------------------------

@@ -243,17 +243,14 @@ struct x120x_chip {
 	s64			 energy_full_uwh;	 /* µWh = battery_mah × 3700 mV  */
 	s64			 energy_empty_uwh;	 /* µWh = 0 (UPower floor)        */
 	/*
-	 * Rate estimation: circular buffer of (energy, time) samples.
-	 * Slope across the full window gives a stable low-noise power
-	 * estimate despite the 1%%-step SoC resolution of the MAX17043.
-	 * Sign convention: negative = discharging, positive = charging.
+	 * Rate estimation: event-driven, one sample per SOC register change.
+	 * Each time capacity_256 changes we compute the rate from the delta
+	 * since the previous change.  Changes less than 10 s apart are
+	 * discarded as noise.  Sign: negative = discharging, positive = charging.
 	 */
-#define X120X_RATE_SAMPLES	20		/* ~10 s at 500 ms poll cadence */
-	s64			 rate_energy[X120X_RATE_SAMPLES];
-	s64			 rate_time[X120X_RATE_SAMPLES];
-	int			 rate_head;
-	int			 rate_count;
-	int			 energy_rate_uw;
+	s64			 rate_prev_energy_uwh;	/* energy at last SOC change    */
+	s64			 rate_prev_time_us;	/* ktime_us at last SOC change  */
+	int			 energy_rate_uw;		/* µW, updated on each event    */
 
 	struct delayed_work	 work;
 };
@@ -437,30 +434,29 @@ static void x120x_poll_work(struct work_struct *work)
 		s64 now_us  = ktime_to_us(now);
 
 		/*
-		 * Store sample in circular buffer, then estimate power from
-		 * oldest-to-newest slope across the whole window.  This gives
-		 * a stable reading despite the 1%%-step SoC output of the
-		 * MAX17043.  Sign: negative = discharging, positive = charging.
+		 * Event-driven rate estimation.
 		 *
-		 * slope (uW) = dE (uWh) / dt (us) * 3600 * 1e6
+		 * We only compute a new rate when the SOC register changes.
+		 * Changes less than 10 s apart are discarded — they indicate
+		 * noise or a rapid double-update from the chip rather than a
+		 * genuine new measurement.
+		 *
+		 * rate (µW) = ΔE (µWh) / Δt (µs) × 3600 × 1e6
+		 * Sign: negative = discharging, positive = charging.
 		 */
-		{
-			int head = chip->rate_head;
-			chip->rate_energy[head] = e_now;
-			chip->rate_time[head]   = now_us;
-			chip->rate_head = (head + 1) % X120X_RATE_SAMPLES;
-			if (chip->rate_count < X120X_RATE_SAMPLES)
-				chip->rate_count++;
+		if (new_256 != chip->capacity_256) {
+			s64 dt = now_us - chip->rate_prev_time_us;
 
-			if (chip->rate_count >= 2) {
-				/* oldest entry is rate_head (next to be overwritten) */
-				int oldest = chip->rate_head % chip->rate_count;
-				s64 de = e_now - chip->rate_energy[oldest];
-				s64 dt = now_us - chip->rate_time[oldest];
-				if (dt > 0)
-					chip->energy_rate_uw = (int)div_s64(
-						de * 3600LL * 1000000LL, dt);
+			if (chip->rate_prev_time_us != 0 &&
+			    dt >= 10LL * USEC_PER_SEC) {
+				s64 de = e_now - chip->rate_prev_energy_uwh;
+				chip->energy_rate_uw = (int)div_s64(
+					de * 3600LL * USEC_PER_SEC, dt);
 			}
+
+			/* Always update prev on any SOC change, even discarded */
+			chip->rate_prev_energy_uwh = e_now;
+			chip->rate_prev_time_us    = now_us;
 		}
 
 		chip->energy_full_uwh  = e_full;

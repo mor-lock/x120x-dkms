@@ -62,9 +62,14 @@
  *       };
  *   };
  *
- * Module parameter instantiation (no DT overlay required)
+ * Module parameter instantiation (no DT overlay required for I2C)
  * --------------------------------------------------------
- *   modprobe x120x i2c_bus=1 gpio_ac=6 gpio_charge_ctrl=16
+ *   modprobe x120x i2c_bus=1
+ *
+ *   NOTE: GPIO6 and GPIO16 require the device tree overlay on kernel 6.12+.
+ *   The legacy integer GPIO API was removed in kernel 6.12.  Without the
+ *   overlay the driver loads and reads I2C correctly but ac_online will
+ *   always be 0 and charge_type will be read-only.
  *
  * Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
  *
@@ -276,25 +281,24 @@ static int x120x_clear_alert(struct x120x_chip *chip)
 /* -------------------------------------------------------------------------
  * GPIO helpers
  *
- * Use the descriptor API (DT path) when available; fall back to the
- * legacy number-based API for the module-parameter path.
+ * Kernel 6.12 removed the legacy integer-based GPIO API entirely.
+ * This driver requires the descriptor API; GPIOs must be provided via
+ * device tree (use the supplied overlay) or via gpiod lookups.
  * gpiod_get/set_value_cansleep() may sleep and must not be called
  * under a spinlock.  We use a mutex for chip->lock so this is safe.
  * ---------------------------------------------------------------------- */
 
-static int x120x_gpio_get(struct gpio_desc *desc, int legacy_num)
+static int x120x_gpio_get(struct gpio_desc *desc)
 {
-	if (desc)
-		return gpiod_get_value_cansleep(desc);
-	return gpio_get_value(legacy_num);
+	if (!desc)
+		return 0;	/* GPIO not available: safe default */
+	return gpiod_get_value_cansleep(desc);
 }
 
-static void x120x_gpio_set(struct gpio_desc *desc, int legacy_num, int val)
+static void x120x_gpio_set(struct gpio_desc *desc, int val)
 {
 	if (desc)
 		gpiod_set_value_cansleep(desc, val);
-	else
-		gpio_set_value(legacy_num, val);
 }
 
 /* -------------------------------------------------------------------------
@@ -350,11 +354,10 @@ static void x120x_poll_work(struct work_struct *work)
 	new_present       = true;
 	new_uv            = MAX17043_VCELL_TO_UV(vcell_raw);
 	new_pct           = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
-	new_ac            = x120x_gpio_get(chip->gpio_ac, gpio_ac);
+	new_ac            = x120x_gpio_get(chip->gpio_ac);
 	if (new_ac < 0)
 		new_ac = 0;	/* unreadable: assume on battery (safe) */
-	new_chrg_disabled = !!x120x_gpio_get(chip->gpio_chrg,
-					      gpio_charge_ctrl);
+	new_chrg_disabled = !!x120x_gpio_get(chip->gpio_chrg);
 
 	mutex_lock(&chip->lock);
 	chip->i2c_errors  = 0;
@@ -602,7 +605,7 @@ static int x120x_charger_set_property(struct power_supply *psy,
 	}
 
 	/* GPIO16: low = enabled, high = disabled */
-	x120x_gpio_set(chip->gpio_chrg, gpio_charge_ctrl, disable ? 1 : 0);
+	x120x_gpio_set(chip->gpio_chrg, disable ? 1 : 0);
 
 	mutex_lock(&chip->lock);
 	chip->charge_disabled = disable;
@@ -676,14 +679,13 @@ static int x120x_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(x120x_pm_ops, x120x_suspend, x120x_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(x120x_pm_ops, x120x_suspend, x120x_resume);
 
 /* -------------------------------------------------------------------------
  * Probe / remove
  * ---------------------------------------------------------------------- */
 
-static int x120x_probe(struct i2c_client *client,
-		       const struct i2c_device_id *id)
+static int x120x_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct x120x_chip *chip;
@@ -726,15 +728,10 @@ static int x120x_probe(struct i2c_client *client,
 		dev_err(dev, "failed to get ac-present GPIO: %d\n", ret);
 		return ret;
 	}
-	if (!chip->gpio_ac) {
-		ret = devm_gpio_request_one(dev, gpio_ac,
-					    GPIOF_IN, "x120x-ac-present");
-		if (ret)
-			dev_warn(dev,
-				 "GPIO %d (AC-present) unavailable: %d - "
-				 "ac_online will always be 0\n",
-				 gpio_ac, ret);
-	}
+	if (!chip->gpio_ac)
+		dev_warn(dev,
+			 "ac-present GPIO not found - ac_online will always be 0\n"
+			 "Install the device tree overlay: dtoverlay=x120x\n");
 
 	/* -- GPIO16: charge control --------------------------------------- */
 	/*
@@ -748,16 +745,10 @@ static int x120x_probe(struct i2c_client *client,
 		dev_err(dev, "failed to get charge-ctrl GPIO: %d\n", ret);
 		return ret;
 	}
-	if (!chip->gpio_chrg) {
-		ret = devm_gpio_request_one(dev, gpio_charge_ctrl,
-					    GPIOF_OUT_INIT_LOW,
-					    "x120x-charge-ctrl");
-		if (ret)
-			dev_warn(dev,
-				 "GPIO %d (charge-ctrl) unavailable: %d - "
-				 "charge_type will be read-only\n",
-				 gpio_charge_ctrl, ret);
-	}
+	if (!chip->gpio_chrg)
+		dev_warn(dev,
+			 "charge-ctrl GPIO not found - charge_type will be read-only\n"
+			 "Install the device tree overlay: dtoverlay=x120x\n");
 
 	/* -- Initial chip setup ------------------------------------------- */
 	ret = x120x_clear_alert(chip);
@@ -861,7 +852,7 @@ static struct i2c_driver x120x_driver = {
 	.driver = {
 		.name           = "x120x",
 		.of_match_table = x120x_of_match,
-		.pm             = &x120x_pm_ops,
+		.pm             = pm_sleep_ptr(&x120x_pm_ops),
 	},
 	.probe     = x120x_probe,
 	.remove    = x120x_remove,

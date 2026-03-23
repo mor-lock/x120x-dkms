@@ -125,9 +125,6 @@ MODULE_PARM_DESC(gpio_charge_ctrl,
  *                values and time-to-empty / time-to-full estimates.
  *                Example: 4× 5000 mAh cells → battery_mah=20000
  *
- * voltage_full_mv — cell voltage at 100% SoC in mV (default 4200).
- *                   Used to compute energy_full = battery_mah × voltage_full_mv.
- *
  * voltage_empty_mv — cell voltage at 0% SoC / shutdown threshold in mV
  *                    (default 3200).  Used to compute energy_empty.
  *
@@ -137,11 +134,6 @@ static int battery_mah = 1000;
 module_param(battery_mah, int, 0444);
 MODULE_PARM_DESC(battery_mah,
 	"Total battery pack capacity in mAh (default 1000)");
-
-static int voltage_full_mv = 4200;
-module_param(voltage_full_mv, int, 0444);
-MODULE_PARM_DESC(voltage_full_mv,
-	"Cell voltage at full charge in mV (default 4200)");
 
 static int voltage_empty_mv = 3200;
 module_param(voltage_empty_mv, int, 0444);
@@ -241,13 +233,12 @@ struct x120x_chip {
 	int			 i2c_errors;
 
 	/* Energy tracking for UPower / desktop environment integration */
-	s64			 energy_now_uwh;	  /* µWh = energy_full × soc%/100  */
-	s64			 energy_full_uwh;	  /* µWh = battery_mah × 3700 mV   */
-	s64			 energy_full_design_uwh; /* µWh = battery_mah × v_full_mv  */
-	s64			 energy_empty_uwh;	  /* µWh = 0 (UPower floor)         */
-	s64			 energy_prev_uwh;	  /* previous sample for rate       */
-	ktime_t			 energy_prev_time;	  /* timestamp of previous sample   */
-	int			 energy_rate_uw;	  /* µW, smoothed EMA derivative    */
+	s64			 energy_now_uwh;	 /* µWh = energy_full × soc%/100 */
+	s64			 energy_full_uwh;	 /* µWh = battery_mah × 3700 mV  */
+	s64			 energy_empty_uwh;	 /* µWh = 0 (UPower floor)        */
+	s64			 energy_prev_uwh;	 /* previous sample for rate      */
+	ktime_t			 energy_prev_time;	 /* timestamp of previous sample  */
+	int			 energy_rate_uw;	 /* µW, smoothed EMA derivative   */
 
 	struct delayed_work	 work;
 };
@@ -417,10 +408,9 @@ static void x120x_poll_work(struct work_struct *work)
 	/*
 	 * Energy accounting.
 	 *
-	 * energy_full  = battery_mah × voltage_full_mv  (µWh)
-	 * energy_empty = battery_mah × voltage_empty_mv (µWh)
-	 * energy_now   = energy_empty +
-	 *                (energy_full - energy_empty) × soc% / 100
+	 * energy_full  = battery_mah × 3700 mV  (µWh, nominal)
+	 * energy_empty = 0
+	 * energy_now   = energy_full × soc% / 100
 	 *
 	 * energy_rate  = dE/dt smoothed with a simple EMA (α = 0.2).
 	 *                Positive = charging, negative = discharging.
@@ -434,8 +424,7 @@ static void x120x_poll_work(struct work_struct *work)
 		 *                          energy_full directly for percentage)
 		 * energy_now         = energy_full × soc% / 100
 		 */
-		s64 e_full_design = (s64)battery_mah * voltage_full_mv;
-		s64 e_full        = (s64)battery_mah * 3700;
+		s64 e_full = (s64)battery_mah * 3700;
 		s64 e_now         = div_s64(e_full * new_pct, 100);
 		ktime_t now       = ktime_get();
 		s64 dt_us         = ktime_to_us(ktime_sub(now,
@@ -450,9 +439,8 @@ static void x120x_poll_work(struct work_struct *work)
 				2 * rate + 8 * (s64)chip->energy_rate_uw, 10);
 		}
 
-		chip->energy_full_design_uwh = e_full_design;
-		chip->energy_full_uwh        = e_full;
-		chip->energy_empty_uwh       = 0;
+		chip->energy_full_uwh = e_full;
+		chip->energy_empty_uwh = 0;
 		chip->energy_now_uwh         = e_now;
 		chip->energy_prev_uwh        = e_now;
 		chip->energy_prev_time       = now;
@@ -585,7 +573,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
-		val->intval = (int)chip->energy_full_design_uwh;
+		val->intval = (int)energy_full_uwh;
 		break;
 
 	case POWER_SUPPLY_PROP_ENERGY_EMPTY:

@@ -2,6 +2,8 @@
 /*
  * x120x-overlay.dts - Device tree overlay for SupTronics X120x UPS HAT
  *
+ * Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
+ *
  * Tested on Raspberry Pi 5 (BCM2712).  Should also work on Pi 4/3/2/1
  * with the compatible strings listed below.
  *
@@ -31,7 +33,9 @@
 /dts-v1/;
 /plugin/;
 
-#include <dt-bindings/gpio/gpio.h>
+/*
+ * GPIO_ACTIVE_HIGH = 0  (inlined to avoid dependency on kernel headers)
+ */
 
 / {
 	compatible = "brcm,bcm2712",    /* Raspberry Pi 5      */
@@ -55,9 +59,10 @@
 				 * GPIO6:  AC-present (high = mains OK)
 				 * GPIO16: charge control (low  = charging enabled,
 				 *                         high = charging disabled)
+				 * 0 = GPIO_ACTIVE_HIGH
 				 */
-				ac-present-gpios  = <&gpio 6  GPIO_ACTIVE_HIGH>;
-				charge-ctrl-gpios = <&gpio 16 GPIO_ACTIVE_HIGH>;
+				ac-present-gpios  = <&gpio 6  0>;
+				charge-ctrl-gpios = <&gpio 16 0>;
 
 				status = "okay";
 			};

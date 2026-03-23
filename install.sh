@@ -92,7 +92,7 @@ ok "Source copied"
 info "Step 3/9 — Building kernel module (this takes about a minute)..."
 
 # Remove any previous installation cleanly
-if dkms status "${PKG_NAME}/${PKG_VERSION}" 2>/dev/null | grep -q installed; then
+if dkms status "${PKG_NAME}/${PKG_VERSION}" 2>/dev/null | grep -q .; then
     info "  Removing previous installation..."
     dkms remove "${PKG_NAME}/${PKG_VERSION}" --all 2>/dev/null || true
 fi

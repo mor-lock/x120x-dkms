@@ -261,30 +261,17 @@ def draw_battery_icon(soc, status, charge_type, ac_online, size=ICON_SIZE):
     elif charging and longlife:
         _draw_leaf(ctx, ox, oy, ow, oh, alpha=0.92)
 
-    # Convert cairo surface to GdkPixbuf
-    # cairo uses ARGB premultiplied; GdkPixbuf wants RGBA straight
-    data = surf.get_data()
-    pixbuf = GdkPixbuf.Pixbuf.new_from_bytes(
-        GLib.Bytes(bytes(data)),
-        GdkPixbuf.Colorspace.RGB,
-        True, 8,
-        size, size,
-        surf.get_stride(),
-    )
-    # cairo ARGB32 is BGRA on little-endian; swap R and B channels
-    pixbuf = pixbuf.copy()
-    arr = pixbuf.get_pixels_with_length()[0]
-    ba  = bytearray(arr)
-    for i in range(0, len(ba), 4):
-        ba[i], ba[i+2] = ba[i+2], ba[i]   # swap R and B
-    pixbuf2 = GdkPixbuf.Pixbuf.new_from_bytes(
-        GLib.Bytes(bytes(ba)),
-        GdkPixbuf.Colorspace.RGB,
-        True, 8,
-        size, size,
-        surf.get_stride(),
-    )
-    return pixbuf2
+    # Convert cairo surface → GdkPixbuf via PNG roundtrip.
+    # This avoids all channel-order and premultiplication issues and
+    # works on every GdkPixbuf version available on Raspberry Pi OS.
+    import io
+    buf = io.BytesIO()
+    surf.write_to_png(buf)
+    buf.seek(0)
+    loader = GdkPixbuf.PixbufLoader.new_with_type('png')
+    loader.write(buf.read())
+    loader.close()
+    return loader.get_pixbuf()
 
 # -------------------------------------------------------------------------
 # Fallback icon name (when Cairo unavailable)

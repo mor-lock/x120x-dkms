@@ -57,7 +57,7 @@ After loading, three devices appear under `/sys/class/power_supply/`:
 /sys/class/power_supply/x120x-charger/
     online                          1 = mains present
     status                          Charging | Not charging | Discharging
-    charge_type                     Fast | Long life  (writeable)
+    charge_type                     Fast | Long Life  (writeable)
     charge_control_start_threshold  SoC % to resume charging in Long life mode (writeable, default 75)
     charge_control_end_threshold    SoC % to stop charging in Long life mode (writeable, default 80)
 ```
@@ -83,7 +83,7 @@ The driver supports two charge modes, selectable via `charge_type`:
 
 - **`Fast`** (default) — GPIO16 held low, charger always on, battery
   charges to 100%.  Normal behaviour for occasional backup use.
-- **`Long life`** — the driver manages GPIO16 automatically using
+- **`Long Life`** — the driver manages GPIO16 automatically using
   hysteresis: charging stops when SoC reaches `charge_control_end_threshold`
   (default 80%) and resumes when SoC drops to
   `charge_control_start_threshold` (default 75%).  Suitable for systems
@@ -93,7 +93,7 @@ Enable and disable conservation mode from the command line:
 
 ```bash
 # Enable conservation mode (charges to 80%, resumes at 75%)
-echo "Long life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
+echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 
 # Disable conservation mode (charges to 100%)
 echo "Fast" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
@@ -125,7 +125,7 @@ environments via UPower:
 - **GNOME 48+** — "Preserve battery health" toggle in Settings → Power
 - **KDE Plasma** — charge threshold controls in Power Management
 
-When the toggle is enabled, UPower writes `Long life` to `charge_type`
+When the toggle is enabled, UPower writes `Long Life` to `charge_type`
 automatically.  The full chain — desktop toggle → UPower → sysfs →
 driver → GPIO16 → hardware — works without any custom userspace code.
 
@@ -445,7 +445,7 @@ cat /sys/class/power_supply/x120x-charger/charge_type
 upower -i /org/freedesktop/UPower/devices/battery_x120x_battery
 
 # Test conservation mode toggle
-echo "Long life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
+echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 ```
 

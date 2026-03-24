@@ -219,6 +219,7 @@ install time rather than editing `/etc/modprobe.d/x120x.conf` by hand:
 |---|---|---|
 | `--battery-mah N` | `1000` | Total pack capacity in mAh. Multiply per-cell capacity by number of cells. |
 | `--voltage-empty-mv N` | `3200` | Cell voltage at shutdown/Critical threshold in mV. Raise temporarily to test the logind shutdown path. |
+| `--tray` | off | Install the x120x system tray applet (see below). |
 
 Examples:
 
@@ -229,6 +230,9 @@ sudo bash install.sh --battery-mah 20000
 # X1205 with two 5000 mAh 21700 cells
 sudo bash install.sh --battery-mah 10000
 
+# X1206 with tray applet
+sudo bash install.sh --battery-mah 20000 --tray
+
 # Temporarily raise shutdown threshold to test logind shutdown
 sudo bash install.sh --battery-mah 20000 --voltage-empty-mv 4100
 
@@ -238,6 +242,49 @@ sudo bash install.sh --help
 
 If omitted the defaults (1000 mAh, 3200 mV) are used and can be changed
 later by editing `/etc/modprobe.d/x120x.conf` and rebooting.
+
+#### Tray applet (`--tray`)
+
+The optional tray applet places a battery indicator in the Raspberry Pi
+OS taskbar alongside the native battery icon.  It adds functionality
+that the native icon does not provide:
+
+- Displays SoC%, grid state, and current charge mode at a glance —
+  e.g. `76% AC [LL]` for Long Life or `98% BAT [Fast]` for Fast mode
+  on battery
+- **Left-click** (or use the menu) to toggle instantly between `Fast`
+  and `Long Life` charge modes
+- **Right-click** for a detailed popup showing voltage, energy, power
+  draw, and mode, plus the toggle option and quit
+
+When installed with `--tray` the script:
+
+1. Installs `x120x-tray.py` to `/usr/local/bin/`
+2. Adds an autostart entry to `/etc/xdg/autostart/` so it launches
+   automatically on login for all users
+3. Installs a sudoers rule to `/etc/sudoers.d/x120x-tray` so the
+   applet can write to the charge control sysfs files without a
+   password prompt
+
+To install the applet after the fact without reinstalling the driver:
+
+```bash
+sudo bash install.sh --tray
+```
+
+To remove it:
+
+```bash
+sudo rm /usr/local/bin/x120x-tray.py
+sudo rm /etc/xdg/autostart/x120x-tray.desktop
+sudo rm /etc/sudoers.d/x120x-tray
+```
+
+**Note:** The native Raspberry Pi OS battery icon and the tray applet
+coexist in the taskbar — they read from the same kernel driver and show
+consistent data.  The native icon provides the familiar percentage
+indicator; the applet adds the charge mode toggle and detail view that
+the native icon does not support.
 
 ---
 

@@ -128,7 +128,7 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     present         1 if battery detected
     voltage_now     cell voltage in µV
     capacity        0-100 %
-    capacity_level  Critical | Low | Normal | Full | Unknown
+    capacity_level  Critical (<5%) | Low (<10%) | Normal | Full (≥95%) | Unknown
     technology      Li-ion
     scope           System
 
@@ -195,7 +195,7 @@ The default thresholds can also be changed permanently via module
 parameters in `/etc/modprobe.d/x120x.conf`:
 
 ```
-options x120x battery_mah=20000 voltage_empty_mv=3200 conservation_start=75 conservation_end=80
+options x120x battery_mah=20000 conservation_start=75 conservation_end=80
 ```
 
 ### Charge mode persistence
@@ -233,7 +233,7 @@ sysfs files will also work automatically.
 ### systemd-logind shutdown
 
 On headless systems, `systemd-logind` initiates a clean shutdown when
-`capacity_level` reaches `Critical` (cell voltage ≤ 3.20 V on battery).
+`capacity_level` reaches `Critical` (battery SoC below 5%).
 
 The install script enables this automatically by setting the following
 in `/etc/systemd/logind.conf`:
@@ -320,7 +320,6 @@ install time rather than editing `/etc/modprobe.d/x120x.conf` by hand:
 | Option | Default | Description |
 |---|---|---|
 | `--battery-mah N` | `1000` | Total pack capacity in mAh. Multiply per-cell capacity by number of cells. |
-| `--voltage-empty-mv N` | `3200` | Cell voltage at shutdown/Critical threshold in mV. Raise temporarily to test the logind shutdown path. |
 | `--charge-mode MODE` | `fast` | Initial charge mode: `fast` or `longlife`. Persisted across reboots. See Getting started for guidance on which to choose. |
 
 Examples:
@@ -335,14 +334,12 @@ sudo bash install.sh --battery-mah 10000
 # X1206 always-on server — Long Life mode
 sudo bash install.sh --battery-mah 20000 --charge-mode longlife
 
-# Temporarily raise shutdown threshold to test logind shutdown
-sudo bash install.sh --battery-mah 20000 --voltage-empty-mv 4100
 
 # Show available options
 sudo bash install.sh --help
 ```
 
-If omitted the defaults (1000 mAh, 3200 mV) are used and can be changed
+If omitted the default (1000 mAh) is used and can be changed
 later by editing `/etc/modprobe.d/x120x.conf` and rebooting.
 
 ---
@@ -564,7 +561,6 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `gpio_ac`           | `6`                   | BCM GPIO for AC-present              |
 | `gpio_charge_ctrl`  | `16`                  | BCM GPIO for charge control          |
 | `battery_mah`       | `1000`                | Total pack capacity in mAh           |
-| `voltage_empty_mv`  | `3200`                | Cell voltage at Critical/shutdown threshold (mV). Raise temporarily (e.g. `4100`) to test the logind shutdown path without draining the battery. |
 | `conservation_start`        | `75`  | SoC % at which charging resumes in Long Life mode |
 | `conservation_end`          | `80`  | SoC % at which charging stops in Long Life mode   |
 | `conservation_mode_default` | `0`   | Start in Long Life mode (`1`) or Fast mode (`0`). Updated automatically on every `charge_type` sysfs write and persisted to `modprobe.d` by a udev rule. |
@@ -574,7 +570,7 @@ change them after installation, edit that file and reboot:
 
 ```
 # /etc/modprobe.d/x120x.conf
-options x120x battery_mah=20000 voltage_empty_mv=3200
+options x120x battery_mah=20000
 ```
 
 Set `battery_mah` to your total pack capacity — number of cells

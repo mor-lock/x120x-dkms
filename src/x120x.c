@@ -119,31 +119,18 @@ MODULE_PARM_DESC(gpio_charge_ctrl,
 /*
  * Battery pack energy parameters.
  *
- * battery_mah  — total pack capacity in mAh (default 1000).
- *                Set this to your actual pack capacity so that UPower
- *                and desktop environments can display meaningful energy
- *                values and time-to-empty / time-to-full estimates.
- *                Example: 4× 5000 mAh cells → battery_mah=20000
+ * battery_mah — total pack capacity in mAh (default 1000).
+ *               Set this to your actual pack capacity so that UPower
+ *               and desktop environments can display meaningful energy
+ *               values and time-to-empty / time-to-full estimates.
+ *               Example: 4× 5000 mAh cells → battery_mah=20000
  *
- * voltage_empty_mv — cell voltage at shutdown threshold in mV (default 3200).
- *                    Used as the CAPACITY_LEVEL=Critical trigger voltage so that
- *                    systemd-logind can initiate a clean shutdown.  Also sets the
- *                    energy_empty floor for energy accounting.  Raise this value
- *                    (e.g. 4100) to test the shutdown path without draining the
- *                    battery to a dangerous level.
- *
- * All three are written to /etc/modprobe.d/x120x.conf by the installer.
+ * Written to /etc/modprobe.d/x120x.conf by the installer.
  */
 static int battery_mah = 1000;
 module_param(battery_mah, int, 0444);
 MODULE_PARM_DESC(battery_mah,
 	"Total battery pack capacity in mAh (default 1000)");
-
-static int voltage_empty_mv = 3200;
-module_param(voltage_empty_mv, int, 0444);
-MODULE_PARM_DESC(voltage_empty_mv,
-	"Cell voltage at Critical/shutdown threshold in mV (default 3200). "
-	"Raise temporarily (e.g. 4100) to test the logind shutdown path.");
 
 /*
  * Charge threshold parameters for Long life / conservation mode.
@@ -209,26 +196,17 @@ MODULE_PARM_DESC(conservation_mode_default,
 #define MAX17043_SOC_MAX_PLAUSIBLE	100
 
 /* -------------------------------------------------------------------------
- * Voltage thresholds for CAPACITY_LEVEL (uV, on-battery only)
+ * SoC thresholds for CAPACITY_LEVEL
  *
- * Derived from Li-ion cell behaviour on the X120x series.  Voltage is
- * used in preference to SoC% because the MAX17043 SoC estimate degrades
- * at low charge and may oscillate when cells are failing.  Voltage is
- * the reliable ground truth at the critical end of the range.
- *
- * Thresholds apply only when ac_online == 0.  On grid, a sub-threshold
- * voltage indicates a dead or damaged pack — not normal discharge — and
- * must not trigger a spurious CRITICAL shutdown.
+ * Percentage-based thresholds align with UPower's default PercentageAction
+ * and PercentageCritical settings so the full chain works consistently:
+ * low SoC → capacity_level=Critical → UPower warning-level=action →
+ * logind → systemctl poweroff.
  * ---------------------------------------------------------------------- */
 
-/*
- * X120X_UV_CRITICAL is derived from the voltage_empty_mv module parameter
- * so users can test the shutdown path without draining to a dangerous level.
- * X120X_UV_LOW is fixed at 200 mV above Critical.
- */
-#define X120X_UV_CRITICAL	((s64)voltage_empty_mv * 1000)
-#define X120X_UV_LOW		((s64)(voltage_empty_mv + 200) * 1000)
-#define X120X_SOC_FULL_PCT	95		/* report FULL above this %   */
+#define X120X_SOC_CRITICAL_PCT	 5	/* CRITICAL below this % → logind poweroff */
+#define X120X_SOC_LOW_PCT	10	/* LOW below this % → desktop warning      */
+#define X120X_SOC_FULL_PCT	95	/* FULL above this %                        */
 
 /* Mark battery absent after this many consecutive I2C failures */
 #define X120X_MAX_ERRORS	5
@@ -665,25 +643,20 @@ static int x120x_battery_get_property(struct power_supply *psy,
 
 	case POWER_SUPPLY_PROP_CAPACITY_LEVEL:
 		/*
-		 * Use cell voltage rather than SoC% for level classification.
-		 * The MAX17043 SoC estimate degrades at low charge — it may
-		 * report 0% while voltage is still safe, or oscillate when
-		 * cells are failing.  Voltage is the reliable ground truth.
-		 *
-		 * Thresholds apply only on battery: on grid, a low voltage
-		 * indicates a dead pack, not normal discharge, and must not
-		 * trigger a spurious CRITICAL shutdown.
+		 * SoC%-based level classification.  Thresholds align with
+		 * UPower's default PercentageAction (2%) and PercentageCritical
+		 * (5%) so the shutdown chain fires consistently:
+		 *   capacity < X120X_SOC_CRITICAL_PCT → CRITICAL
+		 *     → UPower warning-level=action → logind poweroff
+		 *   capacity < X120X_SOC_LOW_PCT → LOW → desktop warning
 		 */
 		if (!present) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN;
-		} else if (!ac_online && voltage_uv > 0 &&
-			   voltage_uv <= X120X_UV_CRITICAL) {
+		} else if (capacity_pct < X120X_SOC_CRITICAL_PCT) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
-		} else if (!ac_online && voltage_uv > 0 &&
-			   voltage_uv <= X120X_UV_LOW) {
+		} else if (capacity_pct < X120X_SOC_LOW_PCT) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_LOW;
-		} else if (ac_online &&
-			   capacity_pct >= X120X_SOC_FULL_PCT) {
+		} else if (capacity_pct >= X120X_SOC_FULL_PCT) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_FULL;
 		} else {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_NORMAL;

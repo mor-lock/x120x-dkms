@@ -381,7 +381,7 @@ static void x120x_poll_work(struct work_struct *work)
 		container_of(work, struct x120x_chip, work.work);
 	unsigned int vcell_raw, soc_raw;
 	int new_uv, new_pct, new_256, new_ac, ret;
-	bool new_present, new_conservation;
+	bool new_present;
 	bool bat_changed, ac_changed, chrg_changed;
 
 	/* ----------------------------------------------------------------
@@ -428,8 +428,6 @@ static void x120x_poll_work(struct work_struct *work)
 	new_ac            = x120x_gpio_get(chip->gpio_ac);
 	if (new_ac < 0)
 		new_ac = 0;	/* unreadable: assume on battery (safe) */
-	new_conservation = !!x120x_gpio_get(chip->gpio_chrg);
-
 	mutex_lock(&chip->lock);
 	chip->i2c_errors  = 0;
 	bat_changed       = (chip->present      != new_present  ||
@@ -437,14 +435,13 @@ static void x120x_poll_work(struct work_struct *work)
 			     chip->capacity_pct != new_pct      ||
 			     chip->capacity_256 != new_256);
 	ac_changed        = (chip->ac_online    != new_ac);
-	chrg_changed      = (chip->conservation_mode != new_conservation);
+	/* conservation_mode is set only by set_property, never read back from GPIO */
 
 	chip->present         = new_present;
 	chip->voltage_uv      = new_uv;
 	chip->capacity_pct    = new_pct;
 	chip->capacity_256    = new_256;
 	chip->ac_online       = new_ac;
-	chip->conservation_mode = new_conservation;
 
 	/*
 	 * Grid state change: any rate computed across the transition is

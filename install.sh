@@ -300,7 +300,8 @@ if [ "${OPT_TRAY}" = "1" ]; then
         apt-get install -y --no-install-recommends \
             python3-gi gir1.2-gtk-3.0 \
             gir1.2-ayatanaappindicator3-0.1 \
-        || warn "Could not install appindicator — tray applet will use fallback StatusIcon"
+            python3-cairo \
+        || warn "Could not install all tray dependencies — some features may be unavailable"
 
         # Install tray script
         cp "${SRC_DIR}/x120x-tray.py" "${TRAY_SCRIPT}"

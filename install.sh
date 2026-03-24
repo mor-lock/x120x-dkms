@@ -299,10 +299,7 @@ if [ "${OPT_TRAY}" = "1" ]; then
         # Install dependencies
         apt-get install -y --no-install-recommends \
             python3-gi gir1.2-gtk-3.0 \
-            gir1.2-ayatanaappindicatorglib-2.0 2>/dev/null \
-        || apt-get install -y --no-install-recommends \
-            python3-gi gir1.2-gtk-3.0 \
-            gir1.2-appindicator3-0.1 2>/dev/null \
+            gir1.2-ayatanaappindicator3-0.1 \
         || warn "Could not install appindicator — tray applet will use fallback StatusIcon"
 
         # Install tray script

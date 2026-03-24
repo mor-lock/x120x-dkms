@@ -5,12 +5,10 @@
 # as a tray icon.  Left-click toggles between Fast and Long Life
 # charge modes.  Right-click shows a menu with details and quit.
 #
-# Requires: python3-gi, gir1.2-gtk-3.0, gir1.2-appindicator3-0.1
-#           (or gir1.2-ayatanaappindicator3-0.1 on newer systems)
+# Requires: python3-gi, gir1.2-gtk-3.0, gir1.2-ayatanaappindicator3-0.1
 #
 # Install dependencies:
-#   sudo apt install python3-gi gir1.2-gtk-3.0 \
-#        gir1.2-ayatanaappindicatorglib-2.0 libayatana-appindicator3-dev
+#   sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
 #
 # Copyright (C) 2026 Edvard Fielding
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -24,7 +22,7 @@ import threading
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 
-# Try ayatana (newer) first, fall back to legacy appindicator
+# Try ayatana (correct name on Bookworm) first, fall back to legacy
 try:
     gi.require_version('AyatanaAppIndicator3', '0.1')
     from gi.repository import AyatanaAppIndicator3 as AppIndicator3

@@ -615,19 +615,28 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	energy_rate_uw  = chip->energy_rate_uw;
 	mutex_unlock(&chip->lock);
 
+	/*
+	 * In conservation mode, GPIO16 is managed by the hysteresis loop.
+	 * When GPIO16 is low (charging resumed below start threshold) the
+	 * battery is actively charging even though conservation_mode is true.
+	 * Read the actual GPIO state to report the correct status.
+	 */
 	switch (psp) {
-	case POWER_SUPPLY_PROP_STATUS:
+	case POWER_SUPPLY_PROP_STATUS: {
+		bool chrg_inhibited = conservation_mode && chip->gpio_chrg &&
+				      x120x_gpio_get(chip->gpio_chrg);
 		if (!present)
 			val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
 		else if (!ac_online)
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-		else if (conservation_mode)
+		else if (chrg_inhibited)
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		else if (capacity_pct >= X120X_SOC_FULL_PCT)
 			val->intval = POWER_SUPPLY_STATUS_FULL;
 		else
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;
 		break;
+	}
 
 	case POWER_SUPPLY_PROP_PRESENT:
 		val->intval = present ? 1 : 0;
@@ -790,7 +799,8 @@ static int x120x_charger_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STATUS:
 		if (!ac_online)
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-		else if (conservation_mode)
+		else if (conservation_mode && chip->gpio_chrg &&
+			 x120x_gpio_get(chip->gpio_chrg))
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		else
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;

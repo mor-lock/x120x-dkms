@@ -379,14 +379,15 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `gpio_ac`           | `6`                   | BCM GPIO for AC-present              |
 | `gpio_charge_ctrl`  | `16`                  | BCM GPIO for charge control          |
 | `battery_mah`       | `1000`                | Total pack capacity in mAh           |
-| `voltage_empty_mv`  | `3200`                | Cell voltage at shutdown threshold (mV) |
+| `voltage_full_mv`   | `4200`                | Cell voltage at full charge (mV)     |
+| `voltage_empty_mv`  | `3200`                | Cell voltage at Critical/shutdown threshold (mV). Raise temporarily (e.g. `4100`) to test the logind shutdown path without draining the battery. |
 
 The install script writes these to `/etc/modprobe.d/x120x.conf`.  To
 change them after installation, edit that file and reboot:
 
 ```
 # /etc/modprobe.d/x120x.conf
-options x120x battery_mah=20000 voltage_full_mv=4200 voltage_empty_mv=3200
+options x120x battery_mah=20000 voltage_empty_mv=3200
 ```
 
 Set `battery_mah` to your total pack capacity — number of cells

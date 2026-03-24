@@ -296,12 +296,11 @@ if [ "${OPT_TRAY}" = "1" ]; then
     if [ ! -f "${SRC_DIR}/x120x-tray.py" ]; then
         warn "x120x-tray.py not found in ${SRC_DIR} — skipping tray applet"
     else
-        # Install dependencies
+        # Install dependencies (python3-gi and gir1.2-gtk-3.0 are already
+        # present on Raspberry Pi OS — this is just a safety check)
         apt-get install -y --no-install-recommends \
             python3-gi gir1.2-gtk-3.0 \
-            gir1.2-ayatanaappindicator3-0.1 \
-            python3-cairo \
-        || warn "Could not install all tray dependencies — some features may be unavailable"
+        || warn "Could not verify tray applet dependencies"
 
         # Install tray script
         cp "${SRC_DIR}/x120x-tray.py" "${TRAY_SCRIPT}"

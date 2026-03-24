@@ -249,13 +249,13 @@ The optional tray applet places a battery indicator in the Raspberry Pi
 OS taskbar alongside the native battery icon.  It adds functionality
 that the native icon does not provide:
 
-- Displays SoC%, grid state, and current charge mode at a glance —
-  e.g. `76% AC [LL]` for Long Life or `98% BAT [Fast]` for Fast mode
-  on battery
-- **Left-click** (or use the menu) to toggle instantly between `Fast`
-  and `Long Life` charge modes
-- **Right-click** for a detailed popup showing voltage, energy, power
-  draw, and mode, plus the toggle option and quit
+- Small always-on-top window showing SoC%, status, voltage, power
+  rate, grid state, and current charge mode
+- A single button that toggles instantly between `Fast` and `Long Life`
+  charge modes, labelled with what it will switch to
+- Updates every 3 seconds
+- No AppIndicator, SNI, or ayatana dependencies — works reliably on
+  Raspberry Pi OS Bookworm (Wayland/Wayfire) out of the box
 
 When installed with `--tray` the script:
 

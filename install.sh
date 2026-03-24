@@ -11,6 +11,9 @@
 #                          Example: 4x 5000mAh cells = 20000
 #   --voltage-empty-mv N   Cell voltage at shutdown/Critical threshold in mV (default: 3200)
 #                          Raise to e.g. 4100 to test the logind shutdown path
+#   --charge-mode MODE     Initial charge mode: fast or longlife (default: fast)
+#                          longlife limits charging to 75-80% to extend battery life
+#                          Can be changed at any time via sysfs; persisted across reboots
 #
 # Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -42,6 +45,7 @@ require_root() {
 
 OPT_MAH=""
 OPT_VEMPTY=""
+OPT_CHARGE_MODE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -53,8 +57,16 @@ while [ $# -gt 0 ]; do
             OPT_VEMPTY="$2"
             shift 2
             ;;
+        --charge-mode)
+            case "$2" in
+                fast|Fast|FAST)         OPT_CHARGE_MODE="fast" ;;
+                longlife|LongLife|LONGLIFE|long-life|"Long Life") OPT_CHARGE_MODE="longlife" ;;
+                *) die "Unknown charge mode: $2  (use fast or longlife)" ;;
+            esac
+            shift 2
+            ;;
         --help|-h)
-            echo "Usage: sudo bash install.sh [--battery-mah N] [--voltage-empty-mv N]"
+            echo "Usage: sudo bash install.sh [--battery-mah N] [--voltage-empty-mv N] [--charge-mode fast|longlife]"
             exit 0
             ;;
         *)
@@ -164,6 +176,10 @@ MODPROBE_CONF="/etc/modprobe.d/x120x.conf"
 INPUT_MAH="${OPT_MAH:-1000}"
 INPUT_VEMPTY="${OPT_VEMPTY:-3200}"
 
+CHARGE_MODE_DEFAULT="${OPT_CHARGE_MODE:-fast}"
+CONSERVATION_DEFAULT=0
+[ "${CHARGE_MODE_DEFAULT}" = "longlife" ] && CONSERVATION_DEFAULT=1
+
 info "Step 5/10 — Writing battery configuration to ${MODPROBE_CONF}..."
 cat > "${MODPROBE_CONF}" << MODPROBE_EOF
 # x120x driver configuration
@@ -177,7 +193,7 @@ cat > "${MODPROBE_CONF}" << MODPROBE_EOF
 #   sudo rmmod x120x && sudo modprobe x120x
 # Or simply reboot.
 
-options x120x battery_mah=${INPUT_MAH} voltage_empty_mv=${INPUT_VEMPTY}
+options x120x battery_mah=${INPUT_MAH} voltage_empty_mv=${INPUT_VEMPTY} conservation_mode_default=${CONSERVATION_DEFAULT}
 MODPROBE_EOF
 ok "Battery configuration written"
 
@@ -368,8 +384,9 @@ echo -e "    upower -i /org/freedesktop/UPower/devices/battery_x120x_battery"
 echo
 echo -e "  ${BLD}Battery configuration written to:${RST} ${MODPROBE_CONF}"
 echo
-echo -e "    battery_mah      = ${INPUT_MAH} mAh"
-echo -e "    voltage_empty_mv = ${INPUT_VEMPTY} mV"
+echo -e "    battery_mah              = ${INPUT_MAH} mAh"
+echo -e "    voltage_empty_mv         = ${INPUT_VEMPTY} mV"
+echo -e "    conservation_mode_default = ${CONSERVATION_DEFAULT}  (${CHARGE_MODE_DEFAULT} mode)"
 echo
 echo -e "  To change these values, edit ${MODPROBE_CONF} and reboot."
 echo

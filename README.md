@@ -7,6 +7,87 @@ by Geekworm.
 Provides native Linux power supply integration equivalent to a laptop
 battery — no vendor scripts, no custom daemons, no polling loops.
 
+## Getting started
+
+If you just want to get up and running quickly, here is everything you
+need in one place.
+
+### 1. Install the driver
+
+```bash
+git clone https://github.com/mor-lock/x120x-dkms.git
+cd x120x-dkms
+sudo bash install.sh --battery-mah <your_capacity>
+sudo reboot
+```
+
+Replace `<your_capacity>` with your total pack capacity in mAh —
+multiply per-cell capacity by number of cells.  Common values:
+
+| Hardware | Cells | Example capacity |
+|---|---|---|
+| X1200, X1201 | 2× 18650 | `--battery-mah 6000` |
+| X1202 | 4× 18650 | `--battery-mah 12000` |
+| X1205 | 2× 21700 | `--battery-mah 10000` |
+| X1206 | 4× 21700 | `--battery-mah 20000` |
+
+### 2. Choose a charge mode
+
+Two charge modes are available:
+
+- **Fast** (default) — charges to 100%.  Best for occasional backup
+  use where you want maximum capacity available.
+- **Long Life** — limits charging to 75–80% using hysteresis.  Best
+  for always-on systems permanently plugged into mains power, where
+  prolonged 100% charge would degrade the cells over time.
+
+Set the mode at install time:
+
+```bash
+# Always-on server — preserve battery longevity
+sudo bash install.sh --battery-mah 20000 --charge-mode longlife
+
+# Occasional backup use — maximise available capacity
+sudo bash install.sh --battery-mah 20000 --charge-mode fast
+```
+
+The mode is persisted across reboots automatically.  You can also
+change it at any time without reinstalling:
+
+```bash
+# Switch to Long Life
+echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
+
+# Switch back to Fast
+echo "Fast" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
+```
+
+### 3. Monitor battery state
+
+After rebooting, the battery appears as a standard Linux power supply.
+The easiest way to see full details is `gnome-power-statistics`:
+
+```bash
+sudo apt install gnome-power-manager
+gnome-power-statistics
+```
+
+This shows live battery percentage, voltage, energy, charge rate,
+history graphs, and charge mode — all read directly from the driver
+via UPower.  No configuration needed.
+
+For a quick command-line view:
+
+```bash
+upower -i /org/freedesktop/UPower/devices/battery_x120x_battery
+```
+
+That is all that is needed for a fully working installation.  The
+rest of this document covers the driver interface, hardware details,
+and advanced configuration in depth.
+
+---
+
 ## Supported hardware
 
 All models share an identical software interface and are fully supported
@@ -235,6 +316,7 @@ install time rather than editing `/etc/modprobe.d/x120x.conf` by hand:
 |---|---|---|
 | `--battery-mah N` | `1000` | Total pack capacity in mAh. Multiply per-cell capacity by number of cells. |
 | `--voltage-empty-mv N` | `3200` | Cell voltage at shutdown/Critical threshold in mV. Raise temporarily to test the logind shutdown path. |
+| `--charge-mode MODE` | `fast` | Initial charge mode: `fast` or `longlife`. Persisted across reboots. See Getting started for guidance on which to choose. |
 
 Examples:
 
@@ -244,6 +326,9 @@ sudo bash install.sh --battery-mah 20000
 
 # X1205 with two 5000 mAh 21700 cells
 sudo bash install.sh --battery-mah 10000
+
+# X1206 always-on server — Long Life mode
+sudo bash install.sh --battery-mah 20000 --charge-mode longlife
 
 # Temporarily raise shutdown threshold to test logind shutdown
 sudo bash install.sh --battery-mah 20000 --voltage-empty-mv 4100

@@ -145,6 +145,21 @@ MODULE_PARM_DESC(voltage_empty_mv,
 	"Cell voltage at Critical/shutdown threshold in mV (default 3200). "
 	"Raise temporarily (e.g. 4100) to test the logind shutdown path.");
 
+/*
+ * Charge threshold parameters for Long life / conservation mode.
+ * Only active when charge_type is set to Long life.  In Fast mode
+ * GPIO16 is held low (charging always enabled) and these are ignored.
+ */
+static int conservation_start = 75;
+module_param(conservation_start, int, 0644);
+MODULE_PARM_DESC(conservation_start,
+	"SoC %% at which charging resumes in Long life mode (default 75)");
+
+static int conservation_end = 80;
+module_param(conservation_end, int, 0644);
+MODULE_PARM_DESC(conservation_end,
+	"SoC %% at which charging stops in Long life mode (default 80)");
+
 /* -------------------------------------------------------------------------
  * MAX17043 register definitions (X120x board layout)
  *
@@ -225,7 +240,7 @@ MODULE_PARM_DESC(voltage_empty_mv,
  * @voltage_uv:		last good VCELL reading in uV
  * @capacity_pct:	last good SOC reading in integer percent (0-100)
  * @ac_online:		1 if mains present, 0 if on battery
- * @charge_disabled:	true when GPIO16 is high (charging inhibited)
+ * @conservation_mode:	true when Long life mode is active (charge_type=LONGLIFE)
  * @present:		false when consecutive I2C errors exceed threshold
  * @i2c_errors:		consecutive I2C read failure counter
  * @work:		delayed work item driving the polling loop
@@ -244,7 +259,7 @@ struct x120x_chip {
 	int			 capacity_pct;	/* integer percent 0-100        */
 	int			 capacity_256;	/* full precision: raw SOC word */
 	int			 ac_online;
-	bool			 charge_disabled;
+	bool			 conservation_mode;	/* true = Long life, threshold hysteresis active */
 	bool			 present;
 	int			 i2c_errors;
 
@@ -366,7 +381,7 @@ static void x120x_poll_work(struct work_struct *work)
 		container_of(work, struct x120x_chip, work.work);
 	unsigned int vcell_raw, soc_raw;
 	int new_uv, new_pct, new_256, new_ac, ret;
-	bool new_present, new_chrg_disabled;
+	bool new_present, new_conservation;
 	bool bat_changed, ac_changed, chrg_changed;
 
 	/* ----------------------------------------------------------------
@@ -413,7 +428,7 @@ static void x120x_poll_work(struct work_struct *work)
 	new_ac            = x120x_gpio_get(chip->gpio_ac);
 	if (new_ac < 0)
 		new_ac = 0;	/* unreadable: assume on battery (safe) */
-	new_chrg_disabled = !!x120x_gpio_get(chip->gpio_chrg);
+	new_conservation = !!x120x_gpio_get(chip->gpio_chrg);
 
 	mutex_lock(&chip->lock);
 	chip->i2c_errors  = 0;
@@ -422,14 +437,14 @@ static void x120x_poll_work(struct work_struct *work)
 			     chip->capacity_pct != new_pct      ||
 			     chip->capacity_256 != new_256);
 	ac_changed        = (chip->ac_online    != new_ac);
-	chrg_changed      = (chip->charge_disabled != new_chrg_disabled);
+	chrg_changed      = (chip->conservation_mode != new_conservation);
 
 	chip->present         = new_present;
 	chip->voltage_uv      = new_uv;
 	chip->capacity_pct    = new_pct;
 	chip->capacity_256    = new_256;
 	chip->ac_online       = new_ac;
-	chip->charge_disabled = new_chrg_disabled;
+	chip->conservation_mode = new_conservation;
 
 	/*
 	 * Grid state change: any rate computed across the transition is
@@ -521,6 +536,37 @@ notify:
 	 * An AC change also implies battery STATUS changed, so force
 	 * bat_changed in that case.
 	 */
+	/*
+	 * Long life / conservation mode hysteresis.
+	 *
+	 * When conservation_mode is active, control GPIO16 based on SoC%:
+	 *   capacity >= conservation_end   → stop charging  (GPIO16 high)
+	 *   capacity <= conservation_start → resume charging (GPIO16 low)
+	 *
+	 * In Fast mode GPIO16 is always low (set immediately in set_property).
+	 * We re-read the GPIO after any change so chrg_changed fires and
+	 * UPower / sysfs sees the updated charge_type / status.
+	 */
+	if (chip->conservation_mode && chip->gpio_chrg) {
+		int gpio_val = x120x_gpio_get(chip->gpio_chrg);
+		int new_gpio_val = gpio_val;
+
+		if (chip->capacity_pct >= conservation_end)
+			new_gpio_val = 1; /* stop charging */
+		else if (chip->capacity_pct <= conservation_start)
+			new_gpio_val = 0; /* resume charging */
+
+		if (new_gpio_val != gpio_val) {
+			x120x_gpio_set(chip->gpio_chrg, new_gpio_val);
+			dev_dbg(&chip->client->dev,
+				"conservation: %s charging at %d%%\n",
+				new_gpio_val ? "stopped" : "resumed",
+				chip->capacity_pct);
+			chrg_changed = true;
+			bat_changed  = true;
+		}
+	}
+
 	if (chrg_changed)
 		power_supply_changed(chip->charger);
 	if (ac_changed) {
@@ -559,14 +605,14 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	struct x120x_chip *chip = power_supply_get_drvdata(psy);
 	int ac_online, capacity_pct, voltage_uv, energy_rate_uw;
 	s64 energy_now_uwh, energy_full_uwh;
-	bool present, charge_disabled;
+	bool present, conservation_mode;
 
 	mutex_lock(&chip->lock);
 	ac_online        = chip->ac_online;
 	capacity_pct     = chip->capacity_pct;
 	voltage_uv       = chip->voltage_uv;
 	present          = chip->present;
-	charge_disabled  = chip->charge_disabled;
+	conservation_mode = chip->conservation_mode;
 	energy_now_uwh  = chip->energy_now_uwh;
 	energy_full_uwh = chip->energy_full_uwh;
 	energy_rate_uw  = chip->energy_rate_uw;
@@ -578,7 +624,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 			val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
 		else if (!ac_online)
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-		else if (charge_disabled)
+		else if (conservation_mode)
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		else if (capacity_pct >= X120X_SOC_FULL_PCT)
 			val->intval = POWER_SUPPLY_STATUS_FULL;
@@ -722,6 +768,8 @@ static enum power_supply_property x120x_charger_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_CHARGE_TYPE,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
 };
 
 static int x120x_charger_get_property(struct power_supply *psy,
@@ -729,12 +777,12 @@ static int x120x_charger_get_property(struct power_supply *psy,
 				       union power_supply_propval *val)
 {
 	struct x120x_chip *chip = power_supply_get_drvdata(psy);
-	bool charge_disabled;
+	bool conservation_mode;
 	int ac_online;
 
 	mutex_lock(&chip->lock);
-	charge_disabled = chip->charge_disabled;
-	ac_online       = chip->ac_online;
+	conservation_mode = chip->conservation_mode;
+	ac_online         = chip->ac_online;
 	mutex_unlock(&chip->lock);
 
 	switch (psp) {
@@ -745,16 +793,24 @@ static int x120x_charger_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STATUS:
 		if (!ac_online)
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-		else if (charge_disabled)
+		else if (conservation_mode)
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		else
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;
 		break;
 
 	case POWER_SUPPLY_PROP_CHARGE_TYPE:
-		val->intval = charge_disabled
+		val->intval = conservation_mode
 			? POWER_SUPPLY_CHARGE_TYPE_LONGLIFE
 			: POWER_SUPPLY_CHARGE_TYPE_FAST;
+		break;
+
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+		val->intval = conservation_start;
+		break;
+
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		val->intval = conservation_end;
 		break;
 
 	default:
@@ -781,19 +837,33 @@ static int x120x_charger_set_property(struct power_supply *psy,
 	case POWER_SUPPLY_CHARGE_TYPE_LONGLIFE:
 		disable = true;
 		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+		if (val->intval < 0 || val->intval > 99)
+			return -EINVAL;
+		conservation_start = val->intval;
+		return 0;
+
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		if (val->intval < 1 || val->intval > 100)
+			return -EINVAL;
+		conservation_end = val->intval;
+		return 0;
+
 	default:
 		return -EINVAL;
 	}
 
-	/* GPIO16: low = enabled, high = disabled */
-	x120x_gpio_set(chip->gpio_chrg, disable ? 1 : 0);
-
 	mutex_lock(&chip->lock);
-	chip->charge_disabled = disable;
+	chip->conservation_mode = disable;
+	if (!disable) {
+		/* Fast mode: always enable charging immediately */
+		x120x_gpio_set(chip->gpio_chrg, 0);
+	}
+	/* In Long life mode GPIO16 is managed by the polling loop */
 	mutex_unlock(&chip->lock);
 
-	dev_dbg(&chip->client->dev, "charging %s via GPIO16\n",
-		disable ? "disabled (LONGLIFE)" : "enabled (FAST)");
+	dev_dbg(&chip->client->dev, "charge_type set to %s\n",
+		disable ? "Long life (conservation mode)" : "Fast");
 
 	power_supply_changed(chip->battery);
 	return 0;
@@ -802,7 +872,9 @@ static int x120x_charger_set_property(struct power_supply *psy,
 static int x120x_charger_property_is_writeable(struct power_supply *psy,
 						enum power_supply_property psp)
 {
-	return psp == POWER_SUPPLY_PROP_CHARGE_TYPE ? 1 : 0;
+	return (psp == POWER_SUPPLY_PROP_CHARGE_TYPE ||
+		psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD ||
+		psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD) ? 1 : 0;
 }
 
 /* -------------------------------------------------------------------------

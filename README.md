@@ -117,6 +117,22 @@ parameters in `/etc/modprobe.d/x120x.conf`:
 options x120x battery_mah=20000 voltage_empty_mv=3200 conservation_start=75 conservation_end=80
 ```
 
+### Charge mode persistence
+
+The charge mode (`Fast` or `Long Life`) is persisted across reboots
+automatically.  The installer installs a udev rule that fires whenever
+`charge_type` is written and updates `conservation_mode_default` in
+`/etc/modprobe.d/x120x.conf`.  On next boot the driver reads this
+parameter and starts in the last-used mode.
+
+The persistence files installed are:
+
+- `/usr/local/lib/x120x-persist-mode.sh` — shell script called by udev
+- `/etc/udev/rules.d/90-x120x-persist.rules` — udev rule
+
+No action is required from the user — write `Long Life` once and it
+will remain across reboots until explicitly changed back to `Fast`.
+
 ### GNOME and KDE
 
 The conservation mode interface integrates natively with desktop
@@ -219,7 +235,6 @@ install time rather than editing `/etc/modprobe.d/x120x.conf` by hand:
 |---|---|---|
 | `--battery-mah N` | `1000` | Total pack capacity in mAh. Multiply per-cell capacity by number of cells. |
 | `--voltage-empty-mv N` | `3200` | Cell voltage at shutdown/Critical threshold in mV. Raise temporarily to test the logind shutdown path. |
-| `--tray` | off | Install the x120x system tray applet (see below). |
 
 Examples:
 
@@ -230,9 +245,6 @@ sudo bash install.sh --battery-mah 20000
 # X1205 with two 5000 mAh 21700 cells
 sudo bash install.sh --battery-mah 10000
 
-# X1206 with tray applet
-sudo bash install.sh --battery-mah 20000 --tray
-
 # Temporarily raise shutdown threshold to test logind shutdown
 sudo bash install.sh --battery-mah 20000 --voltage-empty-mv 4100
 
@@ -242,49 +254,6 @@ sudo bash install.sh --help
 
 If omitted the defaults (1000 mAh, 3200 mV) are used and can be changed
 later by editing `/etc/modprobe.d/x120x.conf` and rebooting.
-
-#### Tray applet (`--tray`)
-
-The optional tray applet places a battery indicator in the Raspberry Pi
-OS taskbar alongside the native battery icon.  It adds functionality
-that the native icon does not provide:
-
-- Small always-on-top window showing SoC%, status, voltage, power
-  rate, grid state, and current charge mode
-- A single button that toggles instantly between `Fast` and `Long Life`
-  charge modes, labelled with what it will switch to
-- Updates every 3 seconds
-- No AppIndicator, SNI, or ayatana dependencies — works reliably on
-  Raspberry Pi OS Bookworm (Wayland/Wayfire) out of the box
-
-When installed with `--tray` the script:
-
-1. Installs `x120x-tray.py` to `/usr/local/bin/`
-2. Adds an autostart entry to `/etc/xdg/autostart/` so it launches
-   automatically on login for all users
-3. Installs a sudoers rule to `/etc/sudoers.d/x120x-tray` so the
-   applet can write to the charge control sysfs files without a
-   password prompt
-
-To install the applet after the fact without reinstalling the driver:
-
-```bash
-sudo bash install.sh --tray
-```
-
-To remove it:
-
-```bash
-sudo rm /usr/local/bin/x120x-tray.py
-sudo rm /etc/xdg/autostart/x120x-tray.desktop
-sudo rm /etc/sudoers.d/x120x-tray
-```
-
-**Note:** The native Raspberry Pi OS battery icon and the tray applet
-coexist in the taskbar — they read from the same kernel driver and show
-consistent data.  The native icon provides the familiar percentage
-indicator; the applet adds the charge mode toggle and detail view that
-the native icon does not support.
 
 ---
 
@@ -506,8 +475,9 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `gpio_charge_ctrl`  | `16`                  | BCM GPIO for charge control          |
 | `battery_mah`       | `1000`                | Total pack capacity in mAh           |
 | `voltage_empty_mv`  | `3200`                | Cell voltage at Critical/shutdown threshold (mV). Raise temporarily (e.g. `4100`) to test the logind shutdown path without draining the battery. |
-| `conservation_start` | `75`                 | SoC % at which charging resumes in Long life mode |
-| `conservation_end`   | `80`                 | SoC % at which charging stops in Long life mode   |
+| `conservation_start`        | `75`  | SoC % at which charging resumes in Long Life mode |
+| `conservation_end`          | `80`  | SoC % at which charging stops in Long Life mode   |
+| `conservation_mode_default` | `0`   | Start in Long Life mode (`1`) or Fast mode (`0`). Updated automatically on every `charge_type` sysfs write and persisted to `modprobe.d` by a udev rule. |
 
 The install script writes these to `/etc/modprobe.d/x120x.conf`.  To
 change them after installation, edit that file and reboot:

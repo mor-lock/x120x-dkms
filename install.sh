@@ -11,10 +11,6 @@
 #                          Example: 4x 5000mAh cells = 20000
 #   --voltage-empty-mv N   Cell voltage at shutdown/Critical threshold in mV (default: 3200)
 #                          Raise to e.g. 4100 to test the logind shutdown path
-#   --tray                 Install the x120x system tray applet.  Adds a taskbar
-#                          icon showing SoC%, grid state, and charge mode with a
-#                          one-click toggle between Fast and Long Life modes.
-#                          Can also be run standalone after initial install.
 #
 # Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -45,7 +41,6 @@ require_root() {
 # -------------------------------------------------------------------------
 
 OPT_MAH=""
-OPT_TRAY=0
 OPT_VEMPTY=""
 
 while [ $# -gt 0 ]; do
@@ -54,16 +49,12 @@ while [ $# -gt 0 ]; do
             OPT_MAH="$2"
             shift 2
             ;;
-        --tray)
-            OPT_TRAY=1
-            shift
-            ;;
         --voltage-empty-mv)
             OPT_VEMPTY="$2"
             shift 2
             ;;
         --help|-h)
-            echo "Usage: sudo bash install.sh [--battery-mah N] [--voltage-empty-mv N] [--tray]"
+            echo "Usage: sudo bash install.sh [--battery-mah N] [--voltage-empty-mv N]"
             exit 0
             ;;
         *)
@@ -282,59 +273,82 @@ else
 fi
 
 # -------------------------------------------------------------------------
-# Step 10: Install tray applet (optional — only if --tray was passed)
+# Step 10: Persist charge mode across reboots
 # -------------------------------------------------------------------------
 
-if [ "${OPT_TRAY}" = "1" ]; then
-    info "Step 10/10 — Installing x120x tray applet..."
+info "Step 10/10 — Installing charge mode persistence..."
 
-    TRAY_SCRIPT="/usr/local/bin/x120x-tray.py"
-    AUTOSTART_DIR="/etc/xdg/autostart"
-    AUTOSTART_FILE="${AUTOSTART_DIR}/x120x-tray.desktop"
-    SUDOERS_FILE="/etc/sudoers.d/x120x-tray"
+PERSIST_SCRIPT="/usr/local/lib/x120x-persist-mode.sh"
+UDEV_RULE="/etc/udev/rules.d/90-x120x-persist.rules"
 
-    if [ ! -f "${SRC_DIR}/x120x-tray.py" ]; then
-        warn "x120x-tray.py not found in ${SRC_DIR} — skipping tray applet"
+mkdir -p /usr/local/lib
+
+cat > "${PERSIST_SCRIPT}" << 'PERSIST_EOF'
+#!/bin/sh
+# x120x-persist-mode.sh — called by udev when charge_type changes.
+# Writes conservation_mode_default to /etc/modprobe.d/x120x.conf so
+# the charge mode (Fast or Long Life) survives reboots.
+CONF=/etc/modprobe.d/x120x.conf
+CHARGE_TYPE=$(cat /sys/class/power_supply/x120x-charger/charge_type 2>/dev/null)
+case "$CHARGE_TYPE" in
+    "Long Life") MODE=1 ;;
+    *)           MODE=0 ;;
+esac
+if [ -f "$CONF" ]; then
+    if grep -q "conservation_mode_default" "$CONF"; then
+        sed -i "s/conservation_mode_default=[0-9]*/conservation_mode_default=${MODE}/" "$CONF"
     else
-        # Install dependencies (python3-gi and gir1.2-gtk-3.0 are already
-        # present on Raspberry Pi OS — this is just a safety check)
-        apt-get install -y --no-install-recommends \
-            python3-gi gir1.2-gtk-3.0 \
-        || warn "Could not verify tray applet dependencies"
-
-        # Install tray script
-        cp "${SRC_DIR}/x120x-tray.py" "${TRAY_SCRIPT}"
-        chmod 755 "${TRAY_SCRIPT}"
-        ok "Installed tray applet to ${TRAY_SCRIPT}"
-
-        # Autostart entry — launches on login for all users
-        mkdir -p "${AUTOSTART_DIR}"
-        cat > "${AUTOSTART_FILE}" << DESKTOP_EOF
-[Desktop Entry]
-Type=Application
-Name=x120x Battery Tray
-Comment=System tray monitor for SupTronics X120x UPS HAT
-Exec=/usr/local/bin/x120x-tray.py
-Icon=battery-good-symbolic
-Terminal=false
-Hidden=false
-X-GNOME-Autostart-enabled=true
-DESKTOP_EOF
-        ok "Installed autostart entry to ${AUTOSTART_FILE}"
-
-        # Sudoers rule — passwordless writes to charge control sysfs files
-        cat > "${SUDOERS_FILE}" << SUDOERS_EOF
-# Allow any user to toggle x120x charge mode via the tray applet
-ALL ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/class/power_supply/x120x-charger/charge_type
-ALL ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/class/power_supply/x120x-charger/charge_control_start_threshold
-ALL ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/class/power_supply/x120x-charger/charge_control_end_threshold
-SUDOERS_EOF
-        chmod 440 "${SUDOERS_FILE}"
-        ok "Installed sudoers rule to ${SUDOERS_FILE}"
+        sed -i "s/^options x120x /options x120x conservation_mode_default=${MODE} /" "$CONF"
     fi
-else
-    info "Step 10/10 — Tray applet skipped (pass --tray to install)"
 fi
+PERSIST_EOF
+chmod 755 "${PERSIST_SCRIPT}"
+ok "Installed persistence script to ${PERSIST_SCRIPT}"
+
+cat > "${UDEV_RULE}" << 'UDEV_EOF'
+# Persist x120x charge mode to /etc/modprobe.d/x120x.conf on every change
+ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="x120x-charger",     RUN+="/usr/local/lib/x120x-persist-mode.sh"
+UDEV_EOF
+udevadm control --reload-rules 2>/dev/null || true
+ok "Installed charge mode persistence rule to ${UDEV_RULE}"
+
+# -------------------------------------------------------------------------
+# Persistence: udev rule to save charge mode to modprobe.d on change
+# -------------------------------------------------------------------------
+
+PERSIST_SCRIPT="/usr/local/lib/x120x-persist-mode.sh"
+UDEV_RULE="/etc/udev/rules.d/90-x120x-persist.rules"
+
+cat > "${PERSIST_SCRIPT}" << 'PERSIST_EOF'
+#!/bin/sh
+# x120x-persist-mode.sh — called by udev when charge_type changes.
+# Writes conservation_mode_default to /etc/modprobe.d/x120x.conf so
+# the charge mode survives reboots.
+CONF=/etc/modprobe.d/x120x.conf
+CHARGE_TYPE=$(cat /sys/class/power_supply/x120x-charger/charge_type 2>/dev/null)
+case "$CHARGE_TYPE" in
+    "Long Life") MODE=1 ;;
+    *)           MODE=0 ;;
+esac
+if [ -f "$CONF" ]; then
+    # Update existing conservation_mode_default if present
+    if grep -q "conservation_mode_default" "$CONF"; then
+        sed -i "s/conservation_mode_default=[0-9]*/conservation_mode_default=${MODE}/" "$CONF"
+    else
+        # Append to the options line
+        sed -i "s/^options x120x /options x120x conservation_mode_default=${MODE} /" "$CONF"
+    fi
+fi
+PERSIST_EOF
+chmod 755 "${PERSIST_SCRIPT}"
+ok "Installed persistence script to ${PERSIST_SCRIPT}"
+
+cat > "${UDEV_RULE}" << 'UDEV_EOF'
+# Persist x120x charge mode to /etc/modprobe.d/x120x.conf on change
+ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="x120x-charger",     RUN+="/usr/local/lib/x120x-persist-mode.sh"
+UDEV_EOF
+udevadm control --reload-rules 2>/dev/null || true
+ok "Installed udev persistence rule to ${UDEV_RULE}"
 
 # -------------------------------------------------------------------------
 # Done

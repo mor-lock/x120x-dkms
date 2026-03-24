@@ -71,24 +71,67 @@ upower -e
 upower -i /org/freedesktop/UPower/devices/battery_x120x_battery
 ```
 
+### Battery conservation mode
+
+Lithium-ion cells degrade faster when kept at 100% charge for extended
+periods.  If your Pi is permanently plugged in — as a server, NAS, or
+always-on system — keeping the battery topped up continuously will
+shorten its lifespan over time.  Conservation mode addresses this by
+limiting the charge range to a healthier window.
+
+The driver supports two charge modes, selectable via `charge_type`:
+
+- **`Fast`** (default) — GPIO16 held low, charger always on, battery
+  charges to 100%.  Normal behaviour for occasional backup use.
+- **`Long life`** — the driver manages GPIO16 automatically using
+  hysteresis: charging stops when SoC reaches `charge_control_end_threshold`
+  (default 80%) and resumes when SoC drops to
+  `charge_control_start_threshold` (default 75%).  Suitable for systems
+  that are permanently plugged in and rarely need full battery capacity.
+
+Enable and disable conservation mode from the command line:
+
+```bash
+# Enable conservation mode (charges to 80%, resumes at 75%)
+echo "Long life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
+
+# Disable conservation mode (charges to 100%)
+echo "Fast" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
+
+# Check current mode
+cat /sys/class/power_supply/x120x-charger/charge_type
+
+# Adjust thresholds (example: stop at 85%, resume at 70%)
+echo 70 | sudo tee /sys/class/power_supply/x120x-charger/charge_control_start_threshold
+echo 85 | sudo tee /sys/class/power_supply/x120x-charger/charge_control_end_threshold
+```
+
+The default thresholds (75% / 80%) match the recommendation of TLP, the
+widely-used Linux power management tool, and are a commonly accepted
+balance between battery longevity and available backup capacity.
+
+The default thresholds can also be changed permanently via module
+parameters in `/etc/modprobe.d/x120x.conf`:
+
+```
+options x120x battery_mah=20000 voltage_empty_mv=3200 conservation_start=75 conservation_end=80
+```
+
 ### GNOME and KDE
 
-The charger device exposes `charge_type` as a writeable property using
-the `Long life` value for conservation mode.  This integrates natively
-with:
+The conservation mode interface integrates natively with desktop
+environments via UPower:
 
 - **GNOME 48+** — "Preserve battery health" toggle in Settings → Power
 - **KDE Plasma** — charge threshold controls in Power Management
 
-When conservation mode is enabled, UPower writes `Long life` to
-`charge_type`.  The driver then manages GPIO16 automatically using
-threshold hysteresis: charging stops at `charge_control_end_threshold`
-(default 80%) and resumes at `charge_control_start_threshold` (default
-75%).  In `Fast` mode GPIO16 is always low (charging unrestricted).
+When the toggle is enabled, UPower writes `Long life` to `charge_type`
+automatically.  The full chain — desktop toggle → UPower → sysfs →
+driver → GPIO16 → hardware — works without any custom userspace code.
 
-The thresholds are compatible with TLP and any tool that writes to the
-standard `charge_control_start_threshold` and
-`charge_control_end_threshold` sysfs files.
+TLP and any other tool that writes to the standard
+`charge_control_start_threshold` and `charge_control_end_threshold`
+sysfs files will also work automatically.
 
 ### systemd-logind shutdown
 
@@ -166,6 +209,35 @@ sudo bash install.sh
 
 The script handles everything and tells you what it is doing at each
 step.  Reboot when it finishes.
+
+#### Install script options
+
+Two optional arguments let you configure the battery parameters at
+install time rather than editing `/etc/modprobe.d/x120x.conf` by hand:
+
+| Option | Default | Description |
+|---|---|---|
+| `--battery-mah N` | `1000` | Total pack capacity in mAh. Multiply per-cell capacity by number of cells. |
+| `--voltage-empty-mv N` | `3200` | Cell voltage at shutdown/Critical threshold in mV. Raise temporarily to test the logind shutdown path. |
+
+Examples:
+
+```bash
+# X1206 with four 5000 mAh 21700 cells
+sudo bash install.sh --battery-mah 20000
+
+# X1205 with two 5000 mAh 21700 cells
+sudo bash install.sh --battery-mah 10000
+
+# Temporarily raise shutdown threshold to test logind shutdown
+sudo bash install.sh --battery-mah 20000 --voltage-empty-mv 4100
+
+# Show available options
+sudo bash install.sh --help
+```
+
+If omitted the defaults (1000 mAh, 3200 mV) are used and can be changed
+later by editing `/etc/modprobe.d/x120x.conf` and rebooting.
 
 ---
 

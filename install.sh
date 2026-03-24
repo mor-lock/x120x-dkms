@@ -4,7 +4,13 @@
 # Installs the SupTronics X120x UPS HAT kernel driver on Raspberry Pi.
 # Run from the repository root:
 #
-#   sudo bash install.sh
+#   sudo bash install.sh [OPTIONS]
+#
+# Options:
+#   --battery-mah N        Total battery pack capacity in mAh (default: 1000)
+#                          Example: 4x 5000mAh cells = 20000
+#   --voltage-empty-mv N   Cell voltage at shutdown/Critical threshold in mV (default: 3200)
+#                          Raise to e.g. 4100 to test the logind shutdown path
 #
 # Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -29,6 +35,33 @@ die()   { echo -e "${RED}[x120x] ERROR:${RST} $*" >&2; exit 1; }
 require_root() {
     [ "$(id -u)" -eq 0 ] || die "This script must be run with sudo: sudo bash install.sh"
 }
+
+# -------------------------------------------------------------------------
+# Argument parsing
+# -------------------------------------------------------------------------
+
+OPT_MAH=""
+OPT_VEMPTY=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --battery-mah)
+            OPT_MAH="$2"
+            shift 2
+            ;;
+        --voltage-empty-mv)
+            OPT_VEMPTY="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: sudo bash install.sh [--battery-mah N] [--voltage-empty-mv N]"
+            exit 0
+            ;;
+        *)
+            die "Unknown option: $1  (use --help for usage)"
+            ;;
+    esac
+done
 
 # -------------------------------------------------------------------------
 # Configuration
@@ -128,8 +161,8 @@ ok "Overlay compiled"
 # -------------------------------------------------------------------------
 
 MODPROBE_CONF="/etc/modprobe.d/x120x.conf"
-INPUT_MAH=1000
-INPUT_VEMPTY=3200
+INPUT_MAH="${OPT_MAH:-1000}"
+INPUT_VEMPTY="${OPT_VEMPTY:-3200}"
 
 info "Step 5/9 — Writing battery configuration to ${MODPROBE_CONF}..."
 cat > "${MODPROBE_CONF}" << MODPROBE_EOF

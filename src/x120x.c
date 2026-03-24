@@ -125,8 +125,12 @@ MODULE_PARM_DESC(gpio_charge_ctrl,
  *                values and time-to-empty / time-to-full estimates.
  *                Example: 4× 5000 mAh cells → battery_mah=20000
  *
- * voltage_empty_mv — cell voltage at 0% SoC / shutdown threshold in mV
- *                    (default 3200).  Used to compute energy_empty.
+ * voltage_empty_mv — cell voltage at shutdown threshold in mV (default 3200).
+ *                    Used as the CAPACITY_LEVEL=Critical trigger voltage so that
+ *                    systemd-logind can initiate a clean shutdown.  Also sets the
+ *                    energy_empty floor for energy accounting.  Raise this value
+ *                    (e.g. 4100) to test the shutdown path without draining the
+ *                    battery to a dangerous level.
  *
  * All three are written to /etc/modprobe.d/x120x.conf by the installer.
  */
@@ -138,7 +142,8 @@ MODULE_PARM_DESC(battery_mah,
 static int voltage_empty_mv = 3200;
 module_param(voltage_empty_mv, int, 0444);
 MODULE_PARM_DESC(voltage_empty_mv,
-	"Cell voltage at shutdown threshold in mV (default 3200)");
+	"Cell voltage at Critical/shutdown threshold in mV (default 3200). "
+	"Raise temporarily (e.g. 4100) to test the logind shutdown path.");
 
 /* -------------------------------------------------------------------------
  * MAX17043 register definitions (X120x board layout)
@@ -188,8 +193,13 @@ MODULE_PARM_DESC(voltage_empty_mv,
  * must not trigger a spurious CRITICAL shutdown.
  * ---------------------------------------------------------------------- */
 
-#define X120X_UV_CRITICAL	3200000		/* 3.20 V: initiate shutdown  */
-#define X120X_UV_LOW		3400000		/* 3.40 V: begin wind-down    */
+/*
+ * X120X_UV_CRITICAL is derived from the voltage_empty_mv module parameter
+ * so users can test the shutdown path without draining to a dangerous level.
+ * X120X_UV_LOW is fixed at 200 mV above Critical.
+ */
+#define X120X_UV_CRITICAL	((s64)voltage_empty_mv * 1000)
+#define X120X_UV_LOW		((s64)(voltage_empty_mv + 200) * 1000)
 #define X120X_SOC_FULL_PCT	95		/* report FULL above this %   */
 
 /* Mark battery absent after this many consecutive I2C failures */

@@ -153,12 +153,12 @@ MODULE_PARM_DESC(voltage_empty_mv,
 static int conservation_start = 75;
 module_param(conservation_start, int, 0644);
 MODULE_PARM_DESC(conservation_start,
-	"SoC %% at which charging resumes in Long life mode (default 75)");
+	"SoC %% at which charging resumes in Long Life mode (default 75)");
 
 static int conservation_end = 80;
 module_param(conservation_end, int, 0644);
 MODULE_PARM_DESC(conservation_end,
-	"SoC %% at which charging stops in Long life mode (default 80)");
+	"SoC %% at which charging stops in Long Life mode (default 80)");
 
 /* -------------------------------------------------------------------------
  * MAX17043 register definitions (X120x board layout)

@@ -288,6 +288,24 @@ else
     ok "HandleLowBattery=poweroff set in ${LOGIND_CONF}"
 fi
 
+# UPower CriticalPowerAction must be PowerOff, not HybridSleep.
+# HybridSleep requires swap and will hang on a Raspberry Pi.
+UPOWER_CONF="/etc/UPower/UPower.conf"
+if [ -f "${UPOWER_CONF}" ]; then
+    if grep -q "^CriticalPowerAction=PowerOff" "${UPOWER_CONF}" 2>/dev/null; then
+        ok "CriticalPowerAction=PowerOff already set in ${UPOWER_CONF}"
+    else
+        sed -i 's/^CriticalPowerAction=/#CriticalPowerAction=/' "${UPOWER_CONF}" 2>/dev/null || true
+        echo "" >> "${UPOWER_CONF}"
+        echo "# Added by x120x-dkms installer — HybridSleep hangs on Raspberry Pi." >> "${UPOWER_CONF}"
+        echo "CriticalPowerAction=PowerOff" >> "${UPOWER_CONF}"
+        systemctl restart upower 2>/dev/null || true
+        ok "CriticalPowerAction=PowerOff set in ${UPOWER_CONF}"
+    fi
+else
+    warn "UPower config not found at ${UPOWER_CONF} — skipping CriticalPowerAction fix"
+fi
+
 # -------------------------------------------------------------------------
 # Step 10: Persist charge mode across reboots
 # -------------------------------------------------------------------------

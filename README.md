@@ -248,6 +248,11 @@ To disable it, change the line to:
 HandleLowBattery=ignore
 ```
 
+The installer also sets `CriticalPowerAction=PowerOff` in
+`/etc/UPower/UPower.conf`.  The default value `HybridSleep` requires
+swap space and will hang indefinitely on a Raspberry Pi rather than
+shutting down cleanly.
+
 ## Hardware interface
 
 All X120x boards use identical GPIO assignments:

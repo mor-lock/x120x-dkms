@@ -827,16 +827,7 @@ static int x120x_charger_set_property(struct power_supply *psy,
 	struct x120x_chip *chip = power_supply_get_drvdata(psy);
 	bool disable;
 
-	if (psp != POWER_SUPPLY_PROP_CHARGE_TYPE)
-		return -EINVAL;
-
-	switch (val->intval) {
-	case POWER_SUPPLY_CHARGE_TYPE_FAST:
-		disable = false;
-		break;
-	case POWER_SUPPLY_CHARGE_TYPE_LONGLIFE:
-		disable = true;
-		break;
+	switch (psp) {
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
 		if (val->intval < 0 || val->intval > 99)
 			return -EINVAL;
@@ -849,6 +840,21 @@ static int x120x_charger_set_property(struct power_supply *psy,
 		conservation_end = val->intval;
 		return 0;
 
+	case POWER_SUPPLY_PROP_CHARGE_TYPE:
+		break;	/* handled below */
+
+	default:
+		return -EINVAL;
+	}
+
+	/* CHARGE_TYPE handling */
+	switch (val->intval) {
+	case POWER_SUPPLY_CHARGE_TYPE_FAST:
+		disable = false;
+		break;
+	case POWER_SUPPLY_CHARGE_TYPE_LONGLIFE:
+		disable = true;
+		break;
 	default:
 		return -EINVAL;
 	}

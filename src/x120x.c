@@ -160,6 +160,19 @@ module_param(conservation_end, int, 0644);
 MODULE_PARM_DESC(conservation_end,
 	"SoC %% at which charging stops in Long Life mode (default 80)");
 
+/*
+ * conservation_mode_default — persists charge mode across reboots.
+ * 0 = Fast (default), 1 = Long Life.
+ * Automatically updated when charge_type is written via sysfs, and
+ * persisted to /etc/modprobe.d/x120x.conf by a udev rule installed
+ * by the installer.
+ */
+static int conservation_mode_default = 0;
+module_param(conservation_mode_default, int, 0644);
+MODULE_PARM_DESC(conservation_mode_default,
+	"Start in Long Life mode (1) or Fast mode (0, default). "
+	"Updated on every charge_type sysfs write; persisted by udev rule.");
+
 /* -------------------------------------------------------------------------
  * MAX17043 register definitions (X120x board layout)
  *
@@ -867,7 +880,8 @@ static int x120x_charger_set_property(struct power_supply *psy,
 	}
 
 	mutex_lock(&chip->lock);
-	chip->conservation_mode = disable;
+	chip->conservation_mode   = disable;
+	conservation_mode_default = disable ? 1 : 0;
 	if (!disable) {
 		/* Fast mode: always enable charging immediately */
 		x120x_gpio_set(chip->gpio_chrg, 0);
@@ -1004,6 +1018,9 @@ static int x120x_probe(struct i2c_client *client)
 	 * Request as output-low so charging remains enabled across a
 	 * driver reload, preserving the hardware default.
 	 */
+	/* Restore charge mode from module parameter (survives reboot) */
+	chip->conservation_mode = !!conservation_mode_default;
+
 	chip->gpio_chrg = devm_gpiod_get_optional(dev, "charge-ctrl",
 						   GPIOD_OUT_LOW);
 	if (IS_ERR(chip->gpio_chrg)) {

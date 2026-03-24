@@ -55,9 +55,11 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     online          1 = mains present, 0 = on battery
 
 /sys/class/power_supply/x120x-charger/
-    online          1 = mains present
-    status          Charging | Not charging | Discharging
-    charge_type     Fast | Long life  (writeable)
+    online                          1 = mains present
+    status                          Charging | Not charging | Discharging
+    charge_type                     Fast | Long life  (writeable)
+    charge_control_start_threshold  SoC % to resume charging in Long life mode (writeable, default 75)
+    charge_control_end_threshold    SoC % to stop charging in Long life mode (writeable, default 80)
 ```
 
 ### UPower integration
@@ -79,9 +81,14 @@ with:
 - **KDE Plasma** — charge threshold controls in Power Management
 
 When conservation mode is enabled, UPower writes `Long life` to
-`charge_type`, which drives GPIO16 high on the board, inhibiting
-charging.  The full chain — GNOME toggle → UPower → sysfs → GPIO →
-hardware — works without any custom userspace code.
+`charge_type`.  The driver then manages GPIO16 automatically using
+threshold hysteresis: charging stops at `charge_control_end_threshold`
+(default 80%) and resumes at `charge_control_start_threshold` (default
+75%).  In `Fast` mode GPIO16 is always low (charging unrestricted).
+
+The thresholds are compatible with TLP and any tool that writes to the
+standard `charge_control_start_threshold` and
+`charge_control_end_threshold` sysfs files.
 
 ### systemd-logind shutdown
 
@@ -380,6 +387,8 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `gpio_charge_ctrl`  | `16`                  | BCM GPIO for charge control          |
 | `battery_mah`       | `1000`                | Total pack capacity in mAh           |
 | `voltage_empty_mv`  | `3200`                | Cell voltage at Critical/shutdown threshold (mV). Raise temporarily (e.g. `4100`) to test the logind shutdown path without draining the battery. |
+| `conservation_start` | `75`                 | SoC % at which charging resumes in Long life mode |
+| `conservation_end`   | `80`                 | SoC % at which charging stops in Long life mode   |
 
 The install script writes these to `/etc/modprobe.d/x120x.conf`.  To
 change them after installation, edit that file and reboot:

@@ -31,7 +31,27 @@ multiply per-cell capacity by number of cells.  Common values:
 | X1205 | 2× 21700 | `--battery-mah 10000` |
 | X1206 | 4× 21700 | `--battery-mah 20000` |
 
-### 2. Choose a charge mode
+### 2. Configure the bootloader (Raspberry Pi 5 only)
+
+For reliable UPS operation — clean shutdown and automatic restart when
+mains power returns — two bootloader settings are needed:
+
+```bash
+sudo rpi-eeprom-config -e
+```
+
+Add these lines, save, and reboot:
+
+```
+POWER_OFF_ON_HALT=1
+PSU_MAX_CURRENT=5000
+```
+
+`POWER_OFF_ON_HALT=1` ensures the Pi fully powers off when Linux halts
+so the UPS can restart it automatically when mains returns.
+`PSU_MAX_CURRENT=5000` suppresses spurious low-power warnings.
+
+### 3. Choose a charge mode
 
 Two charge modes are available:
 
@@ -62,7 +82,7 @@ echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 echo "Fast" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 ```
 
-### 3. Monitor battery state
+### 4. Monitor battery state
 
 After rebooting, the battery appears as a standard Linux power supply.
 The easiest way to see full details is `gnome-power-statistics`:
@@ -73,8 +93,8 @@ gnome-power-statistics
 ```
 
 This shows live battery percentage, voltage, energy, charge rate,
-history graphs, and charge mode — all read directly from the driver
-via UPower.  No configuration needed.
+and history graphs — all read directly from the driver via UPower.
+No configuration needed.
 
 For a quick command-line view:
 
@@ -170,13 +190,17 @@ limiting the charge range to a healthier window.
 
 The driver supports two charge modes, selectable via `charge_type`:
 
-- **`Fast`** (default) — GPIO16 held low, charger always on, battery
-  charges to 100%.  Normal behaviour for occasional backup use.
-- **`Long Life`** — the driver manages GPIO16 automatically using
+- **`Fast`** (default) — charges to 100%, then disables the charger
+  and re-enables it at 95%.  This float-protection hysteresis prevents
+  constant micro-cycling at full charge, which degrades cells even when
+  the battery appears "full".  The battery holds its charge for an
+  extended period without cycling.  Best for occasional backup use
+  where maximum capacity is needed.
+- **`Long Life`** — the driver manages GPIO16 using user-configurable
   hysteresis: charging stops when SoC reaches `charge_control_end_threshold`
   (default 80%) and resumes when SoC drops to
-  `charge_control_start_threshold` (default 75%).  Suitable for systems
-  that are permanently plugged in and rarely need full battery capacity.
+  `charge_control_start_threshold` (default 75%).  Best for always-on
+  systems permanently plugged into mains power.
 
 Enable and disable conservation mode from the command line:
 

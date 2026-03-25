@@ -55,11 +55,12 @@ so the UPS can restart it automatically when mains returns.
 
 Two charge modes are available:
 
-- **Fast** (default) — charges to 100%.  Best for occasional backup
-  use where you want maximum capacity available.
-- **Long Life** — limits charging to 75–80% using hysteresis.  Best
-  for always-on systems permanently plugged into mains power, where
-  prolonged 100% charge would degrade the cells over time.
+- **Fast** (default) — charges to 100%, then disables the charger
+  until capacity drops to 95%.  Best when maximum backup capacity is
+  the priority, accepting slightly higher cell wear over time.
+- **Long Life** — limits charging to 75–80%.  Best when the system is
+  permanently on mains and full backup capacity is rarely needed —
+  keeping cells below full charge significantly extends their lifespan.
 
 Set the mode at install time:
 

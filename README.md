@@ -111,6 +111,14 @@ by this driver:
 ² Connects via the 40-pin GPIO header.  An optional pogo pin enables
   the power button function on Pi 5; not required on Pi 4/3.
 
+**Architecture note:** The driver has been developed and tested on
+Raspberry Pi OS 64-bit (`aarch64`).  The X1209 also supports Pi 4B,
+Pi 3B+, and Pi 3B, which can run 32-bit Raspberry Pi OS (`armhf`).
+The driver contains no architecture-specific code and should build and
+run correctly on `armhf` — the DKMS build system will compile for
+whatever kernel is running — but this has not been tested.  Reports
+from `armhf` users are welcome.
+
 ### Not supported by this driver
 
 - **X728** — uses a different power management IC with different GPIO

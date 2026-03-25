@@ -5,33 +5,19 @@ Raspberry Pi.  The UPS boards are designed by SupTronics and distributed
 by Geekworm.
 
 Provides native Linux power supply integration equivalent to a laptop
-battery — no vendor scripts, no custom daemons, no polling loops.
+battery — battery icon in the taskbar, accurate state of charge,
+clean undervoltage shutdown, and selectable Long Life battery
+preservation mode.  No vendor scripts, no custom daemons, no polling
+loops.
 
 ## Getting started
 
 If you just want to get up and running quickly, here is everything you
 need in one place.
 
-### 1. Install the driver
+### 1. Configure the bootloader (Raspberry Pi 5 only)
 
-```bash
-git clone https://github.com/mor-lock/x120x-dkms.git
-cd x120x-dkms
-sudo bash install.sh --battery-mah <your_capacity>
-sudo reboot
-```
-
-Replace `<your_capacity>` with your total pack capacity in mAh —
-multiply per-cell capacity by number of cells.  Common values:
-
-| Hardware | Cells | Example capacity |
-|---|---|---|
-| X1200, X1201 | 2× 18650 | `--battery-mah 6000` |
-| X1202 | 4× 18650 | `--battery-mah 12000` |
-| X1205 | 2× 21700 | `--battery-mah 10000` |
-| X1206 | 4× 21700 | `--battery-mah 20000` |
-
-### 2. Configure the bootloader (Raspberry Pi 5 only)
+Pi 4 and Pi 3 users can skip this step.
 
 For reliable UPS operation — clean shutdown and automatic restart when
 mains power returns — two bootloader settings are needed:
@@ -51,39 +37,53 @@ PSU_MAX_CURRENT=5000
 so the UPS can restart it automatically when mains returns.
 `PSU_MAX_CURRENT=5000` suppresses spurious low-power warnings.
 
-### 3. Choose a charge mode
+### 2. Install the driver
 
-Two charge modes are available:
+Two charge modes are available — choose one before installing:
 
 - **Fast** (default) — charges to 100%, then disables the charger
-  until capacity drops to 95%.  Best when maximum backup capacity is
-  the priority, accepting slightly higher cell wear over time.
-- **Long Life** — limits charging to 75–80%.  Best when the system is
-  permanently on mains and full backup capacity is rarely needed —
-  keeping cells below full charge significantly extends their lifespan.
+  and leaves the battery floating.  Charging resumes when the state
+  of charge (SoC) drops to 95% due to self-discharge.  Best when
+  maximum backup capacity is the priority.
+- **Long Life** — charges to 80%, then disables the charger and leaves
+  the battery floating.  Charging resumes when SoC drops to 75% due
+  to self-discharge.  Best when the system is permanently on mains
+  and full capacity is rarely needed — keeping cells below full charge
+  significantly extends their lifespan.
 
-Set the mode at install time:
+Replace `<your_capacity>` with your total pack capacity in mAh —
+multiply per-cell capacity by number of cells.  The mAh rating is
+printed on the battery cell itself.  Common values:
+
+| Hardware | Cells | Example capacity |
+|---|---|---|
+| X1200, X1201 | 2× 18650 | `--battery-mah 6000` |
+| X1202 | 4× 18650 | `--battery-mah 12000` |
+| X1205 | 2× 21700 | `--battery-mah 10000` |
+| X1206 | 4× 21700 | `--battery-mah 20000` |
 
 ```bash
-# Always-on server — preserve battery longevity
-sudo bash install.sh --battery-mah 20000 --charge-mode longlife
+git clone https://github.com/mor-lock/x120x-dkms.git
+cd x120x-dkms
 
-# Occasional backup use — maximise available capacity
-sudo bash install.sh --battery-mah 20000 --charge-mode fast
+# Permanently on mains — preserve battery longevity
+sudo bash install.sh --battery-mah <your_capacity> --charge-mode longlife
+
+# Maximum backup capacity
+sudo bash install.sh --battery-mah <your_capacity> --charge-mode fast
+
+sudo reboot
 ```
 
-The mode is persisted across reboots automatically.  You can also
-change it at any time without reinstalling:
+The charge mode is persisted across reboots automatically.  It can
+also be changed at any time without reinstalling:
 
 ```bash
-# Switch to Long Life
 echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
-
-# Switch back to Fast
-echo "Fast" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
+echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 ```
 
-### 4. Monitor battery state
+### 3. Monitor battery state
 
 After rebooting, the battery appears as a standard Linux power supply.
 The easiest way to see full details is `gnome-power-statistics`:

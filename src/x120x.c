@@ -531,23 +531,40 @@ notify:
 	 *   capacity >= conservation_end   → stop charging  (GPIO16 high)
 	 *   capacity <= conservation_start → resume charging (GPIO16 low)
 	 *
-	 * In Fast mode GPIO16 is always low (set immediately in set_property).
-	 * We re-read the GPIO after any change so chrg_changed fires and
-	 * UPower / sysfs sees the updated charge_type / status.
+	 * In Fast mode a float-protection hysteresis is applied when AC is
+	 * present: the charger is disabled at 100% and re-enabled at 95%.
+	 * This prevents constant micro-cycling at full charge, which degrades
+	 * cells even at "100%".  On battery there is no AC so GPIO16 is
+	 * irrelevant — the charger cannot run without input power.
+	 *
+	 * In Long Life mode the user-configured conservation thresholds are
+	 * used instead (default 75%/80%).
 	 */
-	if (chip->conservation_mode && chip->gpio_chrg) {
-		int gpio_val = x120x_gpio_get(chip->gpio_chrg);
+	if (chip->gpio_chrg) {
+		int gpio_val     = x120x_gpio_get(chip->gpio_chrg);
 		int new_gpio_val = gpio_val;
+		int end_thr, start_thr;
 
-		if (chip->capacity_pct >= conservation_end)
+		if (chip->conservation_mode) {
+			/* Long Life: user-configured thresholds */
+			end_thr   = conservation_end;
+			start_thr = conservation_start;
+		} else {
+			/* Fast: float-protection at 95%/100% */
+			end_thr   = 100;
+			start_thr = 95;
+		}
+
+		if (chip->capacity_pct >= end_thr)
 			new_gpio_val = 1; /* stop charging */
-		else if (chip->capacity_pct <= conservation_start)
+		else if (chip->capacity_pct <= start_thr)
 			new_gpio_val = 0; /* resume charging */
 
 		if (new_gpio_val != gpio_val) {
 			x120x_gpio_set(chip->gpio_chrg, new_gpio_val);
 			dev_dbg(&chip->client->dev,
-				"conservation: %s charging at %d%%\n",
+				"%s mode: %s charging at %d%%\n",
+				chip->conservation_mode ? "conservation" : "float",
 				new_gpio_val ? "stopped" : "resumed",
 				chip->capacity_pct);
 			chrg_changed = true;
@@ -856,10 +873,15 @@ static int x120x_charger_set_property(struct power_supply *psy,
 	chip->conservation_mode   = disable;
 	conservation_mode_default = disable ? 1 : 0;
 	if (!disable) {
-		/* Fast mode: always enable charging immediately */
+		/*
+		 * Switching to Fast mode: enable charging immediately so the
+		 * battery starts charging without waiting for the next poll.
+		 * The poll loop will apply float-protection (95%/100%) from
+		 * the next tick onward.
+		 */
 		x120x_gpio_set(chip->gpio_chrg, 0);
 	}
-	/* In Long life mode GPIO16 is managed by the polling loop */
+	/* GPIO16 is managed by the polling loop in both modes */
 	mutex_unlock(&chip->lock);
 
 	dev_dbg(&chip->client->dev, "charge_type set to %s\n",
@@ -1201,4 +1223,8 @@ MODULE_LICENSE("GPL v2");
  * on this driver for any purpose.
  *
  * USE AT YOUR OWN RISK.
+ *
+ * This project is an independent personal contribution, developed in
+ * the author's own time on their own hardware.  It is not affiliated
+ * with or endorsed by SupTronics, Geekworm, or the author's employer.
  */

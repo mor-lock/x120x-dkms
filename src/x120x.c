@@ -214,6 +214,14 @@ MODULE_PARM_DESC(conservation_mode_default,
 #define X120X_SOC_LOW_PCT	10	/* LOW below this % → desktop warning      */
 #define X120X_SOC_FULL_PCT	95	/* FULL above this %                        */
 
+/* Manufacturer and model name strings */
+#define X120X_MANUFACTURER		"SupTronics"
+#define X120X_MODEL_NAME		"X120x"
+
+/* Design voltage limits (Li-ion cell, fixed constants) */
+#define X120X_VOLTAGE_MAX_DESIGN_UV	4200000	/* 4.20 V — full charge    */
+#define X120X_VOLTAGE_MIN_DESIGN_UV	3200000	/* 3.20 V — safe shutdown  */
+
 /* Mark battery absent after this many consecutive I2C failures */
 #define X120X_MAX_ERRORS	5
 
@@ -668,14 +676,22 @@ static enum power_supply_property x120x_battery_props[] = {
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN,
+	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
 	POWER_SUPPLY_PROP_CAPACITY,
 	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
+	POWER_SUPPLY_PROP_CHARGE_NOW,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+	POWER_SUPPLY_PROP_CHARGE_EMPTY,
 	POWER_SUPPLY_PROP_ENERGY_NOW,
 	POWER_SUPPLY_PROP_ENERGY_FULL,
 	POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN,
 	POWER_SUPPLY_PROP_ENERGY_EMPTY,
 	POWER_SUPPLY_PROP_POWER_NOW,
 	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_MANUFACTURER,
+	POWER_SUPPLY_PROP_MODEL_NAME,
 	POWER_SUPPLY_PROP_SCOPE,
 };
 
@@ -740,6 +756,14 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		val->intval = voltage_uv;
 		break;
 
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN:
+		val->intval = X120X_VOLTAGE_MAX_DESIGN_UV;
+		break;
+
+	case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
+		val->intval = X120X_VOLTAGE_MIN_DESIGN_UV;
+		break;
+
 	case POWER_SUPPLY_PROP_CAPACITY:
 		val->intval = capacity_pct;
 		break;
@@ -764,6 +788,25 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		} else {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_NORMAL;
 		}
+		break;
+
+	case POWER_SUPPLY_PROP_CHARGE_NOW:
+		/*
+		 * Charge in µAh, derived from energy using nominal cell
+		 * voltage (3700 mV).  Mirrors the energy model:
+		 *   charge_now_uah = battery_mah × 1000 × soc% / 100
+		 */
+		val->intval = (int)div_s64(
+			(s64)battery_mah * 1000 * capacity_pct, 100);
+		break;
+
+	case POWER_SUPPLY_PROP_CHARGE_FULL:
+	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
+		val->intval = battery_mah * 1000; /* µAh */
+		break;
+
+	case POWER_SUPPLY_PROP_CHARGE_EMPTY:
+		val->intval = 0;
 		break;
 
 	case POWER_SUPPLY_PROP_ENERGY_NOW:
@@ -795,6 +838,14 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		 * energy_rate computed in the polling loop.
 		 */
 		val->intval = energy_rate_uw;
+		break;
+
+	case POWER_SUPPLY_PROP_MANUFACTURER:
+		val->strval = X120X_MANUFACTURER;
+		break;
+
+	case POWER_SUPPLY_PROP_MODEL_NAME:
+		val->strval = X120X_MODEL_NAME;
 		break;
 
 	case POWER_SUPPLY_PROP_TECHNOLOGY:

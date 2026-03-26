@@ -234,37 +234,84 @@ options x120x battery_mah=20000 conservation_start=75 conservation_end=80
 
 ### Dead battery detection
 
-Lithium-ion cells can be permanently destroyed by deep discharge.  This
-is the most common cause of the "battery charged to 100% but powers off
-immediately when unplugged" reports seen on the Geekworm wiki — the
-cells were fully discharged, the charger reconnected, but the cells
-could not recover and will not accept charge.
+#### How lithium-ion cells die
 
-The driver detects this condition automatically.  When the system is on
-grid power and the cell voltage remains below 3.10 V for 10 minutes with
-no meaningful voltage rise (less than 10 mV/h), the battery health is
-reported as `Dead`:
+Lithium-ion cells have a safe operating voltage range of approximately
+3.0–4.2 V per cell.  When a cell discharges below ~3.0 V the chemistry
+becomes unstable: copper current collectors begin to dissolve into the
+electrolyte and redeposit as dendrites on the anode.  This is
+irreversible — the cell permanently loses capacity and internal
+resistance rises sharply.  In severe cases the cell will no longer
+accept charge at all.
+
+This is the most common cause of the "battery charged to 100% but
+powers off immediately when unplugged" reports on the Geekworm wiki.
+The user ran the battery flat, plugged the charger back in, but the
+cells had already been destroyed by deep discharge and cannot recover.
+
+#### How the driver prevents this
+
+The driver reports `capacity_level=Critical` when SoC drops below 5%,
+which causes UPower to trigger a `warning-level: action` event.
+`systemd-logind` then initiates a clean OS shutdown — long before the
+cells reach a dangerous voltage.  The install script configures this
+automatically via `HandleLowBattery=poweroff` in `logind.conf` and
+`CriticalPowerAction=PowerOff` in `UPower.conf`.
+
+With the driver installed, the shutdown sequence on a prolonged outage
+is:
+
+```
+grid power lost
+    ↓
+system runs on battery
+    ↓
+SoC drops to 5% → capacity_level=Critical
+    ↓
+UPower: warning-level=action → logind: systemctl poweroff
+    ↓
+clean OS shutdown
+    ↓
+UPS cuts power to Pi — cells preserved well above 3.0 V
+    ↓
+grid restored → Pi boots automatically
+```
+
+Without the driver, there is no automatic shutdown.  The Pi runs until
+the UPS hardware cuts power at its own low-voltage threshold, which may
+be at or below the cell damage threshold.
+
+#### Detection of already-destroyed cells
+
+If cells have already been deep-discharged and destroyed, the driver
+detects this automatically.  When the system is on grid power and the
+cell voltage remains below 3.10 V for 10 minutes with no meaningful
+voltage rise (less than 10 mV/h), the battery health is reported as
+`Dead`:
 
 ```bash
 cat /sys/class/power_supply/x120x-battery/health
 # Dead
 ```
 
-UPower will surface this as `health: dead` and desktop environments
-will display a battery warning.  A `dev_warn` kernel log entry is also
-emitted:
+UPower surfaces this as `health: dead` and desktop environments will
+display a battery warning.  A kernel log entry is also emitted:
 
 ```
 x120x 1-0036: battery appears dead: 3050 mV on grid for 600 s with <10 mV/h rise
 ```
 
-The health flag clears automatically if the battery recovers (e.g.
-after cells are replaced).
+The health flag clears automatically if the condition resolves — for
+example after replacing the cells.
 
-**Prevention:** The most effective protection is Long Life mode —
-keeping cells below 80% significantly reduces the risk of deep
-discharge during an extended power outage, since the battery has
-more usable capacity remaining when the outage begins.
+#### Further protection with Long Life mode
+
+Long Life mode provides an additional layer of protection.  By keeping
+cells below 80%, there is more usable capacity remaining when a power
+outage begins.  A battery kept at 80% has significantly more runtime
+before reaching the 5% shutdown threshold than one that starts the
+outage at 100% and has been micro-cycling for months.  The cells also
+age more slowly, maintaining their capacity over more charge cycles.
 
 ### Charge mode persistence
 

@@ -204,6 +204,12 @@ MODULE_PARM_DESC(conservation_mode_default,
  * logind → systemctl poweroff.
  * ---------------------------------------------------------------------- */
 
+/* Dead battery detection thresholds (mirrors Fafnir powerd.py defaults) */
+#define X120X_DEAD_BAT_UV		3100000	/* 3.10 V in µV                            */
+#define X120X_DEAD_BAT_CONFIRM_US	(600LL * USEC_PER_SEC) /* 10 min window    */
+#define X120X_DEAD_BAT_MAX_RISE_UV_H	10000	/* 10 mV/h max rise — still dead           */
+#define X120X_DEAD_BAT_SOC_MAX		2	/* only below this SoC %                   */
+
 #define X120X_SOC_CRITICAL_PCT	 5	/* CRITICAL below this % → logind poweroff */
 #define X120X_SOC_LOW_PCT	10	/* LOW below this % → desktop warning      */
 #define X120X_SOC_FULL_PCT	95	/* FULL above this %                        */
@@ -268,6 +274,25 @@ struct x120x_chip {
 	s64			 rate_prev_time_us;	/* ktime_us at last SOC change  */
 	int			 energy_rate_uw;		/* µW, updated on each event    */
 	s64			 rate_last_change_us;		/* ktime_us of last SOC change  */
+
+	/*
+	 * Dead battery detection.
+	 *
+	 * A battery is considered dead if, while on grid power, the cell
+	 * voltage remains below 3.10 V for ≥ 10 minutes with no meaningful
+	 * voltage rise (< 10 mV/h).  This matches the scenario reported by
+	 * multiple X120x users: battery fully discharged, charger reconnected,
+	 * but cells will not accept charge and voltage stays stuck near zero.
+	 *
+	 * Parameters mirror those used by Fafnir powerd.py:
+	 *   threshold : 3.10 V
+	 *   window    : 600 s
+	 *   max rise  : 10 mV/h
+	 *   soc ceil  : 2 %
+	 */
+	s64			 dead_cand_start_us;	/* ktime when below threshold   */
+	int			 dead_cand_uv;		/* voltage when cand. started   */
+	bool			 battery_dead;		/* confirmed dead battery       */
 
 	struct delayed_work	 work;
 };
@@ -514,6 +539,56 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->energy_full_uwh  = e_full;
 		chip->energy_empty_uwh = 0;
 		chip->energy_now_uwh   = e_now;
+
+		/*
+		 * Dead battery detection: on grid, voltage stuck below
+		 * X120X_DEAD_BAT_UV for ≥ X120X_DEAD_BAT_CONFIRM_US with
+		 * no meaningful voltage rise.  Only applies when SoC is
+		 * very low (≤ X120X_DEAD_BAT_SOC_MAX %) to avoid false
+		 * positives on healthy batteries at rest.
+		 */
+		if (new_ac && new_uv > 0 &&
+		    new_uv < X120X_DEAD_BAT_UV &&
+		    new_pct <= X120X_DEAD_BAT_SOC_MAX) {
+			if (chip->dead_cand_start_us == 0) {
+				/* Start candidate window */
+				chip->dead_cand_start_us = now_us;
+				chip->dead_cand_uv       = new_uv;
+			} else {
+				s64 window = now_us - chip->dead_cand_start_us;
+				if (window >= X120X_DEAD_BAT_CONFIRM_US) {
+					s64 delta_uv = (s64)new_uv - chip->dead_cand_uv;
+					s64 window_s = div_s64(window, USEC_PER_SEC);
+					s64 rise_uv_h = window_s > 0
+						? div_s64(delta_uv * 3600LL, window_s)
+						: 0;
+					if (rise_uv_h < X120X_DEAD_BAT_MAX_RISE_UV_H) {
+						if (!chip->battery_dead) {
+							chip->battery_dead = true;
+							dev_warn(&chip->client->dev,
+								"battery appears dead: "
+								"%d mV on grid for %lld s "
+								"with <10 mV/h rise\n",
+								new_uv / 1000,
+								div_s64(window, USEC_PER_SEC));
+							bat_changed = true;
+						}
+					}
+				}
+			}
+		} else {
+			/* Condition no longer met — reset candidate window */
+			if (chip->dead_cand_start_us != 0 || chip->battery_dead) {
+				chip->dead_cand_start_us = 0;
+				chip->dead_cand_uv       = 0;
+				if (chip->battery_dead) {
+					chip->battery_dead = false;
+					dev_info(&chip->client->dev,
+						 "battery dead flag cleared\n");
+					bat_changed = true;
+				}
+			}
+		}
 	}
 
 	mutex_unlock(&chip->lock);
@@ -590,6 +665,7 @@ notify:
 
 static enum power_supply_property x120x_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CAPACITY,
@@ -610,7 +686,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	struct x120x_chip *chip = power_supply_get_drvdata(psy);
 	int ac_online, capacity_pct, voltage_uv, energy_rate_uw;
 	s64 energy_now_uwh, energy_full_uwh;
-	bool present, conservation_mode;
+	bool present, conservation_mode, battery_dead;
 
 	mutex_lock(&chip->lock);
 	ac_online        = chip->ac_online;
@@ -621,6 +697,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	energy_now_uwh  = chip->energy_now_uwh;
 	energy_full_uwh = chip->energy_full_uwh;
 	energy_rate_uw  = chip->energy_rate_uw;
+	battery_dead    = chip->battery_dead;
 	mutex_unlock(&chip->lock);
 
 	/*
@@ -645,6 +722,15 @@ static int x120x_battery_get_property(struct power_supply *psy,
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;
 		break;
 	}
+
+	case POWER_SUPPLY_PROP_HEALTH:
+		if (!present)
+			val->intval = POWER_SUPPLY_HEALTH_UNKNOWN;
+		else if (battery_dead)
+			val->intval = POWER_SUPPLY_HEALTH_DEAD;
+		else
+			val->intval = POWER_SUPPLY_HEALTH_GOOD;
+		break;
 
 	case POWER_SUPPLY_PROP_PRESENT:
 		val->intval = present ? 1 : 0;

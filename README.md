@@ -209,8 +209,8 @@ The driver supports two charge modes, selectable via `charge_type`:
   and re-enables it at 95%.  This float-protection hysteresis prevents
   constant micro-cycling at full charge, which degrades cells even when
   the battery appears "full".  The battery holds its charge for an
-  extended period without cycling.  Best for occasional backup use
-  where maximum capacity is needed.
+  extended period without cycling.  Best when maximum backup
+  capacity is the priority.
 - **`Long Life`** — the driver manages GPIO16 using user-configurable
   hysteresis: charging stops when SoC reaches `charge_control_end_threshold`
   (default 80%) and resumes when SoC drops to

@@ -700,13 +700,14 @@ static int x120x_battery_get_property(struct power_supply *psy,
 				       union power_supply_propval *val)
 {
 	struct x120x_chip *chip = power_supply_get_drvdata(psy);
-	int ac_online, capacity_pct, voltage_uv, energy_rate_uw;
+	int ac_online, capacity_pct, capacity_256, voltage_uv, energy_rate_uw;
 	s64 energy_now_uwh, energy_full_uwh;
 	bool present, conservation_mode, battery_dead;
 
 	mutex_lock(&chip->lock);
 	ac_online        = chip->ac_online;
 	capacity_pct     = chip->capacity_pct;
+	capacity_256     = chip->capacity_256;
 	voltage_uv       = chip->voltage_uv;
 	present          = chip->present;
 	conservation_mode = chip->conservation_mode;
@@ -792,12 +793,13 @@ static int x120x_battery_get_property(struct power_supply *psy,
 
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
 		/*
-		 * Charge in µAh, derived from energy using nominal cell
-		 * voltage (3700 mV).  Mirrors the energy model:
-		 *   charge_now_uah = battery_mah × 1000 × soc% / 100
+		 * Charge in µAh.  Uses full 16-bit SOC precision (capacity_256,
+		 * range 0..25600 = 0..100%) to match the energy model and avoid
+		 * losing the sub-1% fractional part.
+		 *   charge_now_uah = battery_mah × 1000 × capacity_256 / 25600
 		 */
 		val->intval = (int)div_s64(
-			(s64)battery_mah * 1000 * capacity_pct, 100);
+			(s64)battery_mah * 1000 * capacity_256, 25600);
 		break;
 
 	case POWER_SUPPLY_PROP_CHARGE_FULL:

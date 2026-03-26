@@ -153,14 +153,27 @@ After loading, three devices appear under `/sys/class/power_supply/`:
 
 ```
 /sys/class/power_supply/x120x-battery/
-    status          Charging | Discharging | Not charging | Full | Unknown
-    health          Good | Dead | Unknown
-    present         1 if battery detected
-    voltage_now     cell voltage in µV
-    capacity        0-100 %
-    capacity_level  Critical (<5%) | Low (<10%) | Normal | Full (≥95%) | Unknown
-    technology      Li-ion
-    scope           System
+    status                Charging | Discharging | Not charging | Full | Unknown
+    health                Good | Dead | Unknown
+    present               1 if battery detected
+    manufacturer          SupTronics
+    model_name            X120x
+    voltage_now           cell voltage in µV
+    voltage_max_design    4200000 µV (4.20 V — full charge)
+    voltage_min_design    3200000 µV (3.20 V — safe shutdown floor)
+    capacity              0-100 %
+    capacity_level        Critical (<5%) | Low (<10%) | Normal | Full (≥95%) | Unknown
+    charge_now            current charge in µAh
+    charge_full           total pack capacity in µAh (from battery_mah)
+    charge_full_design    same as charge_full
+    charge_empty          0
+    energy_now            current energy in µWh
+    energy_full           total pack energy in µWh
+    energy_full_design    same as energy_full
+    energy_empty          0
+    power_now             instantaneous power in µW (+ charging, − discharging)
+    technology            Li-ion
+    scope                 System
 
 /sys/class/power_supply/x120x-ac/
     online          1 = mains present, 0 = on battery

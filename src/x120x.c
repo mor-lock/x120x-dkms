@@ -73,6 +73,8 @@
  *
  * Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
  *
+ * Signed-off-by: Edvard Fielding <mor-lock@users.noreply.github.com>
+ *
  * DISCLAIMER: This software is provided "as is" without warranty of any
  * kind.  The author is not liable for any damages arising from its use.
  * This driver interacts with battery hardware; validate correct operation
@@ -1033,9 +1035,9 @@ static int x120x_charger_set_property(struct power_supply *psy,
 static int x120x_charger_property_is_writeable(struct power_supply *psy,
 						enum power_supply_property psp)
 {
-	return (psp == POWER_SUPPLY_PROP_CHARGE_TYPE ||
-		psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD ||
-		psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD) ? 1 : 0;
+	return psp == POWER_SUPPLY_PROP_CHARGE_TYPE ||
+	       psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD ||
+	       psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD;
 }
 
 /* -------------------------------------------------------------------------

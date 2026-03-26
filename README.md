@@ -265,10 +265,12 @@ cells had already been destroyed by deep discharge and cannot recover.
 #### How the driver prevents this
 
 The driver reports `capacity_level=Critical` when SoC drops below 5%,
-which causes UPower to trigger a `warning-level: action` event.
-`systemd-logind` then initiates a clean OS shutdown — long before the
-cells reach a dangerous voltage.  The install script configures this
-automatically via `HandleLowBattery=poweroff` in `logind.conf` and
+which triggers UPower's `warning-level: low` notification.  UPower then
+fires `warning-level: action` when SoC reaches its `PercentageAction`
+threshold (default 2%), which causes `systemd-logind` to initiate a
+clean OS shutdown — well before the cells reach a dangerous voltage.
+The install script configures this automatically via
+`HandleLowBattery=poweroff` in `logind.conf` and
 `CriticalPowerAction=PowerOff` in `UPower.conf`.
 
 With the driver installed, the shutdown sequence on a prolonged outage
@@ -279,9 +281,9 @@ grid power lost
     ↓
 system runs on battery
     ↓
-SoC drops to 5% → capacity_level=Critical
+SoC drops to 5% → capacity_level=Critical → UPower warning-level: low
     ↓
-UPower: warning-level=action → logind: systemctl poweroff
+SoC drops to 2% → UPower warning-level: action → logind: systemctl poweroff
     ↓
 clean OS shutdown
     ↓
@@ -322,7 +324,7 @@ example after replacing the cells.
 Long Life mode provides an additional layer of protection.  By keeping
 cells below 80%, there is more usable capacity remaining when a power
 outage begins.  A battery kept at 80% has significantly more runtime
-before reaching the 5% shutdown threshold than one that starts the
+before reaching the 2% shutdown threshold than one that starts the
 outage at 100% and has been micro-cycling for months.  The cells also
 age more slowly, maintaining their capacity over more charge cycles.
 
@@ -361,7 +363,10 @@ sysfs files will also work automatically.
 ### systemd-logind shutdown
 
 On headless systems, `systemd-logind` initiates a clean shutdown when
-`capacity_level` reaches `Critical` (battery SoC below 5%).
+UPower's `PercentageAction` threshold is reached (default 2% SoC).
+The driver reports `capacity_level=Critical` at 5% SoC, which triggers
+UPower's low battery warning.  The actual shutdown fires at 2% when
+UPower escalates to `warning-level: action`.
 
 The install script enables this automatically by setting the following
 in `/etc/systemd/logind.conf`:
@@ -588,9 +593,10 @@ Save and exit.
 
 #### Step 8 — Configure low-battery shutdown
 
-The driver reports `capacity_level=Critical` when the cell voltage drops
-to or below 3.20 V on battery.  To trigger a clean OS shutdown at that
-point, add the following to `/etc/systemd/logind.conf`:
+The driver reports `capacity_level=Critical` when SoC drops below 5%.
+UPower escalates to `warning-level: action` at 2% SoC (its default
+`PercentageAction` threshold), which triggers a clean OS shutdown via
+logind.  To enable this, add the following to `/etc/systemd/logind.conf`:
 
 ```bash
 sudo nano /etc/systemd/logind.conf
@@ -782,7 +788,7 @@ cat /sys/class/power_supply/x120x-battery/status        # Charging | Discharging
 
 Scripts that poll AC state and call `shutdown` when power is lost
 can be removed entirely.  The driver reports `capacity_level=Critical`
-at 2% SoC, which causes UPower and systemd-logind to initiate a
+at 2% SoC (via UPower PercentageAction), which causes systemd-logind to initiate a
 clean shutdown automatically — no script required.
 
 ## Companion daemon

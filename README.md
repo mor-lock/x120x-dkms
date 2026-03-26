@@ -651,6 +651,11 @@ this driver for any purpose.
 
 **USE AT YOUR OWN RISK.**
 
+This project is an independent personal contribution, developed in my
+own time on my own hardware.  It is not affiliated with or endorsed by
+SupTronics, Geekworm, or my employer.
+
 ## License
 
 GPL v2
+

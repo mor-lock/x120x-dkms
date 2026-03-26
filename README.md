@@ -154,6 +154,7 @@ After loading, three devices appear under `/sys/class/power_supply/`:
 ```
 /sys/class/power_supply/x120x-battery/
     status          Charging | Discharging | Not charging | Full | Unknown
+    health          Good | Dead | Unknown
     present         1 if battery detected
     voltage_now     cell voltage in µV
     capacity        0-100 %
@@ -230,6 +231,40 @@ parameters in `/etc/modprobe.d/x120x.conf`:
 ```
 options x120x battery_mah=20000 conservation_start=75 conservation_end=80
 ```
+
+### Dead battery detection
+
+Lithium-ion cells can be permanently destroyed by deep discharge.  This
+is the most common cause of the "battery charged to 100% but powers off
+immediately when unplugged" reports seen on the Geekworm wiki — the
+cells were fully discharged, the charger reconnected, but the cells
+could not recover and will not accept charge.
+
+The driver detects this condition automatically.  When the system is on
+grid power and the cell voltage remains below 3.10 V for 10 minutes with
+no meaningful voltage rise (less than 10 mV/h), the battery health is
+reported as `Dead`:
+
+```bash
+cat /sys/class/power_supply/x120x-battery/health
+# Dead
+```
+
+UPower will surface this as `health: dead` and desktop environments
+will display a battery warning.  A `dev_warn` kernel log entry is also
+emitted:
+
+```
+x120x 1-0036: battery appears dead: 3050 mV on grid for 600 s with <10 mV/h rise
+```
+
+The health flag clears automatically if the battery recovers (e.g.
+after cells are replaced).
+
+**Prevention:** The most effective protection is Long Life mode —
+keeping cells below 80% significantly reduces the risk of deep
+discharge during an extended power outage, since the battery has
+more usable capacity remaining when the outage begins.
 
 ### Charge mode persistence
 
@@ -654,6 +689,28 @@ this driver for any purpose.
 This project is an independent personal contribution, developed in my
 own time on my own hardware.  It is not affiliated with or endorsed by
 SupTronics, Geekworm, or my employer.
+
+## Changelog
+
+### v0.1.0 — Initial release
+
+- Native Linux kernel driver for the full SupTronics X120x UPS HAT
+  series (X1200–X1209)
+- Registers three `power_supply` devices: `x120x-battery`,
+  `x120x-ac`, `x120x-charger`
+- Full UPower integration — battery icon, percentage, voltage, energy,
+  charge rate, time-to-empty/full, battery health
+- Dead battery detection — reports `health=Dead` when cells are stuck
+  below 3.10 V on grid for 10 minutes with no charging progress
+- **Fast mode** — charges to 100%, then floats with 95% recharge
+  threshold to prevent micro-cycling
+- **Long Life mode** — configurable conservation hysteresis
+  (default 75%/80%) to extend cell lifespan
+- Charge mode persisted across reboots via udev rule
+- Clean undervoltage shutdown via UPower/logind at 2% SoC
+- DKMS packaging — survives kernel updates automatically
+- Device tree overlay for GPIO descriptor API (kernel 6.12+)
+- `install.sh` with `--battery-mah` and `--charge-mode` options
 
 ## License
 

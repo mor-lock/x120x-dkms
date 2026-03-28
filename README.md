@@ -1,8 +1,8 @@
-# x120x-dkms — SupTronics X120x UPS HAT kernel driver
+# x120x-dkms — SupTronics UPS HAT kernel driver
 
-A DKMS kernel driver for the SupTronics X120x UPS HAT series on
-Raspberry Pi.  The UPS boards are designed by SupTronics and distributed
-by Geekworm.
+A DKMS kernel driver for SupTronics UPS HAT boards on Raspberry Pi,
+distributed by Geekworm.  Covers the X120x series and experimentally
+the X728, X729, and X708.
 
 Provides native Linux power supply integration equivalent to a laptop
 battery — battery icon in the taskbar, accurate state of charge,
@@ -182,8 +182,9 @@ from `armhf` users are welcome.
 
 ### Not supported by this driver
 
-- **X728** — uses a different power management IC with different GPIO
-  assignments and an integrated RTC.  Requires its own driver.
+- **X703** — ultra-thin single-cell UPS for Pi 4 only.  Connects via
+  test pins rather than the 40-pin header.  No I2C fuel gauge or GPIO
+  interface accessible from the Pi.  Software shutdown not supported.
 - **X-UPS1** — a universal stackable UPS with 12V/5V dual output and
   no Raspberry Pi GPIO integration.  No I2C fuel gauge interface.
 
@@ -197,7 +198,7 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     health                Good | Dead | Unknown
     present               1 if battery detected
     manufacturer          SupTronics
-    model_name            X120x
+    model_name            X120x (or X728, X708, X729 on experimental boards)
     voltage_now           cell voltage in µV
     voltage_max_design    4200000 µV (4.20 V — full charge)
     voltage_min_design    3200000 µV (3.20 V — safe shutdown floor)
@@ -428,7 +429,9 @@ shutting down cleanly.
 
 ## Hardware interface
 
-All X120x boards use identical GPIO assignments:
+### X120x series (GPIO assignments)
+
+All X120x boards share an identical GPIO interface:
 
 | Signal       | GPIO  | Direction | Description                              |
 |--------------|-------|-----------|------------------------------------------|
@@ -437,10 +440,30 @@ All X120x boards use identical GPIO assignments:
 | AC present   | GPIO6 | input     | High = mains OK, low = on battery        |
 | Charge ctrl  | GPIO16| output    | Low = charging enabled, high = disabled  |
 
-**Note on register layout:** The MAX17043 registers on SupTronics X120x
-boards are mapped differently from the datasheet.  VCELL is at register
-`0x02` and SOC is at `0x04`, as confirmed by SupTronics' published
-software.  This driver follows the observed hardware behaviour.
+### X728 / X729 / X708 (GPIO assignments, experimental)
+
+These boards share GPIO2/3 (I²C) and GPIO6 (AC detect) with the X120x
+series, but add a power-off GPIO and differ in charge control:
+
+| Signal       | X728 V2.x / X729 | X728 V1.x / X708 | Description                         |
+|--------------|------------------|------------------|-------------------------------------|
+| I²C SDA/SCL  | GPIO2 / GPIO3    | GPIO2 / GPIO3    | MAX17043 fuel gauge                 |
+| AC present   | GPIO6            | GPIO6            | High = mains OK, low = on battery   |
+| Power-off    | GPIO26           | GPIO13           | Pulse high ~3 s to cut UPS power    |
+| Charge ctrl  | GPIO16 (V2.5 only) | —              | Low = enabled, high = disabled      |
+| Fan speed    | —                | GPIO16 (X708)    | High = fast, low = slow (not used by driver) |
+
+The power-off GPIO must be pulsed by the driver after OS shutdown to
+tell the UPS to cut power — without it the UPS stays on indefinitely.
+On X120x boards this is handled by `POWER_OFF_ON_HALT=1` in the Pi 5
+bootloader EEPROM instead.
+
+### MAX17043 register layout
+
+**Note on register layout:** The MAX17043 registers on these boards are
+mapped differently from the datasheet.  VCELL is at register `0x02`
+and SOC is at `0x04`, as confirmed by SupTronics' published software.
+This driver follows the observed hardware behaviour.
 
 The fuel gauge default I²C address is `0x36`.  The driver probes
 `0x36, 0x55, 0x32, 0x62` in order to cover all known board revisions.
@@ -487,8 +510,7 @@ step.  Reboot when it finishes.
 
 #### Install script options
 
-Two optional arguments let you configure the battery parameters at
-install time rather than editing `/etc/modprobe.d/x120x.conf` by hand:
+Optional arguments configure the driver at install time:
 
 | Option | Default | Description |
 |---|---|---|
@@ -560,7 +582,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.1.0, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.2.0, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Compile the device tree overlay
 
@@ -755,11 +777,11 @@ multiplied by per-cell capacity.  For example, an X1206 with four
 
 ## Migrating from GPIO scripts
 
-Many X120x users run Python scripts that access GPIO6 and GPIO16
-directly to monitor AC state and control charging.  Once the kernel
-driver is loaded, it claims exclusive ownership of both GPIOs through
-the kernel descriptor API.  Any userspace script directly accessing
-these pins will fail or conflict with the driver.
+Many users of these boards run Python scripts that access GPIO6 and
+GPIO16 directly to monitor AC state and control charging.  Once the
+kernel driver is loaded, it claims exclusive ownership of these GPIOs
+through the kernel descriptor API.  Any userspace script directly
+accessing these pins will fail or conflict with the driver.
 
 ### GPIO6 — AC present (replace with sysfs)
 
@@ -831,7 +853,8 @@ cat /sys/class/power_supply/x120x-battery/status        # Charging | Discharging
 Scripts that poll AC state and call `shutdown` when power is lost
 can be removed entirely.  The driver reports `capacity_level=Critical`
 at 2% SoC (via UPower PercentageAction), which causes systemd-logind to initiate a
-clean shutdown automatically — no script required.
+clean shutdown automatically — no script required.  This works
+identically on headless and desktop installations.
 
 ## Companion daemon
 
@@ -875,10 +898,20 @@ this driver for any purpose.
 **USE AT YOUR OWN RISK.**
 
 This project is an independent personal contribution, developed in my
-own time on my own hardware.  It is not affiliated with or endorsed by
-SupTronics, Geekworm, or my employer.
+own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
 
 ## Changelog
+
+### v0.2.0 — Experimental board support, additional properties
+
+- Experimental support for Geekworm X728 V2.x/V1.x, X708, X729 via
+  `--board` parameter
+- `manufacturer`, `model_name`, `charge_now`, `charge_full`,
+  `voltage_max_design`, `voltage_min_design` properties added
+- Dead battery detection — reports `health=Dead` when cells are stuck
+  below 3.10 V on grid for 10 minutes with no charging progress
+- Migration guide for existing GPIO scripts
+- `install.sh` gains `--board` option
 
 ### v0.1.0 — Initial release
 
@@ -888,9 +921,6 @@ SupTronics, Geekworm, or my employer.
   `x120x-ac`, `x120x-charger`
 - Full UPower integration — battery icon, percentage, voltage, energy,
   charge rate, time-to-empty/full, battery health
-- Dead battery detection — reports `health=Dead` when cells are stuck
-  below 3.10 V on grid for 10 minutes with no charging progress
-- Experimental support for X728 V2.x/V1.x, X708, X729 via `--board` parameter
 - **Fast mode** — charges to 100%, then floats with 95% recharge
   threshold to prevent micro-cycling
 - **Long Life mode** — configurable conservation hysteresis

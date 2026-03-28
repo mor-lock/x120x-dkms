@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * x120x.c - Power supply driver for SupTronics X120x UPS HAT series
+ * x120x.c - Power supply driver for SupTronics/Geekworm UPS HAT series
  *
- * Supported hardware (all share identical GPIO and I2C interface):
+ * Fully supported hardware (identical GPIO and I2C interface):
  *
  *   X1200, X1201, X1202, X1203, X1205, X1206  (Raspberry Pi 5, bottom-mount
  *                                               via pogo pins)
@@ -10,12 +10,25 @@
  *   X1208  (Raspberry Pi 5, UPS + NVMe combo, pogo pins)
  *   X1209  (Raspberry Pi 5/4B/3B+/3B, 40-pin GPIO header)
  *
- * The boards expose four signals to the Raspberry Pi:
+ * Experimental support (untested — board=x728v2 / x728v1 / x708 / x729):
+ *
+ *   X728 V2.x  (all Pi models, 40-pin header, GPIO26 power-off pulse,
+ *               GPIO16 charge control on V2.5 only)
+ *   X728 V1.x  (all Pi models, 40-pin header, GPIO13 power-off pulse)
+ *   X708       (Pi 4/3, 40-pin header, GPIO13 power-off pulse;
+ *               GPIO16 is fan speed — NOT charge control)
+ *   X729       (all Pi models, 40-pin header, GPIO26 power-off pulse,
+ *               DS1307 RTC and OLED handled by separate kernel drivers)
+ *
+ * All boards share the MAX17043 fuel gauge on I2C (address 0x36).
+ * The X120x series exposes four signals to the Raspberry Pi:
  *
  *   GPIO2 / GPIO3  I2C SDA/SCL to MAX17043 fuel gauge (address 0x36)
  *   GPIO6          AC-present: high = mains OK, low = on battery
  *   GPIO16         Charge control: low = charging enabled (default),
  *                                  high = charging disabled
+ *                  NOTE: on X708 GPIO16 controls fan speed, not charging.
+ *                        It is never touched by this driver on X708.
  *
  * This driver registers three power_supply devices:
  *
@@ -116,7 +129,32 @@ MODULE_PARM_DESC(gpio_ac,
 static int gpio_charge_ctrl = 16;
 module_param(gpio_charge_ctrl, int, 0444);
 MODULE_PARM_DESC(gpio_charge_ctrl,
-	"BCM GPIO for charge control: low=enabled high=disabled (default 16)");
+	"BCM GPIO for charge control: low=enabled high=disabled (default 16). "
+	"Ignored on X708 where GPIO16 is fan speed.");
+
+/*
+ * board — selects the board variant.  Controls which GPIOs are claimed
+ * and whether a power-off pulse is needed after OS shutdown.
+ *
+ * Supported values:
+ *   "x120x"  (default) — SupTronics X120x series; no power-off GPIO
+ *   "x728v2" — Geekworm X728 V2.x / X729; GPIO26 power-off pulse
+ *   "x728v1" — Geekworm X728 V1.x;        GPIO13 power-off pulse
+ *   "x708"   — Geekworm X708;              GPIO13 power-off pulse,
+ *                                           GPIO16 is fan — skip charge ctrl
+ *
+ * Boards other than x120x are EXPERIMENTAL and untested.
+ */
+static char *board = "x120x";
+module_param(board, charp, 0444);
+MODULE_PARM_DESC(board,
+	"Board variant: x120x (default), x728v2, x728v1, x708, x729. "
+	"Boards other than x120x are EXPERIMENTAL.");
+
+/* Power-off GPIO numbers per board variant (BCM) */
+#define X728V2_GPIO_POWEROFF	26
+#define X728V1_GPIO_POWEROFF	13
+#define X708_GPIO_POWEROFF	13
 
 /*
  * Battery pack energy parameters.
@@ -218,7 +256,7 @@ MODULE_PARM_DESC(conservation_mode_default,
 
 /* Manufacturer and model name strings */
 #define X120X_MANUFACTURER		"SupTronics"
-#define X120X_MODEL_NAME		"X120x"
+#define X120X_MODEL_NAME		"X120x"	/* overridden at runtime for X728/X708 */
 
 /* Design voltage limits (Li-ion cell, fixed constants) */
 #define X120X_VOLTAGE_MAX_DESIGN_UV	4200000	/* 4.20 V — full charge    */
@@ -268,7 +306,10 @@ struct x120x_chip {
 	struct power_supply	*ac;
 	struct power_supply	*charger;
 	struct gpio_desc	*gpio_ac;
-	struct gpio_desc	*gpio_chrg;
+	struct gpio_desc	*gpio_chrg;	/* NULL on X708 (GPIO16=fan) and boards
+					 * without charge control */
+	struct gpio_desc	*gpio_poweroff;	/* NULL on X120x; pulsed on shutdown */
+	bool			 has_charge_ctrl;	/* false = Fast only, no Long Life  */
 
 	struct mutex		 lock;
 	int			 voltage_uv;
@@ -410,6 +451,34 @@ static void x120x_gpio_set(struct gpio_desc *desc, int val)
 /* -------------------------------------------------------------------------
  * Polling work item
  * ---------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------------
+ * Power-off hook (X728 / X708 / X729 only)
+ *
+ * After the OS has halted, the UPS board will not cut power automatically
+ * (unlike X120x which powers off via POWER_OFF_ON_HALT=1 in the bootloader).
+ * Instead, a GPIO pulse of ~3 seconds is required to tell the UPS to cut
+ * power.  We install this as pm_power_off so the kernel calls it during
+ * systemctl poweroff / halt.
+ *
+ * EXPERIMENTAL: untested on real hardware.
+ * ---------------------------------------------------------------------- */
+
+static struct x120x_chip *x120x_poweroff_chip;
+
+static void x120x_do_poweroff(void)
+{
+	struct x120x_chip *chip = x120x_poweroff_chip;
+
+	if (!chip || !chip->gpio_poweroff)
+		return;
+
+	dev_info(&chip->client->dev,
+		 "pulsing power-off GPIO for 3 s\n");
+	gpiod_set_value_cansleep(chip->gpio_poweroff, 1);
+	mdelay(3000);
+	gpiod_set_value_cansleep(chip->gpio_poweroff, 0);
+}
 
 static void x120x_poll_work(struct work_struct *work)
 {
@@ -680,6 +749,8 @@ notify:
 	 * battery is floating (SoC stable, charger disabled, rate = 0).
 	 * Without it, POWER_NOW never changes and the history graph goes blank.
 	 */
+	if (ac_changed)
+		bat_changed = true;
 	if (bat_changed || --chip->heartbeat_ticks <= 0) {
 		power_supply_changed(chip->battery);
 		chip->heartbeat_ticks = X120X_HEARTBEAT_TICKS;
@@ -868,7 +939,16 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_MODEL_NAME:
-		val->strval = X120X_MODEL_NAME;
+		if (!board || !strcmp(board, "x120x"))
+			val->strval = "X120x";
+		else if (!strcmp(board, "x728v2") || !strcmp(board, "x728v1"))
+			val->strval = "X728";
+		else if (!strcmp(board, "x708"))
+			val->strval = "X708";
+		else if (!strcmp(board, "x729"))
+			val->strval = "X729";
+		else
+			val->strval = X120X_MODEL_NAME;
 		break;
 
 	case POWER_SUPPLY_PROP_TECHNOLOGY:
@@ -1023,6 +1103,12 @@ static int x120x_charger_set_property(struct power_supply *psy,
 		disable = false;
 		break;
 	case POWER_SUPPLY_CHARGE_TYPE_LONGLIFE:
+		if (!chip->has_charge_ctrl) {
+			dev_warn(&chip->client->dev,
+				 "Long Life mode not supported on this board "
+				 "(no charge control GPIO)\n");
+			return -EOPNOTSUPP;
+		}
 		disable = true;
 		break;
 	default:
@@ -1173,17 +1259,75 @@ static int x120x_probe(struct i2c_client *client)
 	 * Request as output-low so charging remains enabled across a
 	 * driver reload, preserving the hardware default.
 	 */
-	/* Restore charge mode from module parameter (survives reboot) */
-	chip->conservation_mode = !!conservation_mode_default;
+	/* ── Board variant setup ------------------------------------------ */
+	/*
+	 * Configure board-specific behaviour: power-off GPIO, charge control
+	 * availability, and experimental warning.
+	 */
+	{
+		int poweroff_gpio = -1;
+		bool is_x120x = !board || !strcmp(board, "x120x");
+		bool is_x708  = !strcmp(board, "x708");
 
-	chip->gpio_chrg = devm_gpiod_get_optional(dev, "charge-ctrl",
-						   GPIOD_OUT_LOW);
+		if (!is_x120x) {
+			dev_warn(dev,
+				 "EXPERIMENTAL: board=%s support is untested.\n"
+				 "Validate correct operation before relying on "
+				 "this driver for any purpose.\n", board);
+		}
+
+		if (!strcmp(board, "x728v2") || !strcmp(board, "x729"))
+			poweroff_gpio = X728V2_GPIO_POWEROFF;
+		else if (!strcmp(board, "x728v1") || is_x708)
+			poweroff_gpio = X728V1_GPIO_POWEROFF;
+		else if (!is_x120x)
+			dev_warn(dev, "unknown board variant \"%s\" — "
+				 "treating as x120x\n", board);
+
+		/*
+		 * X708 GPIO16 is fan speed, not charge control.
+		 * X728 V1.x and X729 have no charge control GPIO.
+		 * Only x120x and x728v2 (V2.5) have charge control.
+		 */
+		chip->has_charge_ctrl = is_x120x ||
+					!strcmp(board, "x728v2");
+
+		if (poweroff_gpio >= 0) {
+			chip->gpio_poweroff = devm_gpiod_get_index_optional(
+				dev, "power-off", 0, GPIOD_OUT_LOW);
+			if (IS_ERR(chip->gpio_poweroff)) {
+				ret = PTR_ERR(chip->gpio_poweroff);
+				dev_err(dev, "failed to get power-off GPIO: %d\n",
+					ret);
+				return ret;
+			}
+			if (chip->gpio_poweroff) {
+				x120x_poweroff_chip = chip;
+				pm_power_off = x120x_do_poweroff;
+				dev_info(dev, "power-off GPIO registered\n");
+			} else {
+				dev_warn(dev,
+					 "power-off GPIO not found — UPS may not "
+					 "cut power after shutdown\n"
+					 "Install the board device tree overlay\n");
+			}
+		}
+	}
+
+	/* Restore charge mode from module parameter (survives reboot) */
+	if (chip->has_charge_ctrl)
+		chip->conservation_mode = !!conservation_mode_default;
+
+	/* Charge control GPIO — skipped on X708 and boards without it */
+	chip->gpio_chrg = chip->has_charge_ctrl
+		? devm_gpiod_get_optional(dev, "charge-ctrl", GPIOD_OUT_LOW)
+		: NULL;
 	if (IS_ERR(chip->gpio_chrg)) {
 		ret = PTR_ERR(chip->gpio_chrg);
 		dev_err(dev, "failed to get charge-ctrl GPIO: %d\n", ret);
 		return ret;
 	}
-	if (!chip->gpio_chrg)
+	if (chip->has_charge_ctrl && !chip->gpio_chrg)
 		dev_warn(dev,
 			 "charge-ctrl GPIO not found - charge_type will be read-only\n"
 			 "Install the device tree overlay: dtoverlay=x120x\n");
@@ -1268,6 +1412,12 @@ static void x120x_remove(struct i2c_client *client)
 	struct x120x_chip *chip = i2c_get_clientdata(client);
 
 	cancel_delayed_work_sync(&chip->work);
+
+	/* Unregister power-off hook if we installed it */
+	if (chip->gpio_poweroff && pm_power_off == x120x_do_poweroff) {
+		pm_power_off = NULL;
+		x120x_poweroff_chip = NULL;
+	}
 }
 
 /* -------------------------------------------------------------------------
@@ -1359,7 +1509,8 @@ module_init(x120x_init);
 module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
-MODULE_DESCRIPTION("SupTronics X120x UPS HAT power supply driver");
+MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
+MODULE_VERSION("0.2.0");
 MODULE_LICENSE("GPL v2");
 
 /*

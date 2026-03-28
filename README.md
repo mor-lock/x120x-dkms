@@ -132,6 +132,46 @@ by this driver:
 ² Connects via the 40-pin GPIO header.  An optional pogo pin enables
   the power button function on Pi 5; not required on Pi 4/3.
 
+### Experimental board support
+
+The driver includes **untested, experimental** support for older Geekworm
+UPS HAT boards that share the same MAX17043 fuel gauge and GPIO6 AC-detect
+interface. These boards additionally require a GPIO pulse to cut power after
+OS shutdown — without it the UPS stays on indefinitely after `poweroff`.
+
+| Board | Pi support | Power-off GPIO | Charge control |
+|-------|-----------|----------------|----------------|
+| X728 V2.x | All Pi models | GPIO26 | GPIO16 (V2.5 only) |
+| X728 V1.x | All Pi models | GPIO13 | None |
+| X708 | Pi 4/3 only | GPIO13 | None (GPIO16 = fan speed) |
+| X729 | All Pi models | GPIO26 | None |
+
+To install for an X728 V2.x board:
+
+```bash
+sudo bash install.sh --battery-mah 6000 --board x728v2
+sudo reboot
+```
+
+Available board variants: `x120x` (default), `x728v2`, `x728v1`, `x708`, `x729`.
+
+**Important notes for experimental boards:**
+
+- Long Life mode is only available on boards with charge control (X120x and
+  X728 V2.5). On all other boards `charge_type` is read-only and always
+  returns `Fast`.
+- The power-off GPIO pulse is registered via `pm_power_off` and fires after
+  `systemctl poweroff`. The DT overlay must provide the `power-off-gpios`
+  property for this to work — without it a warning is logged and the UPS
+  will not cut power automatically after shutdown.
+- The DS1307 RTC on X728/X729 is handled by the existing mainline
+  `rtc-ds1307` kernel driver, not this driver. Add `dtoverlay=i2c-rtc,ds1307`
+  to `config.txt` to enable it.
+- GPIO16 on the X708 controls **fan speed**, not charging. This driver never
+  touches GPIO16 on X708.
+- **None of these boards have been tested by the author.** Reports and
+  feedback from users with this hardware are very welcome.
+
 **Architecture note:** The driver has been developed and tested on
 Raspberry Pi OS 64-bit (`aarch64`).  The X1209 also supports Pi 4B,
 Pi 3B+, and Pi 3B, which can run 32-bit Raspberry Pi OS (`armhf`).
@@ -454,6 +494,7 @@ install time rather than editing `/etc/modprobe.d/x120x.conf` by hand:
 |---|---|---|
 | `--battery-mah N` | `1000` | Total pack capacity in mAh. Multiply per-cell capacity by number of cells. |
 | `--charge-mode MODE` | `fast` | Initial charge mode: `fast` or `longlife`. Persisted across reboots. See Getting started for guidance on which to choose. |
+| `--board VARIANT` | `x120x` | Board variant. See Experimental board support for details. Variants other than `x120x` are untested. |
 
 Examples:
 
@@ -698,6 +739,7 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `conservation_start`        | `75`  | SoC % at which charging resumes in Long Life mode |
 | `conservation_end`          | `80`  | SoC % at which charging stops in Long Life mode   |
 | `conservation_mode_default` | `0`   | Start in Long Life mode (`1`) or Fast mode (`0`). Updated automatically on every `charge_type` sysfs write and persisted to `modprobe.d` by a udev rule. |
+| `board`                     | `x120x` | Board variant: `x120x`, `x728v2`, `x728v1`, `x708`, `x729`. Set by installer. Variants other than `x120x` are experimental. |
 
 The install script writes these to `/etc/modprobe.d/x120x.conf`.  To
 change them after installation, edit that file and reboot:
@@ -848,6 +890,7 @@ SupTronics, Geekworm, or my employer.
   charge rate, time-to-empty/full, battery health
 - Dead battery detection — reports `health=Dead` when cells are stuck
   below 3.10 V on grid for 10 minutes with no charging progress
+- Experimental support for X728 V2.x/V1.x, X708, X729 via `--board` parameter
 - **Fast mode** — charges to 100%, then floats with 95% recharge
   threshold to prevent micro-cycling
 - **Long Life mode** — configurable conservation hysteresis

@@ -12,6 +12,9 @@
 #   --charge-mode MODE     Initial charge mode: fast or longlife (default: fast)
 #                          longlife limits charging to 75-80% to extend battery life
 #                          Can be changed at any time via sysfs; persisted across reboots
+#   --board VARIANT        Board variant (default: x120x).
+#                          Supported: x120x, x728v2, x728v1, x708, x729
+#                          Variants other than x120x are EXPERIMENTAL (untested).
 #
 # Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -43,6 +46,7 @@ require_root() {
 
 OPT_MAH=""
 OPT_CHARGE_MODE=""
+OPT_BOARD=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -58,8 +62,15 @@ while [ $# -gt 0 ]; do
             esac
             shift 2
             ;;
+        --board)
+            case "$2" in
+                x120x|x728v2|x728v1|x708|x729) OPT_BOARD="$2" ;;
+                *) die "Unknown board variant: $2  (use x120x, x728v2, x728v1, x708, x729)" ;;
+            esac
+            shift 2
+            ;;
         --help|-h)
-            echo "Usage: sudo bash install.sh [--battery-mah N] [--charge-mode fast|longlife]"
+            echo "Usage: sudo bash install.sh [--battery-mah N] [--charge-mode fast|longlife] [--board x120x|x728v2|x728v1|x708|x729]"
             exit 0
             ;;
         *)
@@ -171,6 +182,22 @@ INPUT_MAH="${OPT_MAH:-1000}"
 CHARGE_MODE_DEFAULT="${OPT_CHARGE_MODE:-fast}"
 CONSERVATION_DEFAULT=0
 [ "${CHARGE_MODE_DEFAULT}" = "longlife" ] && CONSERVATION_DEFAULT=1
+BOARD_VARIANT="${OPT_BOARD:-x120x}"
+
+# Warn if experimental board selected
+if [ "${BOARD_VARIANT}" != "x120x" ]; then
+    warn "Board variant ${BOARD_VARIANT} is EXPERIMENTAL and untested."
+    warn "Validate correct operation before relying on this driver."
+fi
+
+# Long Life not supported on boards without charge control
+if [ "${BOARD_VARIANT}" = "x728v1" ] || [ "${BOARD_VARIANT}" = "x708" ] || [ "${BOARD_VARIANT}" = "x729" ]; then
+    if [ "${CHARGE_MODE_DEFAULT}" = "longlife" ]; then
+        warn "--charge-mode longlife ignored: ${BOARD_VARIANT} has no charge control GPIO"
+        CHARGE_MODE_DEFAULT="fast"
+        CONSERVATION_DEFAULT=0
+    fi
+fi
 
 info "Step 5/10 — Writing battery configuration to ${MODPROBE_CONF}..."
 cat > "${MODPROBE_CONF}" << MODPROBE_EOF
@@ -184,7 +211,7 @@ cat > "${MODPROBE_CONF}" << MODPROBE_EOF
 #   sudo rmmod x120x && sudo modprobe x120x
 # Or simply reboot.
 
-options x120x battery_mah=${INPUT_MAH} conservation_mode_default=${CONSERVATION_DEFAULT}
+options x120x battery_mah=${INPUT_MAH} conservation_mode_default=${CONSERVATION_DEFAULT} board=${BOARD_VARIANT}
 MODPROBE_EOF
 ok "Battery configuration written"
 
@@ -395,6 +422,7 @@ echo -e "  ${BLD}Battery configuration written to:${RST} ${MODPROBE_CONF}"
 echo
 echo -e "    battery_mah              = ${INPUT_MAH} mAh"
 echo -e "    conservation_mode_default = ${CONSERVATION_DEFAULT}  (${CHARGE_MODE_DEFAULT} mode)"
+echo -e "    board                    = ${BOARD_VARIANT}"
 echo
 echo -e "  To change these values, edit ${MODPROBE_CONF} and reboot."
 echo

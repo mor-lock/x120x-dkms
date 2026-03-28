@@ -579,20 +579,6 @@ static void x120x_poll_work(struct work_struct *work)
 		ktime_t now = ktime_get();
 		s64 now_us  = ktime_to_us(now);
 
-		if (ac_changed) {
-			/*
-			 * Do NOT zero energy_rate_uw here.  Zeroing it causes
-			 * UPower to immediately record a 0.000/unknown history
-			 * entry which corrupts gnome-power-statistics graphs.
-			 * The rate will be naturally updated on the next SOC
-			 * change.  Reset the rate tracking window so the first
-			 * post-transition sample starts fresh.
-			 */
-			chip->rate_prev_energy_uwh = e_now;
-			chip->rate_prev_time_us    = now_us;
-			chip->rate_last_change_us  = now_us;
-		}
-
 		/*
 		 * Event-driven rate estimation.
 		 *

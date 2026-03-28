@@ -265,33 +265,28 @@ MODULE_PARM_DESC(conservation_mode_default,
 /* Mark battery absent after this many consecutive I2C failures */
 #define X120X_MAX_ERRORS	5
 
+/* Hardware polling interval */
+#define X120X_POLL_MS		500
+
 /*
- * Self-discharge floor for POWER_NOW during float/idle.
- *
- * When the computed rate is zero (charger disabled, SoC stable),
- * gnome-power-statistics discards zero POWER_NOW values entirely
- * and leaves the history graph blank.  To keep the graph alive we
- * substitute a small negative value representing typical Li-ion
- * self-discharge (~2%/month).  For a 20 Ah pack at 3.7 V:
- *   20000 mAh × 3.7 V × 0.02 / (30 × 24 h) ≈ 2050 µW
- * We use half that (1000 µW = 1 mW) as a conservative floor.
- * The sign is negative (discharging).
+ * Unconditional power_supply_changed() heartbeat interval.
+ * Ensures gnome-power-statistics and other UPower clients receive
+ * a continuous stream of data points even when the battery is
+ * floating (SoC stable, charger disabled, rate near zero).
+ * Expressed in poll ticks: 30 s / 0.5 s = 60 ticks.
  */
-#define X120X_SELF_DISCHARGE_UW	(-1000)
+#define X120X_HEARTBEAT_TICKS	60
 
 /*
  * Self-discharge rate used as POWER_NOW floor when the battery is
  * floating (charger disabled, SoC stable for >90 s).  Li-ion cells
- * self-discharge at roughly 2 %/month.  At a nominal 3.7 V this is
- * approximately 1000 µW for a typical 2–4 cell pack — small enough
+ * self-discharge at roughly 2%%/month.  At a nominal 3.7 V this is
+ * approximately 1000 µW for a typical 2-4 cell pack — small enough
  * to be physically plausible but non-zero so gnome-power-statistics
  * does not treat the value as "no data" and leave the graph blank.
  * Reported as negative (discharging) since the battery is the source.
  */
 #define X120X_SELF_DISCHARGE_UW	(-1000)
-
-/* Hardware polling interval */
-#define X120X_POLL_MS		500
 
 /* -------------------------------------------------------------------------
  * Driver private state
@@ -371,6 +366,7 @@ struct x120x_chip {
 	bool			 battery_dead;		/* confirmed dead battery       */
 
 	struct delayed_work	 work;
+	int			 heartbeat_ticks;	/* counts down to forced notify */
 };
 
 /* -------------------------------------------------------------------------
@@ -760,8 +756,16 @@ notify:
 		power_supply_changed(chip->ac);
 		bat_changed = true;
 	}
-	if (bat_changed)
+	/*
+	 * Notify battery consumers immediately on any real change, or
+	 * unconditionally every X120X_HEARTBEAT_TICKS poll ticks (~30 s).
+	 * Combined with the self-discharge floor on POWER_NOW, this keeps
+	 * the gnome-power-statistics graph populated during float periods.
+	 */
+	if (bat_changed || --chip->heartbeat_ticks <= 0) {
 		power_supply_changed(chip->battery);
+		chip->heartbeat_ticks = X120X_HEARTBEAT_TICKS;
+	}
 
 	schedule_delayed_work(&chip->work, msecs_to_jiffies(X120X_POLL_MS));
 }
@@ -937,13 +941,8 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		 * Instantaneous power in µW.  Positive = charging,
 		 * negative = discharging.  Derived from the smoothed
 		 * energy_rate computed in the polling loop.
-		 *
-		 * When the rate is zero (float/idle, SoC stable) substitute a
-		 * small self-discharge floor so that gnome-power-statistics does
-		 * not discard the value and leave the history graph blank.
 		 */
-		val->intval = energy_rate_uw ? energy_rate_uw
-					     : X120X_SELF_DISCHARGE_UW;
+		val->intval = energy_rate_uw;
 		break;
 
 	case POWER_SUPPLY_PROP_MANUFACTURER:

@@ -425,10 +425,17 @@ To disable it, change the line to:
 HandleLowBattery=ignore
 ```
 
-The installer also sets `CriticalPowerAction=PowerOff` in
-`/etc/UPower/UPower.conf`.  The default value `HybridSleep` requires
-swap space and will hang indefinitely on a Raspberry Pi rather than
-shutting down cleanly.
+The installer also configures `/etc/UPower/UPower.conf` with two
+settings:
+
+- `CriticalPowerAction=PowerOff` — the default `HybridSleep` requires
+  swap space and hangs indefinitely on a Raspberry Pi.
+- `NoPollBatteries=true` — the driver sends UPower a notification on
+  every meaningful state change and on a 30-second heartbeat.  UPower
+  polling the kernel independently on its own timer causes race
+  conditions that produce spurious `0%/unknown` entries in the history
+  files and corrupt the gnome-power-statistics rate and charge graphs.
+  Disabling polling eliminates these artefacts.
 
 ## Hardware interface
 
@@ -904,6 +911,22 @@ This project is an independent personal contribution, developed in my
 own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
 
 ## Changelog
+
+### v0.3.0 — Graph fixes, UPower polling, rate smoothing
+
+- `NoPollBatteries=true` set in `UPower.conf` by installer — eliminates
+  spurious `0%/unknown` history entries caused by UPower polling the
+  kernel independently of driver notifications
+- Battery status during Fast mode float changed to `Discharging` —
+  UPower records `discharging` history entries during float so
+  gnome-power-statistics rate and charge graphs stay populated
+- Self-discharge floor (`-1 mW`) used as `POWER_NOW` when SoC is
+  stable for >90 s — prevents graph gaps during float periods
+- 30-second heartbeat `power_supply_changed()` notification — keeps
+  UPower history recording active during stable float periods
+- AC state change no longer resets rate tracking window — rate
+  computation is now continuous across grid transitions, eliminating
+  transition spikes in the rate graph
 
 ### v0.2.0 — Experimental board support, additional properties
 

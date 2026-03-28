@@ -580,7 +580,14 @@ static void x120x_poll_work(struct work_struct *work)
 		s64 now_us  = ktime_to_us(now);
 
 		if (ac_changed) {
-			chip->energy_rate_uw       = 0;
+			/*
+			 * Do NOT zero energy_rate_uw here.  Zeroing it causes
+			 * UPower to immediately record a 0.000/unknown history
+			 * entry which corrupts gnome-power-statistics graphs.
+			 * The rate will be naturally updated on the next SOC
+			 * change.  Reset the rate tracking window so the first
+			 * post-transition sample starts fresh.
+			 */
 			chip->rate_prev_energy_uwh = e_now;
 			chip->rate_prev_time_us    = now_us;
 			chip->rate_last_change_us  = now_us;
@@ -752,15 +759,17 @@ notify:
 
 	if (chrg_changed)
 		power_supply_changed(chip->charger);
-	if (ac_changed) {
+	if (ac_changed)
 		power_supply_changed(chip->ac);
-		bat_changed = true;
-	}
 	/*
 	 * Notify battery consumers immediately on any real change, or
 	 * unconditionally every X120X_HEARTBEAT_TICKS poll ticks (~30 s).
-	 * Combined with the self-discharge floor on POWER_NOW, this keeps
-	 * the gnome-power-statistics graph populated during float periods.
+	 *
+	 * On AC state change we deliberately skip the immediate battery
+	 * notification and let the next poll tick deliver it instead.
+	 * This gives the I2C values one poll interval (500 ms) to settle
+	 * before UPower reads them, preventing the spurious 0.000/unknown
+	 * history entries that corrupt gnome-power-statistics graphs.
 	 */
 	if (bat_changed || --chip->heartbeat_ticks <= 0) {
 		power_supply_changed(chip->battery);

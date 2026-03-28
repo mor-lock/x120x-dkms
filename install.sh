@@ -12,9 +12,6 @@
 #   --charge-mode MODE     Initial charge mode: fast or longlife (default: fast)
 #                          longlife limits charging to 75-80% to extend battery life
 #                          Can be changed at any time via sysfs; persisted across reboots
-#   --board VARIANT        Board variant (default: x120x).
-#                          Supported: x120x, x728v2, x728v1, x708, x729
-#                          Variants other than x120x are EXPERIMENTAL (untested).
 #
 # Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -46,7 +43,6 @@ require_root() {
 
 OPT_MAH=""
 OPT_CHARGE_MODE=""
-OPT_BOARD=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -62,15 +58,8 @@ while [ $# -gt 0 ]; do
             esac
             shift 2
             ;;
-        --board)
-            case "$2" in
-                x120x|x728v2|x728v1|x708|x729) OPT_BOARD="$2" ;;
-                *) die "Unknown board variant: $2  (use x120x, x728v2, x728v1, x708, x729)" ;;
-            esac
-            shift 2
-            ;;
         --help|-h)
-            echo "Usage: sudo bash install.sh [--battery-mah N] [--charge-mode fast|longlife] [--board x120x|x728v2|x728v1|x708|x729]"
+            echo "Usage: sudo bash install.sh [--battery-mah N] [--charge-mode fast|longlife]"
             exit 0
             ;;
         *)
@@ -182,22 +171,6 @@ INPUT_MAH="${OPT_MAH:-1000}"
 CHARGE_MODE_DEFAULT="${OPT_CHARGE_MODE:-fast}"
 CONSERVATION_DEFAULT=0
 [ "${CHARGE_MODE_DEFAULT}" = "longlife" ] && CONSERVATION_DEFAULT=1
-BOARD_VARIANT="${OPT_BOARD:-x120x}"
-
-# Warn if experimental board selected
-if [ "${BOARD_VARIANT}" != "x120x" ]; then
-    warn "Board variant ${BOARD_VARIANT} is EXPERIMENTAL and untested."
-    warn "Validate correct operation before relying on this driver."
-fi
-
-# Long Life not supported on boards without charge control
-if [ "${BOARD_VARIANT}" = "x728v1" ] || [ "${BOARD_VARIANT}" = "x708" ] || [ "${BOARD_VARIANT}" = "x729" ]; then
-    if [ "${CHARGE_MODE_DEFAULT}" = "longlife" ]; then
-        warn "--charge-mode longlife ignored: ${BOARD_VARIANT} has no charge control GPIO"
-        CHARGE_MODE_DEFAULT="fast"
-        CONSERVATION_DEFAULT=0
-    fi
-fi
 
 info "Step 5/10 — Writing battery configuration to ${MODPROBE_CONF}..."
 cat > "${MODPROBE_CONF}" << MODPROBE_EOF
@@ -211,7 +184,7 @@ cat > "${MODPROBE_CONF}" << MODPROBE_EOF
 #   sudo rmmod x120x && sudo modprobe x120x
 # Or simply reboot.
 
-options x120x battery_mah=${INPUT_MAH} conservation_mode_default=${CONSERVATION_DEFAULT} board=${BOARD_VARIANT}
+options x120x battery_mah=${INPUT_MAH} conservation_mode_default=${CONSERVATION_DEFAULT}
 MODPROBE_EOF
 ok "Battery configuration written"
 
@@ -306,8 +279,14 @@ else
     ok "HandleLowBattery=poweroff set in ${LOGIND_CONF}"
 fi
 
-# UPower CriticalPowerAction must be PowerOff, not HybridSleep.
-# HybridSleep requires swap and will hang on a Raspberry Pi.
+# UPower configuration:
+#   CriticalPowerAction=PowerOff  — HybridSleep hangs on Raspberry Pi.
+#   NoPollBatteries=true          — The driver sends uevents on all state
+#                                   changes and on a 30s heartbeat.  UPower
+#                                   polling the kernel independently causes
+#                                   races that produce spurious 0%/unknown
+#                                   entries in the history files and corrupt
+#                                   gnome-power-statistics graphs.
 UPOWER_CONF="/etc/UPower/UPower.conf"
 if [ -f "${UPOWER_CONF}" ]; then
     if grep -q "^CriticalPowerAction=PowerOff" "${UPOWER_CONF}" 2>/dev/null; then
@@ -317,11 +296,20 @@ if [ -f "${UPOWER_CONF}" ]; then
         echo "" >> "${UPOWER_CONF}"
         echo "# Added by x120x-dkms installer — HybridSleep hangs on Raspberry Pi." >> "${UPOWER_CONF}"
         echo "CriticalPowerAction=PowerOff" >> "${UPOWER_CONF}"
-        systemctl restart upower 2>/dev/null || true
         ok "CriticalPowerAction=PowerOff set in ${UPOWER_CONF}"
     fi
+    if grep -q "^NoPollBatteries=true" "${UPOWER_CONF}" 2>/dev/null; then
+        ok "NoPollBatteries=true already set in ${UPOWER_CONF}"
+    else
+        sed -i 's/^NoPollBatteries=/#NoPollBatteries=/' "${UPOWER_CONF}" 2>/dev/null || true
+        echo "" >> "${UPOWER_CONF}"
+        echo "# Added by x120x-dkms installer — driver sends uevents; polling causes races." >> "${UPOWER_CONF}"
+        echo "NoPollBatteries=true" >> "${UPOWER_CONF}"
+        ok "NoPollBatteries=true set in ${UPOWER_CONF}"
+    fi
+    systemctl restart upower 2>/dev/null || true
 else
-    warn "UPower config not found at ${UPOWER_CONF} — skipping CriticalPowerAction fix"
+    warn "UPower config not found at ${UPOWER_CONF} — skipping UPower configuration"
 fi
 
 # -------------------------------------------------------------------------
@@ -422,7 +410,6 @@ echo -e "  ${BLD}Battery configuration written to:${RST} ${MODPROBE_CONF}"
 echo
 echo -e "    battery_mah              = ${INPUT_MAH} mAh"
 echo -e "    conservation_mode_default = ${CONSERVATION_DEFAULT}  (${CHARGE_MODE_DEFAULT} mode)"
-echo -e "    board                    = ${BOARD_VARIANT}"
 echo
 echo -e "  To change these values, edit ${MODPROBE_CONF} and reboot."
 echo

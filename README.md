@@ -185,6 +185,9 @@ from `armhf` users are welcome.
 - **X703** — ultra-thin single-cell UPS for Pi 4 only.  Connects via
   test pins rather than the 40-pin header.  No I2C fuel gauge or GPIO
   interface accessible from the Pi.  Software shutdown not supported.
+- **X735** — power management and PWM fan controller, not a UPS.  Has
+  no battery fuel gauge and no I2C interface.  Nothing for this driver
+  to interface with.
 - **X-UPS1** — a universal stackable UPS with 12V/5V dual output and
   no Raspberry Pi GPIO integration.  No I2C fuel gauge interface.
 

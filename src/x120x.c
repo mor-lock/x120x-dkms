@@ -875,10 +875,16 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		 *   capacity < X120X_SOC_CRITICAL_PCT → CRITICAL
 		 *     → UPower warning-level=action → logind poweroff
 		 *   capacity < X120X_SOC_LOW_PCT → LOW → desktop warning
+		 *
+		 * CRITICAL is only reported when on battery (ac_online == 0).
+		 * When grid power is present the battery is charging and a low
+		 * SoC is a transient condition — reporting CRITICAL would cause
+		 * a shutdown loop: battery drains → shutdown → reboot → battery
+		 * still low → shutdown again, even with the charger connected.
 		 */
 		if (!present) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN;
-		} else if (capacity_pct < X120X_SOC_CRITICAL_PCT) {
+		} else if (!ac_online && capacity_pct < X120X_SOC_CRITICAL_PCT) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
 		} else if (capacity_pct < X120X_SOC_LOW_PCT) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_LOW;
@@ -1324,7 +1330,13 @@ static int x120x_probe(struct i2c_client *client)
 	if (chip->has_charge_ctrl)
 		chip->conservation_mode = !!conservation_mode_default;
 
-	/* Charge control GPIO — skipped on X708 and boards without it */
+	/*
+	 * Charge control GPIO — skipped on X708 and boards without it.
+	 * Initialise LOW (charging enabled) unconditionally so the battery
+	 * starts charging immediately after a deep-discharge boot, even if
+	 * conservation_mode_default is set.  The poll loop will apply the
+	 * correct hysteresis on its first tick.
+	 */
 	chip->gpio_chrg = chip->has_charge_ctrl
 		? devm_gpiod_get_optional(dev, "charge-ctrl", GPIOD_OUT_LOW)
 		: NULL;

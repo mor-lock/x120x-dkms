@@ -232,7 +232,9 @@ MODULE_PARM_DESC(conservation_mode_default,
 #define MAX17043_SOC_256(raw)		((int)(raw))
 
 /* Trigger a quick-start if initial SoC is outside this range (%) */
-#define MAX17043_SOC_MIN_PLAUSIBLE	1
+/* NOTE: 0% is a valid real reading after deep discharge — do not
+ * treat it as implausible.  Only values >100 are truly impossible. */
+#define MAX17043_SOC_MIN_PLAUSIBLE	0
 #define MAX17043_SOC_MAX_PLAUSIBLE	100
 
 /* -------------------------------------------------------------------------
@@ -726,10 +728,18 @@ notify:
 			start_thr = 95;
 		}
 
+		/*
+		 * Default to charging enabled.  Only disable the charger when
+		 * SoC is reliably at or above the stop threshold.  This means
+		 * the charger is always on at boot, after a deep discharge, or
+		 * any time the SoC reading is uncertain — it is never harmful
+		 * to charge too much; it is harmful to leave a low battery
+		 * uncharged.
+		 */
 		if (chip->capacity_pct >= end_thr)
 			new_gpio_val = 1; /* stop charging */
-		else if (chip->capacity_pct <= start_thr)
-			new_gpio_val = 0; /* resume charging */
+		else
+			new_gpio_val = 0; /* charging enabled (default) */
 
 		if (new_gpio_val != gpio_val) {
 			x120x_gpio_set(chip->gpio_chrg, new_gpio_val);
@@ -875,16 +885,13 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		 *   capacity < X120X_SOC_CRITICAL_PCT → CRITICAL
 		 *     → UPower warning-level=action → logind poweroff
 		 *   capacity < X120X_SOC_LOW_PCT → LOW → desktop warning
-		 *
-		 * CRITICAL is only reported when on battery (ac_online == 0).
-		 * When grid power is present the battery is charging and a low
-		 * SoC is a transient condition — reporting CRITICAL would cause
-		 * a shutdown loop: battery drains → shutdown → reboot → battery
-		 * still low → shutdown again, even with the charger connected.
 		 */
 		if (!present) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN;
 		} else if (!ac_online && capacity_pct < X120X_SOC_CRITICAL_PCT) {
+			/* Only report CRITICAL on battery — on AC the battery is
+			 * charging and shutting down would cause a livelock after
+			 * a deep discharge event. */
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
 		} else if (capacity_pct < X120X_SOC_LOW_PCT) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_LOW;
@@ -1349,6 +1356,15 @@ static int x120x_probe(struct i2c_client *client)
 		dev_warn(dev,
 			 "charge-ctrl GPIO not found - charge_type will be read-only\n"
 			 "Install the device tree overlay: dtoverlay=x120x\n");
+	/*
+	 * Explicitly force the charger on at probe.  GPIOD_OUT_LOW above
+	 * sets the initial state, but if the GPIO was previously latched
+	 * high (charger inhibited) by a prior driver instance, the hardware
+	 * pin may not reflect the new software state until we write it.
+	 * Always drive it low here so charging begins immediately.
+	 */
+	if (chip->gpio_chrg)
+		x120x_gpio_set(chip->gpio_chrg, 0);
 
 	/* -- Initial chip setup ------------------------------------------- */
 	ret = x120x_clear_alert(chip);

@@ -244,6 +244,19 @@ else
     ok "Added dtoverlay=x120x to ${CONFIG_TXT}"
 fi
 
+# Add pull-up on GPIO6 (AC-present signal).
+# The X1206 drives GPIO6 high when AC is present and actively pulls it
+# low on AC loss.  Without a pull-up the pin can float low at boot
+# before the hardware asserts the signal, causing the driver to falsely
+# report ac_online=0 and trigger an unnecessary shutdown even with the
+# charger connected.
+if grep -q "^gpio=6=pu" "${CONFIG_TXT}"; then
+    ok "gpio=6=pu already present in ${CONFIG_TXT}"
+else
+    printf 'gpio=6=pu\n' >> "${CONFIG_TXT}"
+    ok "Added gpio=6=pu to ${CONFIG_TXT}"
+fi
+
 # -------------------------------------------------------------------------
 # Step 8: Bootloader check (Pi 5 only)
 # -------------------------------------------------------------------------

@@ -308,9 +308,12 @@ cells had already been destroyed by deep discharge and cannot recover.
 
 #### How the driver prevents this
 
-The driver reports `capacity_level=Critical` when SoC drops below 5%,
-which triggers UPower's `warning-level: low` notification.  UPower then
-fires `warning-level: action` when SoC reaches its `PercentageAction`
+The driver reports `capacity_level=Critical` when SoC drops below 5%
+**and the system is on battery** (`ac_online=0`).  When mains power is
+present, even at 0% SoC, `capacity_level` is never reported as Critical
+— the battery is charging and shutting down would cause a livelock on
+recovery from a deep discharge event.  UPower then fires
+`warning-level: action` when SoC reaches its `PercentageAction`
 threshold (default 2%), which causes `systemd-logind` to initiate a
 clean OS shutdown — well before the cells reach a dangerous voltage.
 The install script configures this automatically via
@@ -468,6 +471,50 @@ tell the UPS to cut power — without it the UPS stays on indefinitely.
 On X120x boards this is handled by `POWER_OFF_ON_HALT=1` in the Pi 5
 bootloader EEPROM instead.
 
+### GPIO6 pull-up
+
+The X120x boards drive GPIO6 high when mains power is present and
+actively pull it low on power loss.  Without a software pull-up, GPIO6
+can float low at boot before the X1206 hardware has finished
+initialising — causing the driver to falsely report `ac_online=0` even
+when the charger is connected.  This is particularly likely when the
+PSU is overloaded at boot (e.g. simultaneously charging the UPS battery
+and powering other USB devices), which can cause the input voltage to
+sag and delay or prevent GPIO6 assertion.
+
+The installer adds `gpio=6=pu` to `config.txt` to apply a software
+pull-up.  This ensures GPIO6 reads high by default until the hardware
+actively drives it low, eliminating false AC-lost readings at boot.
+
+If you installed the driver manually, add this line to
+`/boot/firmware/config.txt` (or `/boot/config.txt` on older systems):
+
+```
+gpio=6=pu
+```
+
+### Deep discharge recovery
+
+After a genuine deep discharge event the MAX17043 fuel gauge may report
+0% SoC on the next boot.  The driver handles this correctly:
+
+- 0% SoC is treated as a valid reading, not implausible — a quick-start
+  command (which resets the fuel gauge's SoC estimation) is not issued,
+  avoiding a reset at the worst possible moment.
+- The charger (GPIO16) is forced low at probe and defaults to enabled
+  whenever SoC is below the stop threshold — the battery starts charging
+  immediately on every boot regardless of saved state.
+- `capacity_level=Critical` is never reported when mains power is
+  present, preventing UPower from triggering a shutdown loop while the
+  battery is recovering.
+- The `gpio=6=pu` pull-up ensures AC is detected correctly even if the
+  PSU voltage sagged during the outage.
+
+Without these fixes, a deep discharge followed by a power restoration
+can result in a livelock: the Pi boots, UPower immediately fires a
+critical battery shutdown, the Pi reboots, and the cycle repeats until
+the battery is exhausted.
+
 ### MAX17043 register layout
 
 **Note on register layout:** The MAX17043 registers on these boards are
@@ -571,15 +618,15 @@ headers needed to compile the module.
 DKMS expects the source under `/usr/src/<name>-<version>/`:
 
 ```bash
-sudo cp -r . /usr/src/x120x-0.1.0
+sudo cp -r . /usr/src/x120x-0.2.0
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.1.0
-sudo dkms build x120x/0.1.0
-sudo dkms install x120x/0.1.0
+sudo dkms add x120x/0.2.0
+sudo dkms build x120x/0.2.0
+sudo dkms install x120x/0.2.0
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -928,7 +975,7 @@ own time on my own hardware.  It is not affiliated with or endorsed by SupTronic
   computation is now continuous across grid transitions, eliminating
   transition spikes in the rate graph
 
-### v0.2.0 — Experimental board support, additional properties
+### v0.2.0 — Experimental board support, deep discharge recovery fixes
 
 - Experimental support for Geekworm X728 V2.x/V1.x, X708, X729 via
   `--board` parameter
@@ -938,6 +985,15 @@ own time on my own hardware.  It is not affiliated with or endorsed by SupTronic
   below 3.10 V on grid for 10 minutes with no charging progress
 - Migration guide for existing GPIO scripts
 - `install.sh` gains `--board` option
+- `capacity_level=Critical` only reported when on battery (`ac_online=0`)
+  — prevents UPower shutdown livelock during deep discharge recovery on AC
+- 0% SoC no longer treated as implausible — quick-start not issued on
+  a genuinely empty battery, avoiding a fuel gauge reset during recovery
+- Charger (GPIO16) forced low at probe and defaults to enabled whenever
+  SoC is below stop threshold — charging starts immediately on every boot
+- `gpio=6=pu` added to `config.txt` by installer — prevents GPIO6
+  floating low at boot before the X1206 hardware asserts the AC signal,
+  which could cause false `ac_online=0` readings after a power outage
 
 ### v0.1.0 — Initial release
 

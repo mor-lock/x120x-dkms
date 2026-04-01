@@ -928,35 +928,6 @@ This driver follows the conventions of
 Upstreaming is a future goal once the driver has proven itself in
 production use.
 
-## Copyright
-
-Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
-
-## Disclaimer
-
-THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
-
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES, OR OTHER LIABILITY — INCLUDING BUT NOT LIMITED TO LOSS OF
-DATA, HARDWARE DAMAGE, FINANCIAL LOSS, OR CONSEQUENTIAL DAMAGES OF ANY
-KIND — WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
-FROM, OUT OF, OR IN CONNECTION WITH THIS SOFTWARE OR THE USE OR MISUSE
-THEREOF.
-
-This driver interacts directly with battery hardware.  Incorrect
-operation, misconfiguration, or use on unsupported hardware may result in
-improper charging behaviour, failure to shut down before battery
-exhaustion, or hardware damage.  You are solely responsible for
-validating correct operation on your specific hardware before relying on
-this driver for any purpose.
-
-**USE AT YOUR OWN RISK.**
-
-This project is an independent personal contribution, developed in my
-own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
-
 ## Real-world incidents that shaped this driver
 
 This driver was developed on hardware running unattended, always-on.
@@ -1134,6 +1105,35 @@ simultaneously.  The fix is a multi-port GaN charger with independent
 per-port overcurrent protection, so no single device's load can starve
 the UPS input.  The driver hardening ensures the system recovers
 correctly even if the hardware situation recurs.
+
+## Copyright
+
+Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
+
+## Disclaimer
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES, OR OTHER LIABILITY — INCLUDING BUT NOT LIMITED TO LOSS OF
+DATA, HARDWARE DAMAGE, FINANCIAL LOSS, OR CONSEQUENTIAL DAMAGES OF ANY
+KIND — WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
+FROM, OUT OF, OR IN CONNECTION WITH THIS SOFTWARE OR THE USE OR MISUSE
+THEREOF.
+
+This driver interacts directly with battery hardware.  Incorrect
+operation, misconfiguration, or use on unsupported hardware may result in
+improper charging behaviour, failure to shut down before battery
+exhaustion, or hardware damage.  You are solely responsible for
+validating correct operation on your specific hardware before relying on
+this driver for any purpose.
+
+**USE AT YOUR OWN RISK.**
+
+This project is an independent personal contribution, developed in my
+own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
 
 ## Changelog
 

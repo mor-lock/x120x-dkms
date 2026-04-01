@@ -1010,11 +1010,14 @@ the information needed to trigger a clean shutdown via the standard
 `HandleLowBattery=poweroff` path before the cells reach a dangerous
 voltage.  Without this, UPower has no basis on which to act.
 
-The incident made clear that the driver alone cannot shut down the
-system — it must be paired with a userspace shutdown daemon that acts
-on the signals the driver provides.  The driver's role is to surface
-accurate, timely power state information; acting on it is the
-responsibility of userspace.
+The incident made clear that the X120x hardware provides no
+undervoltage protection whatsoever — software must supply it entirely.
+The install script configures the complete shutdown chain automatically:
+the driver reports `capacity_level=Critical` at low SoC, UPower
+escalates this to `warning-level: action`, and logind calls
+`systemctl poweroff` — all without any additional daemon or script.
+No extra userspace software is required beyond what the installer
+sets up.
 
 ---
 
@@ -1137,41 +1140,64 @@ own time on my own hardware.  It is not affiliated with or endorsed by SupTronic
 
 ## Changelog
 
-### v0.3.0 — Graph fixes, UPower polling, rate smoothing
+### v0.2.0 — Experimental board support, deep discharge recovery, graph fixes
 
+**Experimental board support**
+- Experimental support for Geekworm X728 V2.x/V1.x, X708, X729 via
+  `--board` parameter in `install.sh`
+- `pm_power_off` hook pulses the power-off GPIO on these boards after
+  OS shutdown so the UPS cuts power automatically
+
+**Additional power_supply properties**
+- `manufacturer`, `model_name`, `charge_now`, `charge_full`,
+  `charge_empty`, `voltage_max_design`, `voltage_min_design` added
+- `energy_now`, `energy_full`, `energy_empty` computed from SoC and
+  pack capacity
+
+**Dead battery detection**
+- Driver reports `health=Dead` when cell voltage remains below 3.10 V
+  on grid for ≥ 10 minutes with no meaningful voltage rise (<10 mV/h)
+  and SoC ≤ 2% — detects cells destroyed by deep discharge
+- Kernel log entry emitted on confirmation; clears automatically if
+  voltage recovers
+
+**Deep discharge recovery hardening**
+- `capacity_level=Critical` only reported when on battery
+  (`ac_online=0`) — on AC the battery is charging; reporting Critical
+  caused UPower to trigger an immediate shutdown livelock after a deep
+  discharge event
+- 0% SoC no longer treated as implausible — quick-start command not
+  issued on a genuinely empty battery, avoiding a fuel gauge reset
+  during recovery
+- Charger (GPIO16) explicitly forced low at probe — charging starts
+  immediately on every boot regardless of any previously latched state
+- Charger default changed to always-on: the resume threshold is
+  removed; the charger is enabled whenever SoC is below the stop
+  threshold, defaulting to on in all uncertain or low-SoC states
+
+**GPIO6 pull-up**
+- `gpio=6=pu` added to `config.txt` by installer — prevents GPIO6
+  floating low at boot before the X1206 hardware asserts the AC-present
+  signal, eliminating false `ac_online=0` readings after a power outage
+  or PSU overload at boot
+
+**UPower history and graph fixes**
 - `NoPollBatteries=true` set in `UPower.conf` by installer — eliminates
   spurious `0%/unknown` history entries caused by UPower polling the
   kernel independently of driver notifications
-- Battery status during Fast mode float changed to `Discharging` —
-  UPower records `discharging` history entries during float so
-  gnome-power-statistics rate and charge graphs stay populated
-- Self-discharge floor (`-1 mW`) used as `POWER_NOW` when SoC is
+- Battery status during Fast mode float is `Discharging` rather than
+  `Not charging` — UPower records `discharging` history entries during
+  float so gnome-power-statistics graphs stay populated
+- Self-discharge floor (−1 mW) reported as `power_now` when SoC is
   stable for >90 s — prevents graph gaps during float periods
 - 30-second heartbeat `power_supply_changed()` notification — keeps
-  UPower history recording active during stable float periods
-- AC state change no longer resets rate tracking window — rate
-  computation is now continuous across grid transitions, eliminating
+  UPower history recording active during extended stable float periods
+- AC state change no longer resets the rate tracking window — rate
+  computation is continuous across grid transitions, eliminating
   transition spikes in the rate graph
 
-### v0.2.0 — Experimental board support, deep discharge recovery fixes
-
-- Experimental support for Geekworm X728 V2.x/V1.x, X708, X729 via
-  `--board` parameter
-- `manufacturer`, `model_name`, `charge_now`, `charge_full`,
-  `voltage_max_design`, `voltage_min_design` properties added
-- Dead battery detection — reports `health=Dead` when cells are stuck
-  below 3.10 V on grid for 10 minutes with no charging progress
-- Migration guide for existing GPIO scripts
-- `install.sh` gains `--board` option
-- `capacity_level=Critical` only reported when on battery (`ac_online=0`)
-  — prevents UPower shutdown livelock during deep discharge recovery on AC
-- 0% SoC no longer treated as implausible — quick-start not issued on
-  a genuinely empty battery, avoiding a fuel gauge reset during recovery
-- Charger (GPIO16) forced low at probe and defaults to enabled whenever
-  SoC is below stop threshold — charging starts immediately on every boot
-- `gpio=6=pu` added to `config.txt` by installer — prevents GPIO6
-  floating low at boot before the X1206 hardware asserts the AC signal,
-  which could cause false `ac_online=0` readings after a power outage
+**Migration guide**
+- Added guide for users migrating from existing GPIO scripts
 
 ### v0.1.0 — Initial release
 

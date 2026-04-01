@@ -997,13 +997,6 @@ A kernel log entry is also emitted.  This allows the operator to
 identify destroyed cells and replace them before relying on the UPS
 for protection again.
 
-**Voltage oscillation detection** — a rolling 60-second buffer of
-voltage samples detects the ±15mV rapid-oscillation pattern that
-indicates cells entering the deep discharge damage zone.  Three or
-more such jumps within the window are exposed through the driver's
-health reporting as a high-confidence indicator of imminent cell
-destruction — useful input for any userspace shutdown daemon.
-
 **Capacity level reporting** — the driver reports `capacity_level`
 accurately throughout the discharge curve, giving UPower and logind
 the information needed to trigger a clean shutdown via the standard

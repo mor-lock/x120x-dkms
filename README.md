@@ -957,6 +957,190 @@ this driver for any purpose.
 This project is an independent personal contribution, developed in my
 own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
 
+## Real-world incidents that shaped this driver
+
+This driver was developed on hardware running unattended, always-on.
+Two real power incidents exposed failure modes that no lab test would
+have found — and drove significant hardening of both the driver and the
+companion shutdown daemon.
+
+---
+
+### Incident 1 — Deep discharge and cell destruction (2026-03-05)
+
+#### What happened
+
+A grid outage began at 17:20 UTC on 2026-03-05.  The system ran
+normally on battery for approximately 5.8 hours, reaching the 10% SoC
+shutdown threshold at 23:10 UTC.  The software shutdown layer failed
+to fire — most likely due to charge state oscillation between
+`DRAINING` and `FLOATING` that repeatedly reset the shutdown
+confirmation window before it could complete.
+
+The system continued running on battery.  The fuel gauge saturated at
+0% SoC when the cell voltage reached 3.25V — from that point on,
+voltage was the only reliable signal.  By 02:39 UTC the voltage had
+fallen below 3.0V, the point at which irreversible electrochemical
+damage begins in lithium-ion cells.  The Pi ran until 03:38 UTC when
+the supply rail collapsed at 2.54V — 10.3 hours after the outage
+began.
+
+When grid power returned at 08:58 UTC, the battery had been destroyed.
+The cells could no longer hold a charge above ~2.99V despite being on
+grid for 26+ hours.  Post-mortem analysis of the voltage data confirmed
+a characteristic oscillation signature — rapid ±20 mV swings at the
+fuel gauge output, a known pattern when the MAX17043 is alternating
+reads across cell groups that can no longer hold voltage.
+
+#### What the data revealed
+
+Analysis of the power database from the incident produced several
+findings that informed the driver design:
+
+- The fuel gauge saturates at 0% SoC while voltage is still 3.25V —
+  well above the damage threshold.  Once SoC hits 0%, **voltage is the
+  only reliable indicator** of remaining capacity.
+- Cell damage begins at approximately 3.0V, confirmed by the onset of
+  voltage oscillation in the data.  Sixty-three oscillations of >15mV
+  within intervals of <30 seconds were recorded in the first 100
+  sub-3.0V readings — a distinct signature not seen during healthy
+  discharge.
+- A destroyed battery on grid shows a characteristic plateau: voltage
+  rises only ~165mV over 26 hours (surface charge only), never enters
+  a `CHARGING` state, and settles around 2.99V.  Healthy cells charge
+  from 2.8V to 4.1V within 2–3 hours.
+- The gap between the 10% SoC shutdown trigger and the 3.20V voltage
+  trigger is approximately 14 minutes.  If the SoC-based trigger fails,
+  the voltage backstop is the last line of defence before cell damage.
+
+#### What was added to the driver and companion daemon
+
+**Layered shutdown — `EXHAUSTED`, `DEEP_DISCHARGING`, `BATTERY_DEAD`
+charge states** were added to the companion shutdown daemon:
+
+- `EXHAUSTED` — on battery, SoC=0%, voltage 3.0–3.3V.  The fuel gauge
+  has floored but cells are not yet damaged.  Triggers the standard
+  shutdown confirmation sequence as a last-chance backstop when the
+  primary SoC trigger has failed.
+- `DEEP_DISCHARGING` — on battery, voltage <3.0V, cells in the damage
+  zone.  Triggers an immediate emergency shutdown with no confirmation
+  window — every second matters here.  The voltage oscillation pattern
+  (≥3 jumps of >15mV within 60 seconds) is used as an additional
+  high-confidence detection signal.
+- `BATTERY_DEAD` — on grid, voltage stuck below 3.10V for ≥10 minutes
+  with a voltage rise rate of less than 10mV/h.  Cells have been
+  destroyed and cannot accept charge.  The driver reports
+  `health=Dead` and logs a kernel message.  The companion daemon
+  publishes a persistent alert and sends an operator email.
+
+**Dead battery detection in the kernel driver** — when the system is on
+grid and the cell voltage remains below 3.10V for 10 minutes with no
+meaningful rise, the driver reports `health=Dead` via the
+`x120x-battery/health` sysfs node.  UPower surfaces this as
+`health: dead` and desktop environments display a warning.
+
+**Voltage oscillation detector** — a rolling 60-second buffer of
+voltage samples detects the ±15mV oscillation pattern that indicates
+cells entering deep discharge.  Three or more such jumps within the
+window elevate the `DEEP_DISCHARGING` confidence and can trigger
+immediate shutdown independently of the voltage threshold.
+
+**Shutdown arming fix** — the companion daemon was updated so that once
+a shutdown is armed on battery at low SoC or voltage, it only disarms
+if grid power is genuinely restored — not if the condition transiently
+clears due to fuel gauge noise or charge state oscillation.
+
+---
+
+### Incident 2 — Grid return undetected, recovery livelock (2026-03-30)
+
+#### What happened
+
+A grid outage occurred during a public holiday.  The system shut down
+correctly at approximately 3.4% SoC / 3.55V — the companion daemon
+fired as designed.  When grid power returned, the system entered a
+livelock: it booted, immediately shut down, rebooted, and repeated the
+cycle until the battery was nearly exhausted.
+
+Remote diagnosis confirmed `ac_online=0` despite the charger being
+connected.  The charging indicator LED on the UPS board was lit,
+confirming that input power was reaching the hardware — but the driver
+was not detecting it.
+
+#### Root cause analysis
+
+Two contributing causes were identified:
+
+**PSU overload at boot.** The power supply was shared between the UPS
+board and a 4G mobile router (connected to the Pi's USB-A port).  At
+simultaneous boot after the outage — UPS charging four depleted cells
+(~15W) plus Pi boot (~8W) plus router charging (~10W) — total demand
+likely exceeded the 25W PSU rating.  The resulting voltage sag
+prevented the UPS hardware from asserting the AC-present signal on
+GPIO6, leaving the pin floating low.
+
+**Missing GPIO6 pull-up.** Without a software pull-up, GPIO6 floats
+low at boot before the UPS hardware has fully initialised and asserted
+the signal.  A marginal input voltage makes this window much larger.
+The driver read `ac_online=0` from the start and never recovered.
+
+With `ac_online=0` and the battery at 0% SoC, the following chain
+fired on every boot:
+
+1. UPower read `capacity_level=Critical` and fired
+   `warning-level: action` immediately — before the driver had finished
+   probing.
+2. logind received the action and called `systemctl poweroff`.
+3. The UPS cut power, then restored it (auto-restart on halt).
+4. The cycle repeated.
+
+The livelock continued until the battery voltage fell low enough that
+the UPS could no longer sustain another boot.
+
+#### What was added to the driver
+
+**`gpio=6=pu` pull-up in `config.txt`** — the installer now adds a
+software pull-up on GPIO6.  The UPS hardware actively drives GPIO6 low
+on power loss and high when AC is present.  The pull-up ensures the pin
+reads high (AC present) by default during boot, before the hardware has
+finished asserting the signal.  A marginal or overloaded PSU can no
+longer cause GPIO6 to float low and produce a false `ac_online=0`.
+
+**`capacity_level=Critical` only reported on battery** — the driver
+previously reported `capacity_level=Critical` whenever SoC dropped
+below 5%, regardless of AC state.  On a nearly-dead battery with AC
+present, this caused UPower to trigger a shutdown loop during recovery.
+The driver now only reports `Critical` when `ac_online=0` — when mains
+is present, even at 0% SoC, the battery is charging and shutting down
+would cause exactly the livelock described above.
+
+**Charger always enabled at probe** — the driver explicitly drives
+GPIO16 low (charger enabled) at probe time, regardless of any
+previously saved state.  A battery that has been deeply discharged
+starts charging immediately on every boot.
+
+**Charger default changed to always-on** — the charge hysteresis logic
+previously only re-enabled the charger when SoC dropped below the
+resume threshold.  The start threshold has been removed: the charger is
+now enabled whenever SoC is below the stop threshold, defaulting to on
+in all uncertain or low-SoC states.
+
+**0% SoC no longer treated as implausible** — the driver previously
+issued a MAX17043 quick-start command when the initial SoC reading was
+0%, treating it as a fuel gauge convergence failure.  After deep
+discharge the battery is genuinely at 0% — issuing a quick-start
+resets the fuel gauge's SoC model at the worst possible moment.  The
+plausibility floor has been lowered to 0%.
+
+#### Operational lesson
+
+**Isolate power domains.** The root hardware cause was a single PSU
+serving multiple loads — UPS charging, Pi boot, and router charging
+simultaneously.  The fix is a multi-port GaN charger with independent
+per-port overcurrent protection, so no single device's load can starve
+the UPS input.  The driver hardening ensures the system recovers
+correctly even if the hardware situation recurs.
+
 ## Changelog
 
 ### v0.3.0 — Graph fixes, UPower polling, rate smoothing

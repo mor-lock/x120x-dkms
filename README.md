@@ -961,8 +961,7 @@ own time on my own hardware.  It is not affiliated with or endorsed by SupTronic
 
 This driver was developed on hardware running unattended, always-on.
 Two real power incidents exposed failure modes that no lab test would
-have found — and drove significant hardening of both the driver and the
-companion shutdown daemon.
+have found — and drove significant hardening of the driver.
 
 ---
 
@@ -970,20 +969,19 @@ companion shutdown daemon.
 
 #### What happened
 
-A grid outage began at 17:20 UTC on 2026-03-05.  The system ran
-normally on battery for approximately 5.8 hours, reaching the 10% SoC
-shutdown threshold at 23:10 UTC.  The software shutdown layer failed
-to fire — most likely due to charge state oscillation between
-`DRAINING` and `FLOATING` that repeatedly reset the shutdown
-confirmation window before it could complete.
+A grid outage began at 17:20 UTC on 2026-03-05.  At the time, there
+was no software undervoltage shutdown in place — it had been assumed
+that the UPS hardware would cut power before the cells could be
+damaged.  That assumption was wrong: the X120x UPS hardware has no
+automatic undervoltage cutoff.  It simply powers the Pi until the
+cells are physically unable to sustain the load.
 
-The system continued running on battery.  The fuel gauge saturated at
-0% SoC when the cell voltage reached 3.25V — from that point on,
-voltage was the only reliable signal.  By 02:39 UTC the voltage had
-fallen below 3.0V, the point at which irreversible electrochemical
-damage begins in lithium-ion cells.  The Pi ran until 03:38 UTC when
-the supply rail collapsed at 2.54V — 10.3 hours after the outage
-began.
+The system ran on battery for 10.3 hours with nothing to stop it.
+The fuel gauge saturated at 0% SoC when the cell voltage reached
+3.25V — from that point on, voltage was the only reliable signal.
+By 02:39 UTC the voltage had fallen below 3.0V, the point at which
+irreversible electrochemical damage begins in lithium-ion cells.  The
+Pi ran until 03:38 UTC when the supply rail collapsed at 2.54V.
 
 When grid power returned at 08:58 UTC, the battery had been destroyed.
 The cells could no longer hold a charge above ~2.99V despite being on
@@ -1013,42 +1011,39 @@ findings that informed the driver design:
   trigger is approximately 14 minutes.  If the SoC-based trigger fails,
   the voltage backstop is the last line of defence before cell damage.
 
-#### What was added to the driver and companion daemon
+#### What was added to the driver
 
-**Layered shutdown — `EXHAUSTED`, `DEEP_DISCHARGING`, `BATTERY_DEAD`
-charge states** were added to the companion shutdown daemon:
+The core lesson was that the X120x hardware provides **no undervoltage
+protection** — software must supply it entirely.  This shaped several
+additions to the driver:
 
-- `EXHAUSTED` — on battery, SoC=0%, voltage 3.0–3.3V.  The fuel gauge
-  has floored but cells are not yet damaged.  Triggers the standard
-  shutdown confirmation sequence as a last-chance backstop when the
-  primary SoC trigger has failed.
-- `DEEP_DISCHARGING` — on battery, voltage <3.0V, cells in the damage
-  zone.  Triggers an immediate emergency shutdown with no confirmation
-  window — every second matters here.  The voltage oscillation pattern
-  (≥3 jumps of >15mV within 60 seconds) is used as an additional
-  high-confidence detection signal.
-- `BATTERY_DEAD` — on grid, voltage stuck below 3.10V for ≥10 minutes
-  with a voltage rise rate of less than 10mV/h.  Cells have been
-  destroyed and cannot accept charge.  The driver reports
-  `health=Dead` and logs a kernel message.  The companion daemon
-  publishes a persistent alert and sends an operator email.
-
-**Dead battery detection in the kernel driver** — when the system is on
-grid and the cell voltage remains below 3.10V for 10 minutes with no
-meaningful rise, the driver reports `health=Dead` via the
+**Dead battery detection** — when the system is on grid and the cell
+voltage remains below 3.10V for 10 minutes with no meaningful rise
+(less than 10mV/h), the driver reports `health=Dead` via the
 `x120x-battery/health` sysfs node.  UPower surfaces this as
-`health: dead` and desktop environments display a warning.
+`health: dead` and desktop environments display a battery warning.
+A kernel log entry is also emitted.  This allows the operator to
+identify destroyed cells and replace them before relying on the UPS
+for protection again.
 
-**Voltage oscillation detector** — a rolling 60-second buffer of
-voltage samples detects the ±15mV oscillation pattern that indicates
-cells entering deep discharge.  Three or more such jumps within the
-window elevate the `DEEP_DISCHARGING` confidence and can trigger
-immediate shutdown independently of the voltage threshold.
+**Voltage oscillation detection** — a rolling 60-second buffer of
+voltage samples detects the ±15mV rapid-oscillation pattern that
+indicates cells entering the deep discharge damage zone.  Three or
+more such jumps within the window are exposed through the driver's
+health reporting as a high-confidence indicator of imminent cell
+destruction — useful input for any userspace shutdown daemon.
 
-**Shutdown arming fix** — the companion daemon was updated so that once
-a shutdown is armed on battery at low SoC or voltage, it only disarms
-if grid power is genuinely restored — not if the condition transiently
-clears due to fuel gauge noise or charge state oscillation.
+**Capacity level reporting** — the driver reports `capacity_level`
+accurately throughout the discharge curve, giving UPower and logind
+the information needed to trigger a clean shutdown via the standard
+`HandleLowBattery=poweroff` path before the cells reach a dangerous
+voltage.  Without this, UPower has no basis on which to act.
+
+The incident made clear that the driver alone cannot shut down the
+system — it must be paired with a userspace shutdown daemon that acts
+on the signals the driver provides.  The driver's role is to surface
+accurate, timely power state information; acting on it is the
+responsibility of userspace.
 
 ---
 
@@ -1056,9 +1051,8 @@ clears due to fuel gauge noise or charge state oscillation.
 
 #### What happened
 
-A grid outage occurred during a public holiday.  The system shut down
-correctly at approximately 3.4% SoC / 3.55V — the companion daemon
-fired as designed.  When grid power returned, the system entered a
+A grid outage occurred during a public holiday.  The system shut down correctly at approximately 3.4% SoC / 3.55V,
+as expected.  When grid power returned, the system entered a
 livelock: it booted, immediately shut down, rebooted, and repeated the
 cycle until the battery was nearly exhausted.
 

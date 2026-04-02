@@ -618,15 +618,15 @@ headers needed to compile the module.
 DKMS expects the source under `/usr/src/<name>-<version>/`:
 
 ```bash
-sudo cp -r . /usr/src/x120x-0.2.0
+sudo cp -r . /usr/src/x120x-0.3.0
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.2.0
-sudo dkms build x120x/0.2.0
-sudo dkms install x120x/0.2.0
+sudo dkms add x120x/0.3.0
+sudo dkms build x120x/0.3.0
+sudo dkms install x120x/0.3.0
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -639,7 +639,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.2.0, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.3.0, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Compile the device tree overlay
 
@@ -1133,26 +1133,7 @@ own time on my own hardware.  It is not affiliated with or endorsed by SupTronic
 
 ## Changelog
 
-### v0.2.0 — Experimental board support, deep discharge recovery, graph fixes
-
-**Experimental board support**
-- Experimental support for Geekworm X728 V2.x/V1.x, X708, X729 via
-  `--board` parameter in `install.sh`
-- `pm_power_off` hook pulses the power-off GPIO on these boards after
-  OS shutdown so the UPS cuts power automatically
-
-**Additional power_supply properties**
-- `manufacturer`, `model_name`, `charge_now`, `charge_full`,
-  `charge_empty`, `voltage_max_design`, `voltage_min_design` added
-- `energy_now`, `energy_full`, `energy_empty` computed from SoC and
-  pack capacity
-
-**Dead battery detection**
-- Driver reports `health=Dead` when cell voltage remains below 3.10 V
-  on grid for ≥ 10 minutes with no meaningful voltage rise (<10 mV/h)
-  and SoC ≤ 2% — detects cells destroyed by deep discharge
-- Kernel log entry emitted on confirmation; clears automatically if
-  voltage recovers
+### v0.3.0 — Deep discharge recovery hardening, GPIO6 pull-up, graph fixes
 
 **Deep discharge recovery hardening**
 - `capacity_level=Critical` only reported when on battery
@@ -1188,6 +1169,27 @@ own time on my own hardware.  It is not affiliated with or endorsed by SupTronic
 - AC state change no longer resets the rate tracking window — rate
   computation is continuous across grid transitions, eliminating
   transition spikes in the rate graph
+
+### v0.2.0 — Experimental board support, additional properties, dead battery detection
+
+**Experimental board support**
+- Experimental support for Geekworm X728 V2.x/V1.x, X708, X729 via
+  `--board` parameter in `install.sh`
+- `pm_power_off` hook pulses the power-off GPIO on these boards after
+  OS shutdown so the UPS cuts power automatically
+
+**Additional power_supply properties**
+- `manufacturer`, `model_name`, `charge_now`, `charge_full`,
+  `charge_empty`, `voltage_max_design`, `voltage_min_design` added
+- `energy_now`, `energy_full`, `energy_empty` computed from SoC and
+  pack capacity
+
+**Dead battery detection**
+- Driver reports `health=Dead` when cell voltage remains below 3.10 V
+  on grid for ≥ 10 minutes with no meaningful voltage rise (<10 mV/h)
+  and SoC ≤ 2% — detects cells destroyed by deep discharge
+- Kernel log entry emitted on confirmation; clears automatically if
+  voltage recovers
 
 **Migration guide**
 - Added guide for users migrating from existing GPIO scripts

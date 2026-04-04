@@ -1018,10 +1018,14 @@ sets up.
 
 #### What happened
 
-A grid outage occurred during a public holiday.  The system shut down correctly at approximately 3.4% SoC / 3.55V,
-as expected.  When grid power returned, the system entered a
-livelock: it booted, immediately shut down, rebooted, and repeated the
-cycle until the battery was nearly exhausted.
+A grid outage occurred during a public holiday.  The system shut down
+correctly at 10.0% SoC / 3.59V, as expected — `shutdown_armed` fired at
+14:29:28 UTC and `shutdown_initiated` followed 15 seconds later,
+exactly as designed.
+
+When grid power returned, the system entered a livelock: it booted,
+immediately shut down, rebooted, and repeated the cycle until the
+battery was nearly exhausted.
 
 Remote diagnosis confirmed `ac_online=0` despite the charger being
 connected.  The charging indicator LED on the UPS board was lit,
@@ -1030,20 +1034,35 @@ was not detecting it.
 
 #### Root cause analysis
 
-Two contributing causes were identified:
+Post-incident forensic analysis of the `power.sqlite` event log
+establishes the root cause with certainty: **`grid_ok` never returned
+`true` after the outage began on 2026-03-29 10:26:50 UTC — not on a
+single boot, across dozens of reboot cycles, over more than four days.**
+There is no `grid_change {to:true}` event anywhere in the database
+after that timestamp.
 
-**PSU overload at boot.** The power supply was shared between the UPS
-board and a 4G mobile router (connected to the Pi's USB-A port).  At
-simultaneous boot after the outage — UPS charging four depleted cells
-(~15W) plus Pi boot (~8W) plus router charging (~10W) — total demand
-likely exceeded the 25W PSU rating.  The resulting voltage sag
-prevented the UPS hardware from asserting the AC-present signal on
-GPIO6, leaving the pin floating low.
+This rules out a transient cause such as a PSU voltage sag at boot.  A
+transient would self-correct on the next boot; this did not.  The X1206
+board was permanently failing to assert the AC-present signal on GPIO6,
+regardless of how many times the system rebooted or how long it had been
+running.  Post-mortem physical inspection confirmed the board was broken:
+the charge controller produced an audible clicking sound with batteries
+installed, the CHG LED was dark with the charger connected, and the board
+was subsequently replaced.
 
-**Missing GPIO6 pull-up.** Without a software pull-up, GPIO6 floats
-low at boot before the UPS hardware has fully initialised and asserted
-the signal.  A marginal input voltage makes this window much larger.
-The driver read `ac_online=0` from the start and never recovered.
+The most likely cause is damage to the X1206's GPIO6 output stage
+sustained during the extended livelock cycling — dozens of rapid
+power-on/off cycles as the battery was drained from ~2.7% to 0% SoC
+across 13 reboot cycles on 2026-03-30 and a further 5 cycles on
+2026-04-02 before the battery was too depleted to sustain another boot.
+Whether the board was damaged during the livelock or had a pre-existing
+fault that caused the livelock is not known.
+
+An earlier hypothesis attributed the failure to PSU overload at boot —
+a shared 25W supply serving the UPS board, the Pi, and a mobile router
+simultaneously.  While PSU isolation remains a sound operational
+improvement, the forensic data does not support this as the primary cause
+of the persistent `ac_online=0` condition.
 
 With `ac_online=0` and the battery at 0% SoC, the following chain
 fired on every boot:
@@ -1055,8 +1074,9 @@ fired on every boot:
 3. The UPS cut power, then restored it (auto-restart on halt).
 4. The cycle repeated.
 
-The livelock continued until the battery voltage fell low enough that
-the UPS could no longer sustain another boot.
+The livelock drained the battery from ~2.7% SoC at the first recovery
+boot down to 0% / 3.16V across 13 rapid cycles before the battery was
+too depleted to complete another boot.
 
 #### What was added to the driver
 
@@ -1064,8 +1084,9 @@ the UPS could no longer sustain another boot.
 software pull-up on GPIO6.  The UPS hardware actively drives GPIO6 low
 on power loss and high when AC is present.  The pull-up ensures the pin
 reads high (AC present) by default during boot, before the hardware has
-finished asserting the signal.  A marginal or overloaded PSU can no
-longer cause GPIO6 to float low and produce a false `ac_online=0`.
+finished asserting the signal.  This eliminates false `ac_online=0`
+readings caused by GPIO6 floating low during the brief window before the
+UPS hardware has fully initialised.
 
 **`capacity_level=Critical` only reported on battery** — the driver
 previously reported `capacity_level=Critical` whenever SoC dropped
@@ -1095,41 +1116,18 @@ plausibility floor has been lowered to 0%.
 
 #### Operational lesson
 
-**Isolate power domains.** The root hardware cause was a single PSU
-serving multiple loads — UPS charging, Pi boot, and router charging
-simultaneously.  The fix is a multi-port GaN charger with independent
-per-port overcurrent protection, so no single device's load can starve
-the UPS input.  The driver hardening ensures the system recovers
-correctly even if the hardware situation recurs.
+**Replace a board that has been through a livelock.** The livelock
+itself — dozens of rapid power-on/off cycles under load — is stressful
+to the charge controller hardware.  If a system has livelocked and
+`ac_online=0` persists across multiple reboots with a known-good power
+supply, treat the UPS board as a suspect and replace it rather than
+continuing to debug in software.
 
-## Copyright
-
-Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
-
-## Disclaimer
-
-THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
-
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES, OR OTHER LIABILITY — INCLUDING BUT NOT LIMITED TO LOSS OF
-DATA, HARDWARE DAMAGE, FINANCIAL LOSS, OR CONSEQUENTIAL DAMAGES OF ANY
-KIND — WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
-FROM, OUT OF, OR IN CONNECTION WITH THIS SOFTWARE OR THE USE OR MISUSE
-THEREOF.
-
-This driver interacts directly with battery hardware.  Incorrect
-operation, misconfiguration, or use on unsupported hardware may result in
-improper charging behaviour, failure to shut down before battery
-exhaustion, or hardware damage.  You are solely responsible for
-validating correct operation on your specific hardware before relying on
-this driver for any purpose.
-
-**USE AT YOUR OWN RISK.**
-
-This project is an independent personal contribution, developed in my
-own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
+**Isolate power domains.** Using a multi-port GaN charger with
+independent per-port overcurrent protection ensures that no single
+device's inrush current can affect the UPS input voltage at boot.  This
+eliminates one known path to GPIO6 float and is good practice
+regardless of board health.
 
 ## Changelog
 
@@ -1211,6 +1209,35 @@ own time on my own hardware.  It is not affiliated with or endorsed by SupTronic
 - DKMS packaging — survives kernel updates automatically
 - Device tree overlay for GPIO descriptor API (kernel 6.12+)
 - `install.sh` with `--battery-mah` and `--charge-mode` options
+
+## Copyright
+
+Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
+
+## Disclaimer
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES, OR OTHER LIABILITY — INCLUDING BUT NOT LIMITED TO LOSS OF
+DATA, HARDWARE DAMAGE, FINANCIAL LOSS, OR CONSEQUENTIAL DAMAGES OF ANY
+KIND — WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
+FROM, OUT OF, OR IN CONNECTION WITH THIS SOFTWARE OR THE USE OR MISUSE
+THEREOF.
+
+This driver interacts directly with battery hardware.  Incorrect
+operation, misconfiguration, or use on unsupported hardware may result in
+improper charging behaviour, failure to shut down before battery
+exhaustion, or hardware damage.  You are solely responsible for
+validating correct operation on your specific hardware before relying on
+this driver for any purpose.
+
+**USE AT YOUR OWN RISK.**
+
+This project is an independent personal contribution, developed in my
+own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
 
 ## License
 

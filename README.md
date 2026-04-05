@@ -597,6 +597,37 @@ later by editing `/etc/modprobe.d/x120x.conf` and rebooting.
 
 ---
 
+### Uninstallation
+
+To remove the driver and all changes made by the installer:
+
+```bash
+sudo bash uninstall.sh
+sudo reboot
+```
+
+The uninstall script removes:
+
+- The DKMS kernel module (all installed kernel versions)
+- The DKMS source tree from `/usr/src/`
+- The device tree overlay from `/boot/firmware/overlays/`
+- The `dtoverlay=x120x` and `gpio=6=pu` lines from `config.txt`
+- `/etc/modprobe.d/x120x.conf`
+- The charge mode persistence script and udev rule
+- The `HandleLowBattery=poweroff` line added to `/etc/systemd/logind.conf`
+- The `CriticalPowerAction=PowerOff` and `NoPollBatteries=true` lines added to `/etc/UPower/UPower.conf`
+
+The following are intentionally left unchanged:
+
+- The `dkms` and `raspberrypi-kernel-headers` packages — removing them
+  could break other DKMS modules on the system.
+- Bootloader EEPROM settings (`POWER_OFF_ON_HALT`, `PSU_MAX_CURRENT`) —
+  these are system-level settings that may have been configured
+  independently.  To revert them, run `sudo rpi-eeprom-config -e` and
+  remove the relevant lines manually.
+
+---
+
 ### Manual installation (step by step)
 
 If you prefer to understand each step or the install script is not

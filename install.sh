@@ -140,11 +140,25 @@ ok "Source copied"
 
 info "Step 3/10 — Building kernel module (this takes about a minute)..."
 
-# Remove any previous installation cleanly
+# Remove any previous installation of this version cleanly
 if dkms status "${PKG_NAME}/${PKG_VERSION}" 2>/dev/null | grep -q .; then
-    info "  Removing previous installation..."
+    info "  Removing previous installation of ${PKG_NAME}/${PKG_VERSION}..."
     dkms remove "${PKG_NAME}/${PKG_VERSION}" --all 2>/dev/null || true
 fi
+
+# Remove any older installed versions of this driver that may have been
+# left behind by previous installs (e.g. x120x/0.1.0, x120x/0.2.0).
+# These show up as 'built' or 'installed' in dkms status but are no
+# longer needed once the current version is in place.
+while IFS= read -r old_ver; do
+    info "  Removing leftover ${PKG_NAME}/${old_ver}..."
+    dkms remove "${PKG_NAME}/${old_ver}" --all 2>/dev/null || true
+    rm -rf "/usr/src/${PKG_NAME}-${old_ver}"
+    ok "  Removed ${PKG_NAME}/${old_ver}"
+done < <(dkms status "${PKG_NAME}" 2>/dev/null \
+    | grep -oP "${PKG_NAME}/\K[0-9]+\.[0-9]+\.[0-9]+" \
+    | grep -v "^${PKG_VERSION}$" \
+    | sort -uV)
 
 dkms add     "${PKG_NAME}/${PKG_VERSION}" \
     || die "dkms add failed"

@@ -1399,7 +1399,7 @@ static const struct hwmon_ops x120x_hwmon_ops = {
 
 static const struct hwmon_channel_info * const x120x_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(in,
-			   HWMON_V_INPUT | HWMON_V_LABEL),
+			   HWMON_I_INPUT | HWMON_I_LABEL),
 	HWMON_CHANNEL_INFO(curr,
 			   HWMON_C_INPUT | HWMON_C_LABEL),
 	HWMON_CHANNEL_INFO(power,

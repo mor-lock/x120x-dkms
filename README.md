@@ -230,6 +230,59 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     charge_control_end_threshold    SoC % to stop charging in Long life mode (writeable, default 80)
 ```
 
+A hwmon device is also registered under `/sys/class/hwmon/`:
+
+```
+/sys/class/hwmon/hwmonN/        (N assigned by kernel at load time)
+    name              x120x
+    in0_input         cell voltage in mV                        (read-only)
+    in0_label         "cell_voltage"
+    curr1_input       charge/discharge current in mA, signed    (read-only)
+    curr1_label       "battery_current"
+    power1_input      charge/discharge power in µW, signed      (read-only)
+    power1_label      "battery_power"
+    energy1_input     stored energy in µJ                       (read-only)
+    energy1_label     "battery_energy"
+```
+
+Sign convention for `curr1_input` and `power1_input`: positive = charging,
+negative = discharging.
+
+The hwmon interface makes the driver visible to standard monitoring tools
+without any configuration:
+
+```bash
+# lm-sensors
+sensors
+sensors | grep -A6 x120x
+
+# Direct sysfs read — find the hwmon index first
+N=$(grep -rl x120x /sys/class/hwmon/*/name 2>/dev/null | grep -o 'hwmon[0-9]*' | head -1)
+cat /sys/class/hwmon/$N/in0_input       # voltage, mV
+cat /sys/class/hwmon/$N/curr1_input     # current, mA (+ charging, - discharging)
+cat /sys/class/hwmon/$N/power1_input    # power, µW
+cat /sys/class/hwmon/$N/energy1_input   # stored energy, µJ
+```
+
+Prometheus `node_exporter` with `--collector.hwmon` (enabled by default)
+exposes these as:
+
+```
+node_hwmon_in_volts{chip="x120x",sensor="in0"}
+node_hwmon_curr_amps{chip="x120x",sensor="curr1"}
+node_hwmon_power_watt{chip="x120x",sensor="power1"}
+node_hwmon_energy_joules{chip="x120x",sensor="energy1"}
+```
+
+**Notes on derived channels:** `in0_input` (voltage) is a direct hardware
+reading from the MAX17043 VCELL register.  The remaining three channels are
+derived: `power1_input` is computed from the rate of change of SoC ×
+pack capacity × nominal voltage; `curr1_input` is further derived as
+power ÷ voltage; `energy1_input` is SoC% × pack energy capacity.  The
+MAX17043 does not measure current directly.  Values are accurate during
+steady charge/discharge but lag during rapid transitions and at very low
+SoC before the fuel gauge model has converged.
+
 ### UPower integration
 
 UPower reads these devices automatically:
@@ -794,7 +847,7 @@ Expected output from `dmesg | grep x120x`:
 ```
 x120x: loading out-of-tree module taints kernel.
 x120x 1-0036: MAX1704x at 0x36 version 0x000
-x120x 1-0036: x120x UPS ready (battery=x120x-battery ac=x120x-ac charger=x120x-charger)
+x120x 1-0036: x120x UPS ready (battery=x120x-battery ac=x120x-ac charger=x120x-charger hwmon=hwmon1)
 ```
 
 The "taints kernel" message is normal for any out-of-tree module.
@@ -1182,6 +1235,27 @@ not expected and was not observed: SoC and voltage climbed normally
 once charging began, consistent with depleted but intact cells.
 
 ## Changelog
+
+### v0.4.0 — hwmon interface
+
+**hwmon device registration**
+- Driver now registers a hwmon device (`x120x`) alongside the existing
+  `power_supply` devices at probe time
+- Exposes four channels via `/sys/class/hwmon/hwmonN/`:
+  - `in0_input` — cell voltage in mV (direct hardware reading, label `cell_voltage`)
+  - `curr1_input` — charge/discharge current in mA, signed (derived, label `battery_current`)
+  - `power1_input` — charge/discharge power in µW, signed (derived, label `battery_power`)
+  - `energy1_input` — stored energy in µJ (derived, label `battery_energy`)
+- Sign convention: positive = charging, negative = discharging
+- Compatible with `sensors` (lm-sensors), Prometheus `node_exporter`
+  (`--collector.hwmon`, enabled by default), collectd, Grafana, and any
+  other tool that reads the standard Linux hwmon sysfs interface
+- node_exporter exposes `node_hwmon_in_volts`, `node_hwmon_curr_amps`,
+  `node_hwmon_power_watt`, `node_hwmon_energy_joules` labelled `chip="x120x"`
+  with no additional configuration
+- hwmon registration failure is non-fatal — the `power_supply` interface
+  remains the primary ABI and the driver continues normally if hwmon
+  registration fails
 
 ### v0.3.0 — Deep discharge recovery hardening, GPIO6 pull-up, graph fixes
 

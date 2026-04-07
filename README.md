@@ -1160,6 +1160,27 @@ device's inrush current can affect the UPS input voltage at boot.  This
 eliminates one known path to GPIO6 float and is good practice
 regardless of board health.
 
+#### Resolution
+
+The broken X1206 board was replaced with a new unit on 2026-04-07.
+The power supply was simultaneously upgraded from a shared 25W USB-C
+adapter to a multi-port GaN charger (Linocell Premium GaN 140W) with
+the Pi and the mobile router on independent ports, eliminating the PSU
+overload condition entirely.
+
+On first boot with the new board and x120x v0.3.0 installed, the system
+behaved exactly as designed: `ac_online=1` was reported immediately,
+the charger began recovering the deeply discharged cells at 0.1% SoC /
+3.41V without triggering any shutdown, and all Fafnir daemons came back
+online cleanly.  The v0.3.0 deep discharge recovery path — charger
+forced on at probe, `capacity_level=Critical` suppressed on AC,
+0% SoC treated as valid — handled the flat cells without intervention.
+
+The cells had reached a minimum of ~3.15V during the livelock cycling
+but had not sustained a prolonged period below 3.0V, so cell damage was
+not expected and was not observed: SoC and voltage climbed normally
+once charging began, consistent with depleted but intact cells.
+
 ## Changelog
 
 ### v0.3.0 — Deep discharge recovery hardening, GPIO6 pull-up, graph fixes

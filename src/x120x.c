@@ -96,6 +96,7 @@
 
 #include <linux/err.h>
 #include <linux/gpio/consumer.h>
+#include <linux/hwmon.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -369,6 +370,9 @@ struct x120x_chip {
 
 	struct delayed_work	 work;
 	int			 heartbeat_ticks;	/* counts down to forced notify */
+
+	/* hwmon device — exposes voltage and power to sensors/node_exporter */
+	struct device		*hwmon_dev;
 };
 
 /* -------------------------------------------------------------------------
@@ -1199,6 +1203,218 @@ static const struct power_supply_desc x120x_charger_desc = {
 };
 
 /* -------------------------------------------------------------------------
+ * hwmon interface
+ *
+ * Exposes battery measurements to the standard Linux hardware monitoring
+ * subsystem, making the driver compatible with sensors(1), Prometheus
+ * node_exporter, collectd, Grafana, and any other tool that reads the
+ * standard hwmon sysfs interface — without requiring custom configuration.
+ *
+ * Channels and units follow Documentation/hwmon/sysfs-interface.rst:
+ *
+ *   in0     — cell voltage in millivolts          (label: "cell_voltage")
+ *             Direct hardware reading from MAX17043 VCELL register.
+ *             hwmon unit: mV.  node_exporter: node_hwmon_in_volts.
+ *
+ *   curr1   — charge/discharge current in milliamps (label: "battery_current")
+ *             Derived: I (mA) = power_rate (µW) / voltage (µV) × 1000.
+ *             Sign convention (hwmon ABI): positive = charging,
+ *             negative = discharging.
+ *             hwmon unit: mA.  node_exporter: node_hwmon_curr_amps.
+ *             NOTE: derived estimate — see power1 note below.
+ *
+ *   power1  — charge/discharge power in microwatts (label: "battery_power")
+ *             Sign convention: positive = charging, negative = discharging.
+ *             hwmon unit: µW.  node_exporter: node_hwmon_power_watt.
+ *             NOTE: derived from SoC slope × pack capacity × nominal
+ *             voltage — not a direct measurement.  The MAX17043 does not
+ *             measure current.  Accurate during steady charge/discharge;
+ *             lags during rapid transitions and at very low SoC before
+ *             the fuel gauge model has converged.
+ *
+ *   energy1 — cumulative energy in microjoules      (label: "battery_energy")
+ *             Derived: E (µJ) = energy_now (µWh) × 3600.
+ *             Represents current stored energy relative to empty, not
+ *             cumulative energy delivered since boot.
+ *             hwmon unit: µJ.  node_exporter: node_hwmon_energy_joules.
+ *
+ * node_exporter (--collector.hwmon, enabled by default) exposes these as:
+ *   node_hwmon_in_volts{chip="x120x",sensor="in0"}
+ *   node_hwmon_curr_amps{chip="x120x",sensor="curr1"}
+ *   node_hwmon_power_watt{chip="x120x",sensor="power1"}
+ *   node_hwmon_energy_joules{chip="x120x",sensor="energy1"}
+ * ---------------------------------------------------------------------- */
+
+static umode_t x120x_hwmon_is_visible(const void *data,
+				       enum hwmon_sensor_types type,
+				       u32 attr, int channel)
+{
+	switch (type) {
+	case hwmon_in:
+		switch (attr) {
+		case hwmon_in_input:
+		case hwmon_in_label:
+			return 0444;
+		default:
+			break;
+		}
+		break;
+	case hwmon_curr:
+		switch (attr) {
+		case hwmon_curr_input:
+		case hwmon_curr_label:
+			return 0444;
+		default:
+			break;
+		}
+		break;
+	case hwmon_power:
+		switch (attr) {
+		case hwmon_power_input:
+		case hwmon_power_label:
+			return 0444;
+		default:
+			break;
+		}
+		break;
+	case hwmon_energy:
+		switch (attr) {
+		case hwmon_energy_input:
+		case hwmon_energy_label:
+			return 0444;
+		default:
+			break;
+		}
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
+static int x120x_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
+			     u32 attr, int channel, long *val)
+{
+	struct x120x_chip *chip = dev_get_drvdata(dev);
+	int voltage_uv, energy_rate_uw;
+	s64 energy_now_uwh;
+
+	mutex_lock(&chip->lock);
+	voltage_uv      = chip->voltage_uv;
+	energy_rate_uw  = chip->energy_rate_uw;
+	energy_now_uwh  = chip->energy_now_uwh;
+	mutex_unlock(&chip->lock);
+
+	switch (type) {
+	case hwmon_in:
+		/* in0_input: cell voltage in mV */
+		if (attr != hwmon_in_input)
+			return -EOPNOTSUPP;
+		*val = voltage_uv / 1000;
+		return 0;
+
+	case hwmon_curr:
+		/*
+		 * curr1_input: derived current in mA.
+		 * I (mA) = P (µW) / V (µV) × 1000
+		 * Sign: positive = charging, negative = discharging.
+		 * Guard against division by zero on an unread or dead battery.
+		 */
+		if (attr != hwmon_curr_input)
+			return -EOPNOTSUPP;
+		if (voltage_uv <= 0) {
+			*val = 0;
+		} else {
+			*val = (long)div_s64(
+				(s64)energy_rate_uw * 1000, voltage_uv);
+		}
+		return 0;
+
+	case hwmon_power:
+		/*
+		 * power1_input: derived power in µW.
+		 * Sign: positive = charging, negative = discharging.
+		 */
+		if (attr != hwmon_power_input)
+			return -EOPNOTSUPP;
+		*val = energy_rate_uw;
+		return 0;
+
+	case hwmon_energy:
+		/*
+		 * energy1_input: current stored energy in µJ.
+		 * µJ = µWh × 3600.  Represents energy stored relative to
+		 * empty; useful for graphing state-of-energy over time.
+		 */
+		if (attr != hwmon_energy_input)
+			return -EOPNOTSUPP;
+		*val = (long)(energy_now_uwh * 3600);
+		return 0;
+
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int x120x_hwmon_read_string(struct device *dev,
+				    enum hwmon_sensor_types type,
+				    u32 attr, int channel, const char **str)
+{
+	switch (type) {
+	case hwmon_in:
+		if (attr == hwmon_in_label) {
+			*str = "cell_voltage";
+			return 0;
+		}
+		break;
+	case hwmon_curr:
+		if (attr == hwmon_curr_label) {
+			*str = "battery_current";
+			return 0;
+		}
+		break;
+	case hwmon_power:
+		if (attr == hwmon_power_label) {
+			*str = "battery_power";
+			return 0;
+		}
+		break;
+	case hwmon_energy:
+		if (attr == hwmon_energy_label) {
+			*str = "battery_energy";
+			return 0;
+		}
+		break;
+	default:
+		break;
+	}
+	return -EOPNOTSUPP;
+}
+
+static const struct hwmon_ops x120x_hwmon_ops = {
+	.is_visible  = x120x_hwmon_is_visible,
+	.read        = x120x_hwmon_read,
+	.read_string = x120x_hwmon_read_string,
+};
+
+static const struct hwmon_channel_info * const x120x_hwmon_info[] = {
+	HWMON_CHANNEL_INFO(in,
+			   HWMON_V_INPUT | HWMON_V_LABEL),
+	HWMON_CHANNEL_INFO(curr,
+			   HWMON_C_INPUT | HWMON_C_LABEL),
+	HWMON_CHANNEL_INFO(power,
+			   HWMON_P_INPUT | HWMON_P_LABEL),
+	HWMON_CHANNEL_INFO(energy,
+			   HWMON_E_INPUT | HWMON_E_LABEL),
+	NULL,
+};
+
+static const struct hwmon_chip_info x120x_hwmon_chip_info = {
+	.ops  = &x120x_hwmon_ops,
+	.info = x120x_hwmon_info,
+};
+
+/* -------------------------------------------------------------------------
  * PM ops
  * ---------------------------------------------------------------------- */
 
@@ -1432,11 +1648,23 @@ static int x120x_probe(struct i2c_client *client)
 	INIT_DELAYED_WORK(&chip->work, x120x_poll_work);
 	schedule_delayed_work(&chip->work, 0);
 
+	/* -- Register hwmon device ---------------------------------------- */
+	chip->hwmon_dev = devm_hwmon_device_register_with_info(
+		dev, "x120x", chip,
+		&x120x_hwmon_chip_info, NULL);
+	if (IS_ERR(chip->hwmon_dev)) {
+		ret = PTR_ERR(chip->hwmon_dev);
+		dev_warn(dev, "hwmon registration failed: %d\n", ret);
+		chip->hwmon_dev = NULL;
+		/* Non-fatal: power_supply interface is the primary ABI */
+	}
+
 	dev_info(dev,
-		 "x120x UPS ready (battery=%s ac=%s charger=%s)\n",
+		 "x120x UPS ready (battery=%s ac=%s charger=%s hwmon=%s)\n",
 		 x120x_battery_desc.name,
 		 x120x_ac_desc.name,
-		 x120x_charger_desc.name);
+		 x120x_charger_desc.name,
+		 chip->hwmon_dev ? dev_name(chip->hwmon_dev) : "disabled");
 
 	return 0;
 }
@@ -1544,7 +1772,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.3.0");
+MODULE_VERSION("0.4.0");
 MODULE_LICENSE("GPL v2");
 
 /*

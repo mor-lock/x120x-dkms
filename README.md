@@ -1236,23 +1236,7 @@ once charging began, consistent with depleted but intact cells.
 
 ## Changelog
 
-### v0.4.1 — rate estimation bugfix
-
-**Rate estimation fix**
-- Fixed a bug where `energy_rate_uw` (and therefore `power_now`,
-  `energy-rate` in UPower, and the hwmon `power1_input` / `curr1_input`
-  channels) was always zero in the driver
-- Root cause: `chip->capacity_256` was overwritten with `new_256` before
-  the rate estimator compared `new_256 != chip->capacity_256` — the
-  comparison was always equal so no rate was ever computed
-- Fix: snapshot `old_256 = chip->capacity_256` before the update and
-  compare against that instead
-- UPower's displayed `energy-rate` was unaffected because UPower computes
-  its own rate externally from consecutive `energy_now` polls; the driver's
-  `POWER_SUPPLY_PROP_POWER_NOW` and all hwmon power/current channels were
-  permanently zero before this fix
-
-### v0.4.0 — hwmon interface
+### v0.4.0 — hwmon interface, rate estimation fix
 
 **hwmon device registration**
 - Driver now registers a hwmon device (`x120x`) alongside the existing
@@ -1272,6 +1256,22 @@ once charging began, consistent with depleted but intact cells.
 - hwmon registration failure is non-fatal — the `power_supply` interface
   remains the primary ABI and the driver continues normally if hwmon
   registration fails
+
+**Rate estimation fix**
+- Fixed a bug where `energy_rate_uw` (and therefore `POWER_SUPPLY_PROP_POWER_NOW`,
+  and all hwmon power/current channels) was permanently zero
+- Root cause: `chip->capacity_256` was overwritten with `new_256` before
+  the rate estimator compared `new_256 != chip->capacity_256` — the
+  comparison was always equal so no rate was ever computed
+- Fix: snapshot `old_256 = chip->capacity_256` before the update
+- UPower's displayed `energy-rate` was unaffected because UPower computes
+  its own rate from consecutive `energy_now` polls independently of the
+  driver; `power_now` and all hwmon derived channels were the affected paths
+- Added spike rejection: when the SoC register is stuck for >90 s and
+  then jumps multiple LSBs in a single tick, the resulting rate estimate
+  would be a large transient spike (large ΔE ÷ clamped dt).  The driver
+  now detects this condition (real dt > 90 s clamp window) and retains
+  the previous rate estimate rather than emitting the spike
 
 ### v0.3.0 — Deep discharge recovery hardening, GPIO6 pull-up, graph fixes
 

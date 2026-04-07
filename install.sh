@@ -84,7 +84,7 @@ done
 # -------------------------------------------------------------------------
 
 PKG_NAME="x120x"
-PKG_VERSION="0.4.0"
+PKG_VERSION="0.4.1"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Detect Pi model for correct boot path

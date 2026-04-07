@@ -1236,6 +1236,22 @@ once charging began, consistent with depleted but intact cells.
 
 ## Changelog
 
+### v0.4.1 — rate estimation bugfix
+
+**Rate estimation fix**
+- Fixed a bug where `energy_rate_uw` (and therefore `power_now`,
+  `energy-rate` in UPower, and the hwmon `power1_input` / `curr1_input`
+  channels) was always zero in the driver
+- Root cause: `chip->capacity_256` was overwritten with `new_256` before
+  the rate estimator compared `new_256 != chip->capacity_256` — the
+  comparison was always equal so no rate was ever computed
+- Fix: snapshot `old_256 = chip->capacity_256` before the update and
+  compare against that instead
+- UPower's displayed `energy-rate` was unaffected because UPower computes
+  its own rate externally from consecutive `energy_now` polls; the driver's
+  `POWER_SUPPLY_PROP_POWER_NOW` and all hwmon power/current channels were
+  permanently zero before this fix
+
 ### v0.4.0 — hwmon interface
 
 **hwmon device registration**

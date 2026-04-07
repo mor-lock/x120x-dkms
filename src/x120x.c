@@ -559,20 +559,21 @@ static void x120x_poll_work(struct work_struct *work)
 	ac_changed        = (chip->ac_online    != new_ac);
 	/* conservation_mode is set only by set_property, never read back from GPIO */
 
-	chip->present         = new_present;
-	chip->voltage_uv      = new_uv;
-	chip->capacity_pct    = new_pct;
-	chip->capacity_256    = new_256;
-	chip->ac_online       = new_ac;
-
 	/*
-	 * Grid state change: any rate computed across the transition is
-	 * meaningless (charging → discharging or vice versa).  Zero the
-	 * rate immediately and snapshot the current SOC and timestamp as
-	 * the baseline for the next measurement on the new side.
-	 * The 10 s minimum guard will then apply to the first new sample.
+	 * Snapshot old_256 before overwriting chip->capacity_256.
+	 * The rate estimator below compares new_256 vs old_256 to detect
+	 * a SOC change.  If we updated chip->capacity_256 first, the
+	 * comparison would always be equal and no rate would ever be computed.
 	 */
 	{
+		int old_256 = chip->capacity_256;
+
+		chip->present         = new_present;
+		chip->voltage_uv      = new_uv;
+		chip->capacity_pct    = new_pct;
+		chip->capacity_256    = new_256;
+		chip->ac_online       = new_ac;
+
 		/*
 		 * energy_full  = battery_mah × 3700 mV (nominal)
 		 * energy_empty = 0  (floor — lets UPower use energy_now /
@@ -596,7 +597,7 @@ static void x120x_poll_work(struct work_struct *work)
 		 * rate (µW) = ΔE (µWh) / Δt (µs) × 3600 × 1e6
 		 * Sign: negative = discharging, positive = charging.
 		 */
-		if (new_256 != chip->capacity_256) {
+		if (new_256 != old_256) {
 			s64 dt = now_us - chip->rate_prev_time_us;
 
 			if (chip->rate_prev_time_us != 0 &&
@@ -691,7 +692,7 @@ static void x120x_poll_work(struct work_struct *work)
 				}
 			}
 		}
-	}
+	} /* end chip state update and rate estimation */
 
 	mutex_unlock(&chip->lock);
 
@@ -1772,7 +1773,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.4.0");
+MODULE_VERSION("0.4.1");
 MODULE_LICENSE("GPL v2");
 
 /*

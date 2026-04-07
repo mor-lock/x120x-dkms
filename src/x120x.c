@@ -604,18 +604,29 @@ static void x120x_poll_work(struct work_struct *work)
 			    dt >= 10LL * USEC_PER_SEC) {
 				s64 de = e_now - chip->rate_prev_energy_uwh;
 				/*
-				 * Clamp dt to 90 s maximum.  If the zero-rate
-				 * timeout fired between two SOC changes (e.g. at
-				 * t=90s with the next change at t=120s), using
-				 * the full 120s window would dilute the rate with
-				 * a period of zero current.  Clamping to 90s gives
-				 * a rate representative of the most recent active
-				 * charging window rather than the full silent gap.
+				 * Spike rejection: discard the rate update if dt
+				 * exceeds the 90 s clamp window.
+				 *
+				 * When the fuel gauge SoC register is stuck for an
+				 * extended period and then jumps by multiple LSBs in
+				 * a single tick, dividing that accumulated ΔE by a
+				 * clamped dt produces a large transient spike — the
+				 * rate appears far higher than reality for one sample.
+				 * This is visible as sharp vertical spikes in
+				 * gnome-power-statistics rate graphs.
+				 *
+				 * If dt > 90 s the SoC was frozen long enough that
+				 * any single-tick ΔE cannot be trusted as a
+				 * per-interval measurement.  Keep the previous rate
+				 * estimate rather than emitting a spike.  The baseline
+				 * (rate_prev_energy_uwh, rate_prev_time_us) is still
+				 * updated so the next tick has a fresh reference.
 				 */
-				if (dt > 90LL * USEC_PER_SEC)
-					dt = 90LL * USEC_PER_SEC;
-				chip->energy_rate_uw = (int)div_s64(
-					de * 3600LL * USEC_PER_SEC, dt);
+				if (dt <= 90LL * USEC_PER_SEC) {
+					chip->energy_rate_uw = (int)div_s64(
+						de * 3600LL * USEC_PER_SEC, dt);
+				}
+				/* else: dt was clamped — keep previous estimate */
 			}
 
 			/* Always update prev on any SOC change, even discarded */
@@ -1773,7 +1784,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.4.1");
+MODULE_VERSION("0.4.0");
 MODULE_LICENSE("GPL v2");
 
 /*

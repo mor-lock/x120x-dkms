@@ -230,6 +230,59 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     charge_control_end_threshold    SoC % to stop charging in Long life mode (writeable, default 80)
 ```
 
+A hwmon device is also registered under `/sys/class/hwmon/`:
+
+```
+/sys/class/hwmon/hwmonN/        (N assigned by kernel at load time)
+    name              x120x
+    in0_input         cell voltage in mV                        (read-only)
+    in0_label         "cell_voltage"
+    curr1_input       charge/discharge current in mA, signed    (read-only)
+    curr1_label       "battery_current"
+    power1_input      charge/discharge power in µW, signed      (read-only)
+    power1_label      "battery_power"
+    energy1_input     stored energy in µJ                       (read-only)
+    energy1_label     "battery_energy"
+```
+
+Sign convention for `curr1_input` and `power1_input`: positive = charging,
+negative = discharging.
+
+The hwmon interface makes the driver visible to standard monitoring tools
+without any configuration:
+
+```bash
+# lm-sensors
+sensors
+sensors | grep -A6 x120x
+
+# Direct sysfs read — find the hwmon index first
+N=$(grep -rl x120x /sys/class/hwmon/*/name 2>/dev/null | grep -o 'hwmon[0-9]*' | head -1)
+cat /sys/class/hwmon/$N/in0_input       # voltage, mV
+cat /sys/class/hwmon/$N/curr1_input     # current, mA (+ charging, - discharging)
+cat /sys/class/hwmon/$N/power1_input    # power, µW
+cat /sys/class/hwmon/$N/energy1_input   # stored energy, µJ
+```
+
+Prometheus `node_exporter` with `--collector.hwmon` (enabled by default)
+exposes these as:
+
+```
+node_hwmon_in_volts{chip="x120x",sensor="in0"}
+node_hwmon_curr_amps{chip="x120x",sensor="curr1"}
+node_hwmon_power_watt{chip="x120x",sensor="power1"}
+node_hwmon_energy_joules{chip="x120x",sensor="energy1"}
+```
+
+**Notes on derived channels:** `in0_input` (voltage) is a direct hardware
+reading from the MAX17043 VCELL register.  The remaining three channels are
+derived: `power1_input` is computed from the rate of change of SoC ×
+pack capacity × nominal voltage; `curr1_input` is further derived as
+power ÷ voltage; `energy1_input` is SoC% × pack energy capacity.  The
+MAX17043 does not measure current directly.  Values are accurate during
+steady charge/discharge but lag during rapid transitions and at very low
+SoC before the fuel gauge model has converged.
+
 ### UPower integration
 
 UPower reads these devices automatically:
@@ -597,6 +650,37 @@ later by editing `/etc/modprobe.d/x120x.conf` and rebooting.
 
 ---
 
+### Uninstallation
+
+To remove the driver and all changes made by the installer:
+
+```bash
+sudo bash uninstall.sh
+sudo reboot
+```
+
+The uninstall script removes:
+
+- The DKMS kernel module (all installed kernel versions)
+- The DKMS source tree from `/usr/src/`
+- The device tree overlay from `/boot/firmware/overlays/`
+- The `dtoverlay=x120x` and `gpio=6=pu` lines from `config.txt`
+- `/etc/modprobe.d/x120x.conf`
+- The charge mode persistence script and udev rule
+- The `HandleLowBattery=poweroff` line added to `/etc/systemd/logind.conf`
+- The `CriticalPowerAction=PowerOff` and `NoPollBatteries=true` lines added to `/etc/UPower/UPower.conf`
+
+The following are intentionally left unchanged:
+
+- The `dkms` and `raspberrypi-kernel-headers` packages — removing them
+  could break other DKMS modules on the system.
+- Bootloader EEPROM settings (`POWER_OFF_ON_HALT`, `PSU_MAX_CURRENT`) —
+  these are system-level settings that may have been configured
+  independently.  To revert them, run `sudo rpi-eeprom-config -e` and
+  remove the relevant lines manually.
+
+---
+
 ### Manual installation (step by step)
 
 If you prefer to understand each step or the install script is not
@@ -618,15 +702,15 @@ headers needed to compile the module.
 DKMS expects the source under `/usr/src/<name>-<version>/`:
 
 ```bash
-sudo cp -r . /usr/src/x120x-0.2.0
+sudo cp -r . /usr/src/x120x-0.4.0
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.2.0
-sudo dkms build x120x/0.2.0
-sudo dkms install x120x/0.2.0
+sudo dkms add x120x/0.4.0
+sudo dkms build x120x/0.4.0
+sudo dkms install x120x/0.4.0
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -639,7 +723,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.2.0, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.4.0, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Compile the device tree overlay
 
@@ -1183,38 +1267,83 @@ reboots with the v0.3.0+ driver and `gpio=6=pu` in place, the board
 itself should be suspected and replaced.  The driver cannot work around
 a permanently failed GPIO6 output stage.
 
-## Copyright
-
-Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
-
-## Disclaimer
-
-THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
-
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES, OR OTHER LIABILITY — INCLUDING BUT NOT LIMITED TO LOSS OF
-DATA, HARDWARE DAMAGE, FINANCIAL LOSS, OR CONSEQUENTIAL DAMAGES OF ANY
-KIND — WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
-FROM, OUT OF, OR IN CONNECTION WITH THIS SOFTWARE OR THE USE OR MISUSE
-THEREOF.
-
-This driver interacts directly with battery hardware.  Incorrect
-operation, misconfiguration, or use on unsupported hardware may result in
-improper charging behaviour, failure to shut down before battery
-exhaustion, or hardware damage.  You are solely responsible for
-validating correct operation on your specific hardware before relying on
-this driver for any purpose.
-
-**USE AT YOUR OWN RISK.**
-
-This project is an independent personal contribution, developed in my
-own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
-
 ## Changelog
 
-### v0.2.0 — Experimental board support, deep discharge recovery, graph fixes
+### v0.4.0 — hwmon interface, rate estimation fix
+
+**hwmon device registration**
+- Driver now registers a hwmon device (`x120x`) alongside the existing
+  `power_supply` devices at probe time
+- Exposes four channels via `/sys/class/hwmon/hwmonN/`:
+  - `in0_input` — cell voltage in mV (direct hardware reading, label `cell_voltage`)
+  - `curr1_input` — charge/discharge current in mA, signed (derived, label `battery_current`)
+  - `power1_input` — charge/discharge power in µW, signed (derived, label `battery_power`)
+  - `energy1_input` — stored energy in µJ (derived, label `battery_energy`)
+- Sign convention: positive = charging, negative = discharging
+- Compatible with `sensors` (lm-sensors), Prometheus `node_exporter`
+  (`--collector.hwmon`, enabled by default), collectd, Grafana, and any
+  other tool that reads the standard Linux hwmon sysfs interface
+- node_exporter exposes `node_hwmon_in_volts`, `node_hwmon_curr_amps`,
+  `node_hwmon_power_watt`, `node_hwmon_energy_joules` labelled `chip="x120x"`
+  with no additional configuration
+- hwmon registration failure is non-fatal — the `power_supply` interface
+  remains the primary ABI and the driver continues normally if hwmon
+  registration fails
+
+**Rate estimation fix**
+- Fixed a bug where `energy_rate_uw` (and therefore `POWER_SUPPLY_PROP_POWER_NOW`,
+  and all hwmon power/current channels) was permanently zero
+- Root cause: `chip->capacity_256` was overwritten with `new_256` before
+  the rate estimator compared `new_256 != chip->capacity_256` — the
+  comparison was always equal so no rate was ever computed
+- Fix: snapshot `old_256 = chip->capacity_256` before the update
+- UPower's displayed `energy-rate` was unaffected because UPower computes
+  its own rate from consecutive `energy_now` polls independently of the
+  driver; `power_now` and all hwmon derived channels were the affected paths
+- Added spike rejection: when the SoC register is stuck for >90 s and
+  then jumps multiple LSBs in a single tick, the resulting rate estimate
+  would be a large transient spike (large ΔE ÷ clamped dt).  The driver
+  now detects this condition (real dt > 90 s clamp window) and retains
+  the previous rate estimate rather than emitting the spike
+
+### v0.3.0 — Deep discharge recovery hardening, GPIO6 pull-up, graph fixes
+
+**Deep discharge recovery hardening**
+- `capacity_level=Critical` only reported when on battery
+  (`ac_online=0`) — on AC the battery is charging; reporting Critical
+  caused UPower to trigger an immediate shutdown livelock after a deep
+  discharge event
+- 0% SoC no longer treated as implausible — quick-start command not
+  issued on a genuinely empty battery, avoiding a fuel gauge reset
+  during recovery
+- Charger (GPIO16) explicitly forced low at probe — charging starts
+  immediately on every boot regardless of any previously latched state
+- Charger default changed to always-on: the resume threshold is
+  removed; the charger is enabled whenever SoC is below the stop
+  threshold, defaulting to on in all uncertain or low-SoC states
+
+**GPIO6 pull-up**
+- `gpio=6=pu` added to `config.txt` by installer — prevents GPIO6
+  floating low at boot before the X1206 hardware asserts the AC-present
+  signal, eliminating false `ac_online=0` readings after a power outage
+  or PSU overload at boot
+
+**UPower history and graph fixes**
+- `NoPollBatteries=true` set in `UPower.conf` by installer — eliminates
+  spurious `0%/unknown` history entries caused by UPower polling the
+  kernel independently of driver notifications
+- Battery status during Fast mode float is `Discharging` rather than
+  `Not charging` — UPower records `discharging` history entries during
+  float so gnome-power-statistics graphs stay populated
+- Self-discharge floor (−1 mW) reported as `power_now` when SoC is
+  stable for >90 s — prevents graph gaps during float periods
+- 30-second heartbeat `power_supply_changed()` notification — keeps
+  UPower history recording active during extended stable float periods
+- AC state change no longer resets the rate tracking window — rate
+  computation is continuous across grid transitions, eliminating
+  transition spikes in the rate graph
+
+### v0.2.0 — Experimental board support, additional properties, dead battery detection
 
 **Experimental board support**
 - Experimental support for Geekworm X728 V2.x/V1.x, X708, X729 via
@@ -1290,6 +1419,35 @@ own time on my own hardware.  It is not affiliated with or endorsed by SupTronic
 - DKMS packaging — survives kernel updates automatically
 - Device tree overlay for GPIO descriptor API (kernel 6.12+)
 - `install.sh` with `--battery-mah` and `--charge-mode` options
+
+## Copyright
+
+Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
+
+## Disclaimer
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES, OR OTHER LIABILITY — INCLUDING BUT NOT LIMITED TO LOSS OF
+DATA, HARDWARE DAMAGE, FINANCIAL LOSS, OR CONSEQUENTIAL DAMAGES OF ANY
+KIND — WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
+FROM, OUT OF, OR IN CONNECTION WITH THIS SOFTWARE OR THE USE OR MISUSE
+THEREOF.
+
+This driver interacts directly with battery hardware.  Incorrect
+operation, misconfiguration, or use on unsupported hardware may result in
+improper charging behaviour, failure to shut down before battery
+exhaustion, or hardware damage.  You are solely responsible for
+validating correct operation on your specific hardware before relying on
+this driver for any purpose.
+
+**USE AT YOUR OWN RISK.**
+
+This project is an independent personal contribution, developed in my
+own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
 
 ## License
 

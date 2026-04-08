@@ -230,59 +230,6 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     charge_control_end_threshold    SoC % to stop charging in Long life mode (writeable, default 80)
 ```
 
-A hwmon device is also registered under `/sys/class/hwmon/`:
-
-```
-/sys/class/hwmon/hwmonN/        (N assigned by kernel at load time)
-    name              x120x
-    in0_input         cell voltage in mV                        (read-only)
-    in0_label         "cell_voltage"
-    curr1_input       charge/discharge current in mA, signed    (read-only)
-    curr1_label       "battery_current"
-    power1_input      charge/discharge power in µW, signed      (read-only)
-    power1_label      "battery_power"
-    energy1_input     stored energy in µJ                       (read-only)
-    energy1_label     "battery_energy"
-```
-
-Sign convention for `curr1_input` and `power1_input`: positive = charging,
-negative = discharging.
-
-The hwmon interface makes the driver visible to standard monitoring tools
-without any configuration:
-
-```bash
-# lm-sensors
-sensors
-sensors | grep -A6 x120x
-
-# Direct sysfs read — find the hwmon index first
-N=$(grep -rl x120x /sys/class/hwmon/*/name 2>/dev/null | grep -o 'hwmon[0-9]*' | head -1)
-cat /sys/class/hwmon/$N/in0_input       # voltage, mV
-cat /sys/class/hwmon/$N/curr1_input     # current, mA (+ charging, - discharging)
-cat /sys/class/hwmon/$N/power1_input    # power, µW
-cat /sys/class/hwmon/$N/energy1_input   # stored energy, µJ
-```
-
-Prometheus `node_exporter` with `--collector.hwmon` (enabled by default)
-exposes these as:
-
-```
-node_hwmon_in_volts{chip="x120x",sensor="in0"}
-node_hwmon_curr_amps{chip="x120x",sensor="curr1"}
-node_hwmon_power_watt{chip="x120x",sensor="power1"}
-node_hwmon_energy_joules{chip="x120x",sensor="energy1"}
-```
-
-**Notes on derived channels:** `in0_input` (voltage) is a direct hardware
-reading from the MAX17043 VCELL register.  The remaining three channels are
-derived: `power1_input` is computed from the rate of change of SoC ×
-pack capacity × nominal voltage; `curr1_input` is further derived as
-power ÷ voltage; `energy1_input` is SoC% × pack energy capacity.  The
-MAX17043 does not measure current directly.  Values are accurate during
-steady charge/discharge but lag during rapid transitions and at very low
-SoC before the fuel gauge model has converged.
-
 ### UPower integration
 
 UPower reads these devices automatically:
@@ -650,37 +597,6 @@ later by editing `/etc/modprobe.d/x120x.conf` and rebooting.
 
 ---
 
-### Uninstallation
-
-To remove the driver and all changes made by the installer:
-
-```bash
-sudo bash uninstall.sh
-sudo reboot
-```
-
-The uninstall script removes:
-
-- The DKMS kernel module (all installed kernel versions)
-- The DKMS source tree from `/usr/src/`
-- The device tree overlay from `/boot/firmware/overlays/`
-- The `dtoverlay=x120x` and `gpio=6=pu` lines from `config.txt`
-- `/etc/modprobe.d/x120x.conf`
-- The charge mode persistence script and udev rule
-- The `HandleLowBattery=poweroff` line added to `/etc/systemd/logind.conf`
-- The `CriticalPowerAction=PowerOff` and `NoPollBatteries=true` lines added to `/etc/UPower/UPower.conf`
-
-The following are intentionally left unchanged:
-
-- The `dkms` and `raspberrypi-kernel-headers` packages — removing them
-  could break other DKMS modules on the system.
-- Bootloader EEPROM settings (`POWER_OFF_ON_HALT`, `PSU_MAX_CURRENT`) —
-  these are system-level settings that may have been configured
-  independently.  To revert them, run `sudo rpi-eeprom-config -e` and
-  remove the relevant lines manually.
-
----
-
 ### Manual installation (step by step)
 
 If you prefer to understand each step or the install script is not
@@ -702,15 +618,15 @@ headers needed to compile the module.
 DKMS expects the source under `/usr/src/<name>-<version>/`:
 
 ```bash
-sudo cp -r . /usr/src/x120x-0.3.0
+sudo cp -r . /usr/src/x120x-0.2.0
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.3.0
-sudo dkms build x120x/0.3.0
-sudo dkms install x120x/0.3.0
+sudo dkms add x120x/0.2.0
+sudo dkms build x120x/0.2.0
+sudo dkms install x120x/0.2.0
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -723,7 +639,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.3.0, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.2.0, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Compile the device tree overlay
 
@@ -847,7 +763,7 @@ Expected output from `dmesg | grep x120x`:
 ```
 x120x: loading out-of-tree module taints kernel.
 x120x 1-0036: MAX1704x at 0x36 version 0x000
-x120x 1-0036: x120x UPS ready (battery=x120x-battery ac=x120x-ac charger=x120x-charger hwmon=hwmon1)
+x120x 1-0036: x120x UPS ready (battery=x120x-battery ac=x120x-ac charger=x120x-charger)
 ```
 
 The "taints kernel" message is normal for any out-of-tree module.
@@ -1098,58 +1014,63 @@ sets up.
 
 ---
 
-### Incident 2 — Grid return undetected, recovery livelock (2026-03-30)
+### Incident 2 — Grid return undetected, recovery livelock (2026-03-29)
 
 #### What happened
 
-A grid outage occurred during a public holiday.  The system shut down
-correctly at 10.0% SoC / 3.59V, as expected — `shutdown_armed` fired at
-14:29:28 UTC and `shutdown_initiated` followed 15 seconds later,
-exactly as designed.
+A grid outage began at **10:26:50 UTC on 2026-03-29** with the battery
+at 82% SoC / 4.04 V.  The system ran on battery normally, discharging
+at the expected rate.
 
-When grid power returned, the system entered a livelock: it booted,
-immediately shut down, rebooted, and repeated the cycle until the
-battery was nearly exhausted.
+Grid was restored approximately 1 hour after the outage began
+(confirmed by the uptime of a desktop machine on the same circuit), but
+the X1206 never detected the return — `ac_online` remained `0` for the
+remainder of the discharge.  Because `powerd.py` saw no grid, charging
+never resumed.  The system continued draining as if the outage was
+still in progress.
 
-Remote diagnosis confirmed `ac_online=0` despite the charger being
-connected.  The charging indicator LED on the UPS board was lit,
-confirming that input power was reaching the hardware — but the driver
-was not detecting it.
+The shutdown mechanism worked correctly: `shutdown_armed` fired at
+**14:29:28 UTC** at 10.0% SoC / 3.59 V, and `shutdown_initiated`
+followed 15 seconds later exactly as designed.  At that point the grid
+had already been back for approximately 3 hours, and the cells should
+have been charging throughout that window.  They were not, because the
+board was silently failing to assert GPIO6.
+
+When the system rebooted after shutdown, `ac_online` was still `0`
+despite the charger being connected and its indicator LED lit.  The
+system entered a livelock: it booted, UPower immediately read
+`capacity_level=Critical` on the near-empty battery, logind called
+`systemctl poweroff`, the UPS cut and then restored power, and the
+cycle repeated.  This drained the cells further on every cycle.
+
+The livelock ran across three dates — 2026-03-11 (2 cycles from the
+initial recovery attempt), 2026-03-30 (11 cycles), and 2026-04-02 (5
+cycles, the last confirmed shutdown voltage 3.15 V) — for a total of
+**21 forced shutdowns** before the board was replaced.  The database
+records no `ac_online=1` after the original outage, because the board
+was never able to drive GPIO6 high again.
 
 #### Root cause analysis
 
-Post-incident forensic analysis of the `power.sqlite` event log
-establishes the root cause with certainty: **`grid_ok` never returned
-`true` after the outage began on 2026-03-29 10:26:50 UTC — not on a
-single boot, across dozens of reboot cycles, over more than four days.**
-There is no `grid_change {to:true}` event anywhere in the database
-after that timestamp.
+**X1206 hardware failure — GPIO6 output stage.**  Forensic analysis of
+the power database confirms that `ac_online` never returned `true`
+after the 10:26:50 UTC grid loss, despite the charger LED indicating
+input power was present and the grid being independently confirmed as
+restored roughly an hour later.  The GPIO6 output stage on the board
+had failed silently during normal operation: not at boot, not under
+load stress, but mid-session while the system was running.  This is
+a harder failure mode than a boot-time marginal-PSU scenario — the
+board stopped driving its own AC-present signal while everything else
+appeared functional.
 
-This rules out a transient cause such as a PSU voltage sag at boot.  A
-transient would self-correct on the next boot; this did not.  The X1206
-board was permanently failing to assert the AC-present signal on GPIO6,
-regardless of how many times the system rebooted or how long it had been
-running.  Post-mortem physical inspection confirmed the board was broken:
-the charge controller produced an audible clicking sound with batteries
-installed, the CHG LED was dark with the charger connected, and the board
-was subsequently replaced.
+The v0.3.0 driver fixes (GPIO6 pull-up, `capacity_level=Critical`
+suppressed on AC, always-on charger at probe) mitigated the livelock
+mechanism by protecting against a floating GPIO6 at boot.  They could
+not compensate for a board whose output stage had permanently failed.
+Board replacement was the correct and necessary remedy.
 
-The most likely cause is damage to the X1206's GPIO6 output stage
-sustained during the extended livelock cycling — dozens of rapid
-power-on/off cycles as the battery was drained from ~2.7% to 0% SoC
-across 13 reboot cycles on 2026-03-30 and a further 5 cycles on
-2026-04-02 before the battery was too depleted to sustain another boot.
-Whether the board was damaged during the livelock or had a pre-existing
-fault that caused the livelock is not known.
-
-An earlier hypothesis attributed the failure to PSU overload at boot —
-a shared 25W supply serving the UPS board, the Pi, and a mobile router
-simultaneously.  While PSU isolation remains a sound operational
-improvement, the forensic data does not support this as the primary cause
-of the persistent `ac_online=0` condition.
-
-With `ac_online=0` and the battery at 0% SoC, the following chain
-fired on every boot:
+With `ac_online=0` and the battery at near-zero SoC, the livelock
+chain on every boot was:
 
 1. UPower read `capacity_level=Critical` and fired
    `warning-level: action` immediately — before the driver had finished
@@ -1158,19 +1079,15 @@ fired on every boot:
 3. The UPS cut power, then restored it (auto-restart on halt).
 4. The cycle repeated.
 
-The livelock drained the battery from ~2.7% SoC at the first recovery
-boot down to 0% / 3.16V across 13 rapid cycles before the battery was
-too depleted to complete another boot.
-
 #### What was added to the driver
 
 **`gpio=6=pu` pull-up in `config.txt`** — the installer now adds a
 software pull-up on GPIO6.  The UPS hardware actively drives GPIO6 low
 on power loss and high when AC is present.  The pull-up ensures the pin
 reads high (AC present) by default during boot, before the hardware has
-finished asserting the signal.  This eliminates false `ac_online=0`
-readings caused by GPIO6 floating low during the brief window before the
-UPS hardware has fully initialised.
+finished asserting the signal.  This protects against GPIO6 floating
+low during the boot window; it cannot compensate for a board whose
+output stage has failed entirely.
 
 **`capacity_level=Critical` only reported on battery** — the driver
 previously reported `capacity_level=Critical` whenever SoC dropped
@@ -1198,82 +1115,115 @@ discharge the battery is genuinely at 0% — issuing a quick-start
 resets the fuel gauge's SoC model at the worst possible moment.  The
 plausibility floor has been lowered to 0%.
 
+#### Resolution — X1206 board replacement (2026-04-07)
+
+The faulty board was replaced with a new X1206 on 2026-04-07, fitted
+with fresh Molicel INR-21700-P50B cells (4 × 5000 mAh, 20 Ah pack).
+The power supply was also replaced with a multi-port GaN charger
+(Linocell Premium GaN 140 W) giving the Pi and the mobile router
+independent ports with separate overcurrent protection, eliminating
+any shared-PSU load concern at boot.
+
+The new board's first reading, at **18:20:53 UTC on 2026-04-07**, showed
+`ac_online=1` immediately — GPIO6 asserting correctly from the first
+moment — with `soc_pct=0.01%` and `bat_v=3.34 V`.  The v0.3.0/v0.4.0
+recovery path worked exactly as designed: `capacity_level=Critical` was
+suppressed because `ac_online=1`, UPower did not trigger a shutdown, and
+the charger was on from the first probe.  Zero livelock cycles occurred.
+
+At 20:36:20 UTC, a brief `grid_change: true → null → true` transition
+lasting ~0.5 s was recorded — this corresponds to the v0.4.0 driver
+module being reloaded during installation.  Charging continued without
+interruption.
+
+The cells charged from 0.01% / 3.34 V to 100% / 4.19 V in
+approximately **6.7 hours**, consistent with the X1206's 3 A charge
+ceiling (~15 W) applied to a 20 Ah pack.  PSU draw measured via the
+driver's hwmon interface held steady at **~16.7 W** throughout the bulk
+charge phase (battery charging plus Pi idle consumption), dropping to
+**~5.9 W** once the cells reached full charge and the charger switched
+to float.
+
+| Milestone | Time (UTC, 2026-04-07/08) | SoC | Cell voltage |
+|---|---|---|---|
+| First valid reading | 18:20:53 | 0.01% | 3.34 V |
+| Charging begins | 18:33:24 | 0.32% | 3.48 V |
+| 10% | 20:16:52 | 10.0% | 3.74 V |
+| 50% | 22:02:38 | 50.0% | 3.94 V |
+| 80% | 23:21:27 | 80.1% | 4.09 V |
+| Full (~100%) | 01:02:05+1 | 99.6% | 4.22 V |
+
+The healthy charge profile — smooth SoC rise, voltage climbing steadily
+from 3.34 V to 4.22 V, no oscillation, no plateau — confirmed that the
+new cells were undamaged.
+
 #### Operational lesson
 
-**Replace a board that has been through a livelock.** The livelock
-itself — dozens of rapid power-on/off cycles under load — is stressful
-to the charge controller hardware.  If a system has livelocked and
-`ac_online=0` persists across multiple reboots with a known-good power
-supply, treat the UPS board as a suspect and replace it rather than
-continuing to debug in software.
+**X1206 GPIO6 output stage failure is silent and undetectable in
+software.**  The board continued to appear functional in every other
+respect: the charger LED was lit, the fuel gauge was readable over I²C,
+and the system ran normally on battery.  Only the AC-present signal was
+wrong, and only the power database — recording `ac_online=0` throughout
+a period when grid was independently confirmed as restored — revealed
+the failure.
 
-**Isolate power domains.** Using a multi-port GaN charger with
-independent per-port overcurrent protection ensures that no single
-device's inrush current can affect the UPS input voltage at boot.  This
-eliminates one known path to GPIO6 float and is good practice
-regardless of board health.
+If `ac_online` remains `0` after a grid outage despite the charger
+LED indicating input power, and the pattern persists across multiple
+reboots with the v0.3.0+ driver and `gpio=6=pu` in place, the board
+itself should be suspected and replaced.  The driver cannot work around
+a permanently failed GPIO6 output stage.
 
-#### Resolution
+## Copyright
 
-The broken X1206 board was replaced with a new unit on 2026-04-07.
-The power supply was simultaneously upgraded from a shared 25W USB-C
-adapter to a multi-port GaN charger (Linocell Premium GaN 140W) with
-the Pi and the mobile router on independent ports, eliminating the PSU
-overload condition entirely.
+Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
 
-On first boot with the new board and x120x v0.3.0 installed, the system
-behaved exactly as designed: `ac_online=1` was reported immediately,
-the charger began recovering the deeply discharged cells at 0.1% SoC /
-3.41V without triggering any shutdown, and all Fafnir daemons came back
-online cleanly.  The v0.3.0 deep discharge recovery path — charger
-forced on at probe, `capacity_level=Critical` suppressed on AC,
-0% SoC treated as valid — handled the flat cells without intervention.
+## Disclaimer
 
-The cells had reached a minimum of ~3.15V during the livelock cycling
-but had not sustained a prolonged period below 3.0V, so cell damage was
-not expected and was not observed: SoC and voltage climbed normally
-once charging began, consistent with depleted but intact cells.
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES, OR OTHER LIABILITY — INCLUDING BUT NOT LIMITED TO LOSS OF
+DATA, HARDWARE DAMAGE, FINANCIAL LOSS, OR CONSEQUENTIAL DAMAGES OF ANY
+KIND — WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
+FROM, OUT OF, OR IN CONNECTION WITH THIS SOFTWARE OR THE USE OR MISUSE
+THEREOF.
+
+This driver interacts directly with battery hardware.  Incorrect
+operation, misconfiguration, or use on unsupported hardware may result in
+improper charging behaviour, failure to shut down before battery
+exhaustion, or hardware damage.  You are solely responsible for
+validating correct operation on your specific hardware before relying on
+this driver for any purpose.
+
+**USE AT YOUR OWN RISK.**
+
+This project is an independent personal contribution, developed in my
+own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
 
 ## Changelog
 
-### v0.4.0 — hwmon interface, rate estimation fix
+### v0.2.0 — Experimental board support, deep discharge recovery, graph fixes
 
-**hwmon device registration**
-- Driver now registers a hwmon device (`x120x`) alongside the existing
-  `power_supply` devices at probe time
-- Exposes four channels via `/sys/class/hwmon/hwmonN/`:
-  - `in0_input` — cell voltage in mV (direct hardware reading, label `cell_voltage`)
-  - `curr1_input` — charge/discharge current in mA, signed (derived, label `battery_current`)
-  - `power1_input` — charge/discharge power in µW, signed (derived, label `battery_power`)
-  - `energy1_input` — stored energy in µJ (derived, label `battery_energy`)
-- Sign convention: positive = charging, negative = discharging
-- Compatible with `sensors` (lm-sensors), Prometheus `node_exporter`
-  (`--collector.hwmon`, enabled by default), collectd, Grafana, and any
-  other tool that reads the standard Linux hwmon sysfs interface
-- node_exporter exposes `node_hwmon_in_volts`, `node_hwmon_curr_amps`,
-  `node_hwmon_power_watt`, `node_hwmon_energy_joules` labelled `chip="x120x"`
-  with no additional configuration
-- hwmon registration failure is non-fatal — the `power_supply` interface
-  remains the primary ABI and the driver continues normally if hwmon
-  registration fails
+**Experimental board support**
+- Experimental support for Geekworm X728 V2.x/V1.x, X708, X729 via
+  `--board` parameter in `install.sh`
+- `pm_power_off` hook pulses the power-off GPIO on these boards after
+  OS shutdown so the UPS cuts power automatically
 
-**Rate estimation fix**
-- Fixed a bug where `energy_rate_uw` (and therefore `POWER_SUPPLY_PROP_POWER_NOW`,
-  and all hwmon power/current channels) was permanently zero
-- Root cause: `chip->capacity_256` was overwritten with `new_256` before
-  the rate estimator compared `new_256 != chip->capacity_256` — the
-  comparison was always equal so no rate was ever computed
-- Fix: snapshot `old_256 = chip->capacity_256` before the update
-- UPower's displayed `energy-rate` was unaffected because UPower computes
-  its own rate from consecutive `energy_now` polls independently of the
-  driver; `power_now` and all hwmon derived channels were the affected paths
-- Added spike rejection: when the SoC register is stuck for >90 s and
-  then jumps multiple LSBs in a single tick, the resulting rate estimate
-  would be a large transient spike (large ΔE ÷ clamped dt).  The driver
-  now detects this condition (real dt > 90 s clamp window) and retains
-  the previous rate estimate rather than emitting the spike
+**Additional power_supply properties**
+- `manufacturer`, `model_name`, `charge_now`, `charge_full`,
+  `charge_empty`, `voltage_max_design`, `voltage_min_design` added
+- `energy_now`, `energy_full`, `energy_empty` computed from SoC and
+  pack capacity
 
-### v0.3.0 — Deep discharge recovery hardening, GPIO6 pull-up, graph fixes
+**Dead battery detection**
+- Driver reports `health=Dead` when cell voltage remains below 3.10 V
+  on grid for ≥ 10 minutes with no meaningful voltage rise (<10 mV/h)
+  and SoC ≤ 2% — detects cells destroyed by deep discharge
+- Kernel log entry emitted on confirmation; clears automatically if
+  voltage recovers
 
 **Deep discharge recovery hardening**
 - `capacity_level=Critical` only reported when on battery
@@ -1310,27 +1260,6 @@ once charging began, consistent with depleted but intact cells.
   computation is continuous across grid transitions, eliminating
   transition spikes in the rate graph
 
-### v0.2.0 — Experimental board support, additional properties, dead battery detection
-
-**Experimental board support**
-- Experimental support for Geekworm X728 V2.x/V1.x, X708, X729 via
-  `--board` parameter in `install.sh`
-- `pm_power_off` hook pulses the power-off GPIO on these boards after
-  OS shutdown so the UPS cuts power automatically
-
-**Additional power_supply properties**
-- `manufacturer`, `model_name`, `charge_now`, `charge_full`,
-  `charge_empty`, `voltage_max_design`, `voltage_min_design` added
-- `energy_now`, `energy_full`, `energy_empty` computed from SoC and
-  pack capacity
-
-**Dead battery detection**
-- Driver reports `health=Dead` when cell voltage remains below 3.10 V
-  on grid for ≥ 10 minutes with no meaningful voltage rise (<10 mV/h)
-  and SoC ≤ 2% — detects cells destroyed by deep discharge
-- Kernel log entry emitted on confirmation; clears automatically if
-  voltage recovers
-
 **Migration guide**
 - Added guide for users migrating from existing GPIO scripts
 
@@ -1351,35 +1280,6 @@ once charging began, consistent with depleted but intact cells.
 - DKMS packaging — survives kernel updates automatically
 - Device tree overlay for GPIO descriptor API (kernel 6.12+)
 - `install.sh` with `--battery-mah` and `--charge-mode` options
-
-## Copyright
-
-Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
-
-## Disclaimer
-
-THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
-
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES, OR OTHER LIABILITY — INCLUDING BUT NOT LIMITED TO LOSS OF
-DATA, HARDWARE DAMAGE, FINANCIAL LOSS, OR CONSEQUENTIAL DAMAGES OF ANY
-KIND — WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
-FROM, OUT OF, OR IN CONNECTION WITH THIS SOFTWARE OR THE USE OR MISUSE
-THEREOF.
-
-This driver interacts directly with battery hardware.  Incorrect
-operation, misconfiguration, or use on unsupported hardware may result in
-improper charging behaviour, failure to shut down before battery
-exhaustion, or hardware damage.  You are solely responsible for
-validating correct operation on your specific hardware before relying on
-this driver for any purpose.
-
-**USE AT YOUR OWN RISK.**
-
-This project is an independent personal contribution, developed in my
-own time on my own hardware.  It is not affiliated with or endorsed by SupTronics, Geekworm, or my employer.
 
 ## License
 

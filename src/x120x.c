@@ -280,16 +280,6 @@ MODULE_PARM_DESC(conservation_mode_default,
  */
 #define X120X_HEARTBEAT_TICKS	60
 
-/*
- * Self-discharge rate used as POWER_NOW floor when the battery is
- * floating (charger disabled, SoC stable for >90 s).  Li-ion cells
- * self-discharge at roughly 2%%/month.  At a nominal 3.7 V this is
- * approximately 1000 µW for a typical 2-4 cell pack — small enough
- * to be physically plausible but non-zero so gnome-power-statistics
- * does not treat the value as "no data" and leave the graph blank.
- * Reported as negative (discharging) since the battery is the source.
- */
-#define X120X_SELF_DISCHARGE_UW	(-1000)
 
 /* -------------------------------------------------------------------------
  * Driver private state
@@ -637,16 +627,14 @@ static void x120x_poll_work(struct work_struct *work)
 			   now_us - chip->rate_last_change_us >
 			   90LL * USEC_PER_SEC) {
 			/*
-			 * SOC unchanged for >90 s: net charge current is
-			 * unmeasurably small (battery floating or negligible
-			 * load).  Use a small negative self-discharge floor
-			 * rather than zero so that gnome-power-statistics does
-			 * not treat the value as "no data" and blank the graph.
+			 * SOC unchanged for >90 s: rate is unmeasurably small
+			 * (battery floating or negligible load).  Report zero —
+			 * we have no way to measure the true self-discharge rate.
 			 * Do NOT update rate_prev_time_us — if SOC resumes
 			 * changing, dt will be computed from the last real
 			 * measurement and clamped to 90 s (see above).
 			 */
-			chip->energy_rate_uw      = X120X_SELF_DISCHARGE_UW;
+			chip->energy_rate_uw      = 0;
 			chip->rate_last_change_us = 0; /* disarm until next change */
 		}
 

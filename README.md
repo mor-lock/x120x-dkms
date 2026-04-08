@@ -1045,7 +1045,7 @@ and the cells should have been charging throughout that window.  They
 were not, because the board was silently failing to assert GPIO6.
 
 When the system rebooted after shutdown, `ac_online` was still `0`
-despite the charger being connected and its indicator LED lit.  The
+despite the charger being connected.  The
 system entered a livelock: it booted, UPower immediately read
 `capacity_level=Critical` on the near-empty battery, logind called
 `systemctl poweroff`, the UPS cut and then restored power, and the
@@ -1062,9 +1062,8 @@ was never able to drive GPIO6 high again.
 
 **X1206 hardware failure — GPIO6 output stage.**  Forensic analysis of
 the power database confirms that `ac_online` never returned `true`
-after the 10:26:50 UTC grid loss, despite the charger LED indicating
-input power was present and the grid being independently confirmed as
-restored roughly an hour later.  The GPIO6 output stage on the board
+after the 10:26:50 UTC grid loss, with the grid independently confirmed
+as restored roughly an hour later.  The GPIO6 output stage on the board
 had failed silently during normal operation: not at boot, not under
 load stress, but mid-session while the system was running.  This is
 a harder failure mode than a boot-time marginal-PSU scenario — the
@@ -1131,7 +1130,7 @@ reinstalled — deeply depleted by the livelock cycles but undamaged,
 as the repeated shutdowns had kept the voltage above the cell damage
 threshold throughout.
 The power supply was also replaced with a multi-port GaN charger
-(Linocell Premium GaN 140 W) giving the Pi and the mobile router
+(Anker Prime 160 W) giving the Pi and the mobile router
 independent ports with separate overcurrent protection, eliminating
 any shared-PSU load concern at boot.
 
@@ -1172,8 +1171,8 @@ new cells were undamaged.
 
 **X1206 GPIO6 output stage failure is silent and undetectable in
 software.**  The board continued to appear functional in every other
-respect: the charger LED was lit, the fuel gauge was readable over I²C,
-and the system ran normally on battery.  Only the AC-present signal was
+respect: the fuel gauge was readable over I²C, and the system ran
+normally on battery.  Only the AC-present signal was
 wrong, and only the power database — recording `ac_online=0` throughout
 a period when grid was independently confirmed as restored — revealed
 the failure.

@@ -934,6 +934,14 @@ This driver was developed on hardware running unattended, always-on.
 Two real power incidents exposed failure modes that no lab test would
 have found — and drove significant hardening of the driver.
 
+A companion daemon running on the same system reads the driver's sysfs
+nodes continuously, logs every reading to a SQLite database, and
+implements layered shutdown logic on top of what the driver exposes.
+All power data cited in the incidents below — SoC, voltage, AC state,
+charge state, shutdown events, and PSU power draw — comes from that
+database.  The driver surfaces the raw hardware values; the daemon
+records and acts on them.
+
 ---
 
 ### Incident 1 — Deep discharge and cell destruction (2026-03-05)
@@ -1029,12 +1037,12 @@ remainder of the discharge.  Because `powerd.py` saw no grid, charging
 never resumed.  The system continued draining as if the outage was
 still in progress.
 
-The shutdown mechanism worked correctly: `shutdown_armed` fired at
-**14:29:28 UTC** at 10.0% SoC / 3.59 V, and `shutdown_initiated`
-followed 15 seconds later exactly as designed.  At that point the grid
-had already been back for approximately 3 hours, and the cells should
-have been charging throughout that window.  They were not, because the
-board was silently failing to assert GPIO6.
+The companion daemon's shutdown mechanism worked correctly:
+`shutdown_armed` fired at **14:29:28 UTC** at 10.0% SoC / 3.59 V, and
+`shutdown_initiated` followed 15 seconds later exactly as designed.
+At that point the grid had already been back for approximately 3 hours,
+and the cells should have been charging throughout that window.  They
+were not, because the board was silently failing to assert GPIO6.
 
 When the system rebooted after shutdown, `ac_online` was still `0`
 despite the charger being connected and its indicator LED lit.  The
@@ -1117,8 +1125,11 @@ plausibility floor has been lowered to 0%.
 
 #### Resolution — X1206 board replacement (2026-04-07)
 
-The faulty board was replaced with a new X1206 on 2026-04-07, fitted
-with fresh Molicel INR-21700-P50B cells (4 × 5000 mAh, 20 Ah pack).
+The faulty board was replaced with a new X1206 on 2026-04-07.  The
+existing Molicel INR-21700-P50B cells (4 × 5000 mAh, 20 Ah pack) were
+reinstalled — deeply depleted by the livelock cycles but undamaged,
+as the repeated shutdowns had kept the voltage above the cell damage
+threshold throughout.
 The power supply was also replaced with a multi-port GaN charger
 (Linocell Premium GaN 140 W) giving the Pi and the mobile router
 independent ports with separate overcurrent protection, eliminating

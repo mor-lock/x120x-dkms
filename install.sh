@@ -84,7 +84,7 @@ done
 # -------------------------------------------------------------------------
 
 PKG_NAME="x120x"
-PKG_VERSION="0.4.0"
+PKG_VERSION="0.4.1"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Detect Pi model for correct boot path
@@ -119,6 +119,8 @@ done
 # -------------------------------------------------------------------------
 
 info "Step 1/10 — Installing dependencies..."
+apt-get update \
+    || warn "apt-get update failed — continuing with existing package index"
 apt-get install -y dkms linux-headers-$(uname -r) \
     || die "apt-get install failed"
 ok "Dependencies installed"
@@ -405,44 +407,6 @@ ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="x120x-charger",     RUN+="
 UDEV_EOF
 udevadm control --reload-rules 2>/dev/null || true
 ok "Installed charge mode persistence rule to ${UDEV_RULE}"
-
-# -------------------------------------------------------------------------
-# Persistence: udev rule to save charge mode to modprobe.d on change
-# -------------------------------------------------------------------------
-
-PERSIST_SCRIPT="/usr/local/lib/x120x-persist-mode.sh"
-UDEV_RULE="/etc/udev/rules.d/90-x120x-persist.rules"
-
-cat > "${PERSIST_SCRIPT}" << 'PERSIST_EOF'
-#!/bin/sh
-# x120x-persist-mode.sh — called by udev when charge_type changes.
-# Writes conservation_mode_default to /etc/modprobe.d/x120x.conf so
-# the charge mode survives reboots.
-CONF=/etc/modprobe.d/x120x.conf
-CHARGE_TYPE=$(cat /sys/class/power_supply/x120x-charger/charge_type 2>/dev/null)
-case "$CHARGE_TYPE" in
-    "Long Life") MODE=1 ;;
-    *)           MODE=0 ;;
-esac
-if [ -f "$CONF" ]; then
-    # Update existing conservation_mode_default if present
-    if grep -q "conservation_mode_default" "$CONF"; then
-        sed -i "s/conservation_mode_default=[0-9]*/conservation_mode_default=${MODE}/" "$CONF"
-    else
-        # Append to the options line
-        sed -i "s/^options x120x /options x120x conservation_mode_default=${MODE} /" "$CONF"
-    fi
-fi
-PERSIST_EOF
-chmod 755 "${PERSIST_SCRIPT}"
-ok "Installed persistence script to ${PERSIST_SCRIPT}"
-
-cat > "${UDEV_RULE}" << 'UDEV_EOF'
-# Persist x120x charge mode to /etc/modprobe.d/x120x.conf on change
-ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="x120x-charger",     RUN+="/usr/local/lib/x120x-persist-mode.sh"
-UDEV_EOF
-udevadm control --reload-rules 2>/dev/null || true
-ok "Installed udev persistence rule to ${UDEV_RULE}"
 
 # -------------------------------------------------------------------------
 # Done

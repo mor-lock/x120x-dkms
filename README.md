@@ -294,25 +294,32 @@ upower -i /org/freedesktop/UPower/devices/battery_x120x_battery
 
 ### Battery conservation mode
 
-Lithium-ion cells degrade faster when kept at 100% charge for extended
-periods.  If your Pi is permanently plugged in — as a server, NAS, or
-always-on system — keeping the battery topped up continuously will
-shorten its lifespan over time.  Conservation mode addresses this by
-limiting the charge range to a healthier window.
+Lithium-ion cells wear out in two ways: **cycle aging** (charge and
+discharge cycles) and **calendar aging** (time spent sitting at high
+state of charge, especially near 100%).  A UPS battery sees very few
+cycles — it charges once and then sits on mains for weeks or months
+between outages — so calendar aging at full charge is the dominant wear
+mechanism for always-on systems.  Conservation mode addresses this by
+holding the battery at a lower resting state of charge, where calendar
+aging is significantly slower.
 
 The driver supports two charge modes, selectable via `charge_type`:
 
-- **`Fast`** (default) — charges to 100%, then disables the charger
-  and re-enables it at 95%.  This float-protection hysteresis prevents
-  constant micro-cycling at full charge, which degrades cells even when
-  the battery appears "full".  The battery holds its charge for an
-  extended period without cycling.  Best when maximum backup
-  capacity is the priority.
-- **`Long Life`** — the driver manages GPIO16 using user-configurable
-  hysteresis: charging stops when SoC reaches `charge_control_end_threshold`
-  (default 80%) and resumes when SoC drops to
-  `charge_control_start_threshold` (default 75%).  Best for always-on
-  systems permanently plugged into mains power.
+- **`Fast`** (default) — charges to 100%, disables the charger, and
+  re-enables it at 95% to replace self-discharge.  The 5% hysteresis
+  band prevents the charger from micro-cycling against the full-charge
+  cutoff.  Cells rest at or near full voltage, so calendar aging
+  continues at its normal rate.  Best when the priority is maximum
+  backup capacity at the moment an outage begins.
+- **`Long Life`** — charges to `charge_control_end_threshold` (default
+  80%), disables the charger, and re-enables it at
+  `charge_control_start_threshold` (default 75%).  Cells spend their
+  idle life at a noticeably lower voltage, where calendar aging is
+  dramatically reduced.  The trade-off is 20% less runtime during an
+  outage; the benefit is that the cells retain meaningfully more of
+  their original capacity after several years.  Best for always-on
+  systems where the UPS will sit on mains for months or years between
+  actual outages.
 
 Enable and disable conservation mode from the command line:
 
@@ -421,12 +428,15 @@ example after replacing the cells.
 
 #### Further protection with Long Life mode
 
-Long Life mode provides an additional layer of protection.  By keeping
-cells below 80%, there is more usable capacity remaining when a power
-outage begins.  A battery kept at 80% has significantly more runtime
-before reaching the 2% shutdown threshold than one that starts the
-outage at 100% and has been micro-cycling for months.  The cells also
-age more slowly, maintaining their capacity over more charge cycles.
+Long Life mode also provides an indirect safety benefit during outages.
+Over months or years of always-on operation, cells held at 80% retain
+more of their original capacity than cells held at 100% — they have
+aged less.  When an outage eventually happens, a Long Life battery
+starts from a lower state of charge but delivers closer to its rated
+runtime from that point, while a 100%-held battery starts higher but
+has lost more capacity over the same period.  For systems where the
+UPS is rarely called on, this capacity retention compounds over the
+lifespan of the cells.
 
 ### Charge mode persistence
 
@@ -702,15 +712,15 @@ headers needed to compile the module.
 DKMS expects the source under `/usr/src/<name>-<version>/`:
 
 ```bash
-sudo cp -r . /usr/src/x120x-0.4.0
+sudo cp -r . /usr/src/x120x-0.4.1
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.4.0
-sudo dkms build x120x/0.4.0
-sudo dkms install x120x/0.4.0
+sudo dkms add x120x/0.4.1
+sudo dkms build x120x/0.4.1
+sudo dkms install x120x/0.4.1
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -723,7 +733,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.4.0, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.4.1, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Compile the device tree overlay
 
@@ -1268,6 +1278,34 @@ itself should be suspected and replaced.  The driver cannot work around
 a permanently failed GPIO6 output stage.
 
 ## Changelog
+
+### v0.4.1 — Installer and uninstaller robustness, locking cleanup
+
+**Uninstaller**
+- Uninstaller now discovers every installed version of the driver via
+  `dkms status` and removes them all, rather than relying on a single
+  hardcoded version string.  Fixes a case where `uninstall.sh` left the
+  kernel module installed if it had been built against a different
+  version than the uninstaller expected.
+- Orphaned `/usr/src/x120x-*` source trees are cleaned up even if DKMS
+  no longer tracks them.
+
+**Installer**
+- `apt-get update` is now run before `apt-get install` so that a Pi
+  with a stale package index does not fail to find `dkms` or the
+  kernel headers package.
+- Removed a duplicated Step 10 block that re-installed the charge-mode
+  persistence script and udev rule a second time.  Functionally
+  harmless (same content written to the same files), but cleaned up
+  for clarity.
+
+**Kernel driver**
+- The polling work function now snapshots `conservation_mode` and
+  `capacity_pct` under the chip mutex and uses the local copies in
+  the subsequent hysteresis region, rather than reading the `chip`
+  fields a second time outside the lock.  Fixes a minor correctness
+  issue where the hysteresis decision could in principle race against
+  a concurrent `charge_type` write from sysfs.
 
 ### v0.4.0 — hwmon interface, rate estimation fix
 

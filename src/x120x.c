@@ -495,6 +495,11 @@ static void x120x_poll_work(struct work_struct *work)
 	int new_uv, new_pct, new_256, new_ac, ret;
 	bool new_present;
 	bool bat_changed, ac_changed, chrg_changed;
+	/* Snapshots of shared chip state taken under the lock and used
+	 * in the unlocked hysteresis / notification region below.
+	 */
+	bool conservation_mode_snap = false;
+	int  capacity_pct_snap = 0;
 
 	/* ----------------------------------------------------------------
 	 * Read fuel gauge.  On failure, increment the error counter and
@@ -512,6 +517,8 @@ static void x120x_poll_work(struct work_struct *work)
 			chip->present = false;
 		ac_changed   = false;
 		chrg_changed = false;
+		conservation_mode_snap = chip->conservation_mode;
+		capacity_pct_snap      = chip->capacity_pct;
 		mutex_unlock(&chip->lock);
 		goto notify;
 	}
@@ -529,6 +536,8 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->voltage_uv = MAX17043_VCELL_TO_UV(vcell_raw);
 		ac_changed   = false;
 		chrg_changed = false;
+		conservation_mode_snap = chip->conservation_mode;
+		capacity_pct_snap      = chip->capacity_pct;
 		mutex_unlock(&chip->lock);
 		goto notify;
 	}
@@ -693,6 +702,9 @@ static void x120x_poll_work(struct work_struct *work)
 		}
 	} /* end chip state update and rate estimation */
 
+	conservation_mode_snap = chip->conservation_mode;
+	capacity_pct_snap      = chip->capacity_pct;
+
 	mutex_unlock(&chip->lock);
 
 notify:
@@ -722,7 +734,7 @@ notify:
 		int new_gpio_val = gpio_val;
 		int end_thr, start_thr;
 
-		if (chip->conservation_mode) {
+		if (conservation_mode_snap) {
 			/* Long Life: user-configured thresholds */
 			end_thr   = conservation_end;
 			start_thr = conservation_start;
@@ -740,7 +752,7 @@ notify:
 		 * to charge too much; it is harmful to leave a low battery
 		 * uncharged.
 		 */
-		if (chip->capacity_pct >= end_thr)
+		if (capacity_pct_snap >= end_thr)
 			new_gpio_val = 1; /* stop charging */
 		else
 			new_gpio_val = 0; /* charging enabled (default) */
@@ -749,9 +761,9 @@ notify:
 			x120x_gpio_set(chip->gpio_chrg, new_gpio_val);
 			dev_dbg(&chip->client->dev,
 				"%s mode: %s charging at %d%%\n",
-				chip->conservation_mode ? "conservation" : "float",
+				conservation_mode_snap ? "conservation" : "float",
 				new_gpio_val ? "stopped" : "resumed",
-				chip->capacity_pct);
+				capacity_pct_snap);
 			chrg_changed = true;
 			bat_changed  = true;
 		}
@@ -1772,7 +1784,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.4.0");
+MODULE_VERSION("0.4.1");
 MODULE_LICENSE("GPL v2");
 
 /*

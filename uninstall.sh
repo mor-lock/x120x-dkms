@@ -51,7 +51,6 @@ require_root() {
 # -------------------------------------------------------------------------
 
 PKG_NAME="x120x"
-PKG_VERSION="0.3.0"
 
 # Detect Pi model for correct boot path
 if [ -f /boot/firmware/config.txt ]; then
@@ -68,7 +67,7 @@ fi
 
 require_root
 
-info "x120x-dkms ${PKG_VERSION} uninstaller"
+info "x120x-dkms uninstaller"
 echo
 
 # -------------------------------------------------------------------------
@@ -91,22 +90,33 @@ fi
 
 info "Step 2/7 — Removing DKMS kernel module..."
 
-if dkms status "${PKG_NAME}/${PKG_VERSION}" 2>/dev/null | grep -q .; then
-    dkms remove "${PKG_NAME}/${PKG_VERSION}" --all \
-        || warn "dkms remove reported an error — continuing anyway"
-    ok "DKMS module removed"
-else
-    ok "No DKMS installation found for ${PKG_NAME}/${PKG_VERSION}"
+# Discover and remove every installed version of this driver — we don't
+# know which version the user installed, and older versions may have
+# been left behind by previous installs. install.sh uses the same
+# pattern when cleaning up before a new install.
+REMOVED_ANY=0
+while IFS= read -r ver; do
+    [ -z "${ver}" ] && continue
+    info "  Removing ${PKG_NAME}/${ver}..."
+    dkms remove "${PKG_NAME}/${ver}" --all 2>/dev/null \
+        || warn "  dkms remove ${PKG_NAME}/${ver} reported an error — continuing"
+    rm -rf "/usr/src/${PKG_NAME}-${ver}"
+    ok "  Removed ${PKG_NAME}/${ver}"
+    REMOVED_ANY=1
+done < <(dkms status "${PKG_NAME}" 2>/dev/null \
+    | grep -oP "${PKG_NAME}/\K[0-9]+\.[0-9]+\.[0-9]+" \
+    | sort -uV)
+
+if [ "${REMOVED_ANY}" -eq 0 ]; then
+    ok "No DKMS installations found for ${PKG_NAME}"
 fi
 
-# Remove DKMS source tree
-DKMS_SRC="/usr/src/${PKG_NAME}-${PKG_VERSION}"
-if [ -d "${DKMS_SRC}" ]; then
-    rm -rf "${DKMS_SRC}"
-    ok "Removed DKMS source tree: ${DKMS_SRC}"
-else
-    ok "DKMS source tree not found (already removed)"
-fi
+# Also clean up any orphaned source trees that dkms did not know about
+for src in /usr/src/${PKG_NAME}-*; do
+    [ -d "${src}" ] || continue
+    rm -rf "${src}"
+    ok "Removed orphaned DKMS source tree: ${src}"
+done
 
 # -------------------------------------------------------------------------
 # Step 3: Remove device tree overlay and config.txt entries

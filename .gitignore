@@ -16,3 +16,4 @@ modules.builtin.modinfo
 *.swo
 *~
 .DS_Store
+*.zip

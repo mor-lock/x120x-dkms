@@ -13,19 +13,27 @@
 #   - dtoverlay=x120x and gpio=6=pu lines from config.txt
 #   - /etc/modprobe.d/x120x.conf
 #   - Charge mode persistence script and udev rule
-#   - HandleLowBattery=poweroff from /etc/systemd/logind.conf
-#   - CriticalPowerAction=PowerOff and NoPollBatteries=true from UPower.conf
+#   - x120x-dkms marker-wrapped blocks from /etc/systemd/logind.conf
+#     and /etc/UPower/UPower.conf (plus legacy bare lines written by
+#     older versions of install.sh)
 #
 # What this script does NOT touch:
 #   - The raspberrypi-kernel-headers and dkms packages (installed as
 #     system dependencies; removing them may affect other software)
 #   - Bootloader EEPROM settings (POWER_OFF_ON_HALT, PSU_MAX_CURRENT)
 #   - Any config.txt lines not added by the installer
+#   - Lines in logind.conf / UPower.conf outside our marker block.
+#     In particular: previously commented-out keys like
+#     `#HandleLowBattery=ignore` are NEVER uncommented — the installer
+#     does not record whether a comment was its doing or the user's,
+#     and silently uncommenting a deliberate user setting would be
+#     surprising.  Review these files manually after uninstall if you
+#     had pre-existing values.
 #
 # Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-set -e
+set -euo pipefail
 
 # -------------------------------------------------------------------------
 # Helpers
@@ -44,6 +52,72 @@ die()   { echo -e "${RED}[x120x] ERROR:${RST} $*" >&2; exit 1; }
 
 require_root() {
     [ "$(id -u)" -eq 0 ] || die "This script must be run with sudo: sudo bash uninstall.sh"
+}
+
+# -------------------------------------------------------------------------
+# INI block removal helper
+#
+# Delete a marker-wrapped block written by install_ini_block in install.sh.
+# Lines outside the markers are never touched, so users who set their own
+# values are left alone.
+# -------------------------------------------------------------------------
+
+X120X_MARKER_BEGIN_PREFIX="# >>> x120x-dkms:"
+X120X_MARKER_END_PREFIX="# <<< x120x-dkms:"
+
+remove_ini_block() {
+    local file="$1" tag="$2"
+    [ -f "${file}" ] || return 0
+
+    local marker_begin="${X120X_MARKER_BEGIN_PREFIX} ${tag} (do not edit) >>>"
+    local marker_end="${X120X_MARKER_END_PREFIX} ${tag} <<<"
+
+    grep -qF "${marker_begin}" "${file}" || return 0
+
+    local esc_begin esc_end
+    esc_begin=$(printf '%s\n' "${marker_begin}" | sed 's/[][\/.^$*]/\\&/g')
+    esc_end=$(printf '%s\n' "${marker_end}"   | sed 's/[][\/.^$*]/\\&/g')
+    sed -i "/^${esc_begin}$/,/^${esc_end}$/d" "${file}"
+
+    # The installer prepends a blank line before each block.  If the
+    # block was at end-of-file, removing it leaves a trailing blank line;
+    # trim trailing blank lines for cleanliness.  Internal blank lines
+    # are preserved.
+    sed -i -e ':a;/^$/{$d;N;ba}' "${file}" 2>/dev/null || true
+}
+
+# -------------------------------------------------------------------------
+# Legacy cleanup helpers
+#
+# Older versions of install.sh wrote bare lines (no markers) into
+# logind.conf and UPower.conf.  These helpers remove the exact strings
+# the old installer emitted.  Kept symmetric with install.sh, which
+# calls the same helpers before writing its marker block so a system
+# that's been through an old install gets cleaned up either way.
+#
+# We deliberately do NOT uncomment any line.  The old installer
+# commented blindly without recording which lines were originally
+# uncommented, so silently uncommenting a user's deliberate
+# `#HandleLowBattery=ignore` would be surprising.
+# -------------------------------------------------------------------------
+
+clean_legacy_logind() {
+    local file="${1:-/etc/systemd/logind.conf}"
+    [ -f "${file}" ] || return 0
+    sed -i '/^# Added by x120x-dkms installer.*$/d'        "${file}"
+    sed -i '/^# capacity_level=Critical.*$/d'              "${file}"
+    sed -i '/^# To disable: set HandleLowBattery.*$/d'     "${file}"
+    sed -i '/^HandleLowBattery=poweroff$/d'                "${file}"
+}
+
+clean_legacy_upower() {
+    local file="${1:-/etc/UPower/UPower.conf}"
+    [ -f "${file}" ] || return 0
+    sed -i '/^# Added by x120x-dkms installer.*$/d'        "${file}"
+    sed -i '/^# HybridSleep hangs on Raspberry Pi.*$/d'    "${file}"
+    sed -i '/^CriticalPowerAction=PowerOff$/d'             "${file}"
+    sed -i '/^# driver sends uevents.*$/d'                 "${file}"
+    sed -i '/^NoPollBatteries=true$/d'                     "${file}"
 }
 
 # -------------------------------------------------------------------------
@@ -200,14 +274,14 @@ info "Step 6/7 — Restoring logind.conf..."
 
 LOGIND_CONF="/etc/systemd/logind.conf"
 if [ -f "${LOGIND_CONF}" ]; then
-    # Remove the lines added by the installer
-    sed -i '/^# Added by x120x-dkms installer.*$/d'        "${LOGIND_CONF}"
-    sed -i '/^# capacity_level=Critical.*$/d'              "${LOGIND_CONF}"
-    sed -i '/^# To disable: set HandleLowBattery.*$/d'     "${LOGIND_CONF}"
-    sed -i '/^HandleLowBattery=poweroff$/d'                "${LOGIND_CONF}"
+    # Preferred path: remove the marker-wrapped block written by the
+    # current installer.  Lines outside our markers are not touched.
+    remove_ini_block "${LOGIND_CONF}" "logind-low-battery"
 
-    # Restore any previously commented-out HandleLowBattery line
-    sed -i 's/^#HandleLowBattery=/HandleLowBattery=/'      "${LOGIND_CONF}"
+    # Legacy cleanup: remove bare lines written by older versions of
+    # install.sh.  Same helper is called from install.sh too, so the
+    # patterns stay in one place.
+    clean_legacy_logind "${LOGIND_CONF}"
 
     ok "Restored ${LOGIND_CONF}"
 else
@@ -222,16 +296,11 @@ info "Step 7/7 — Restoring UPower configuration..."
 
 UPOWER_CONF="/etc/UPower/UPower.conf"
 if [ -f "${UPOWER_CONF}" ]; then
-    # Remove lines added by the installer
-    sed -i '/^# Added by x120x-dkms installer.*$/d'                "${UPOWER_CONF}"
-    sed -i '/^# HybridSleep hangs on Raspberry Pi.*$/d'            "${UPOWER_CONF}"
-    sed -i '/^CriticalPowerAction=PowerOff$/d'                     "${UPOWER_CONF}"
-    sed -i '/^# driver sends uevents.*$/d'                         "${UPOWER_CONF}"
-    sed -i '/^NoPollBatteries=true$/d'                             "${UPOWER_CONF}"
+    # Preferred path: remove the marker-wrapped block.
+    remove_ini_block "${UPOWER_CONF}" "upower-pi-tweaks"
 
-    # Restore previously commented-out settings
-    sed -i 's/^#CriticalPowerAction=/CriticalPowerAction=/'        "${UPOWER_CONF}"
-    sed -i 's/^#NoPollBatteries=/NoPollBatteries=/'                "${UPOWER_CONF}"
+    # Legacy cleanup: remove bare lines from older installer versions.
+    clean_legacy_upower "${UPOWER_CONF}"
 
     systemctl restart upower 2>/dev/null || true
     ok "Restored ${UPOWER_CONF}"

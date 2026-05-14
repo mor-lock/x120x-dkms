@@ -19,7 +19,7 @@
 # Copyright (C) 2026 Edvard Fielding <mor-lock@users.noreply.github.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-set -e
+set -euo pipefail
 
 # -------------------------------------------------------------------------
 # Helpers
@@ -41,6 +41,115 @@ require_root() {
 }
 
 # -------------------------------------------------------------------------
+# INI block helper
+#
+# Append a marker-wrapped block of lines under a named section in an INI
+# file.  systemd-style INI honours the LAST matching key for any given
+# section, so appending our block at the bottom of [Login] / [UPower]
+# overrides any prior setting without touching what's already there.
+#
+# Marker convention:
+#   # >>> x120x-dkms: <tag> (do not edit) >>>
+#   <content>
+#   # <<< x120x-dkms: <tag> <<<
+#
+# The uninstaller deletes everything between matching markers; lines
+# outside the markers are never touched, so users who set their own
+# values are left alone.
+#
+# Usage: install_ini_block FILE SECTION TAG LINE [LINE ...]
+#   FILE     — path to the INI file (must exist)
+#   SECTION  — section name without brackets (e.g. "Login")
+#   TAG      — short identifier used in the marker comment
+#   LINE...  — one or more lines to write inside the block
+# -------------------------------------------------------------------------
+
+X120X_MARKER_BEGIN_PREFIX="# >>> x120x-dkms:"
+X120X_MARKER_END_PREFIX="# <<< x120x-dkms:"
+
+install_ini_block() {
+    local file="$1" section="$2" tag="$3"
+    shift 3
+
+    [ -f "${file}" ] || { warn "${file} not found — skipping ${tag}"; return 0; }
+
+    local marker_begin="${X120X_MARKER_BEGIN_PREFIX} ${tag} (do not edit) >>>"
+    local marker_end="${X120X_MARKER_END_PREFIX} ${tag} <<<"
+
+    # If our block is already present, remove it so we can rewrite it
+    # idempotently with the current desired content.  We only ever touch
+    # text between our own markers.
+    if grep -qF "${marker_begin}" "${file}"; then
+        # Delete from begin marker through end marker, inclusive.
+        # Use a literal-string match via address-of-text by escaping for sed.
+        local esc_begin esc_end
+        esc_begin=$(printf '%s\n' "${marker_begin}" | sed 's/[][\/.^$*]/\\&/g')
+        esc_end=$(printf '%s\n' "${marker_end}"   | sed 's/[][\/.^$*]/\\&/g')
+        sed -i "/^${esc_begin}$/,/^${esc_end}$/d" "${file}"
+    fi
+
+    # Ensure the section header exists.  If not, append a blank line and
+    # the header before our block so the keys land in the right section.
+    if ! grep -qE "^\[${section}\][[:space:]]*$" "${file}"; then
+        printf '\n[%s]\n' "${section}" >> "${file}"
+    fi
+
+    # Append the marker-wrapped block at end of file.  Since the section
+    # header was either pre-existing further up OR just appended on the
+    # line above, our block lands inside that section.  systemd reads
+    # the LAST occurrence of any key in a section, so this overrides any
+    # earlier setting without commenting anything out.
+    {
+        printf '\n%s\n' "${marker_begin}"
+        local line
+        for line in "$@"; do
+            printf '%s\n' "${line}"
+        done
+        printf '%s\n' "${marker_end}"
+    } >> "${file}"
+}
+
+# -------------------------------------------------------------------------
+# Legacy cleanup helpers
+#
+# Older versions of install.sh wrote bare lines (no markers) into
+# logind.conf and UPower.conf, and commented out any pre-existing
+# HandleLowBattery= / CriticalPowerAction= / NoPollBatteries= line
+# alongside.  A system that's been through an old install will still
+# have those lines sitting around even after the new installer writes
+# its marker block; without explicit cleanup they accumulate forever.
+#
+# These functions remove the exact strings the old installer emitted.
+# Each pattern matches a single specific line — we never uncomment
+# anything, because the old installer commented blindly and a user
+# who had deliberately written `#HandleLowBattery=ignore` would be
+# surprised by silent reactivation.
+#
+# The same cleanup is called from uninstall.sh; keeping it in a
+# helper documents the contract that install.sh and uninstall.sh must
+# agree on which lines belonged to the legacy installer.
+# -------------------------------------------------------------------------
+
+clean_legacy_logind() {
+    local file="${1:-/etc/systemd/logind.conf}"
+    [ -f "${file}" ] || return 0
+    sed -i '/^# Added by x120x-dkms installer.*$/d'        "${file}"
+    sed -i '/^# capacity_level=Critical.*$/d'              "${file}"
+    sed -i '/^# To disable: set HandleLowBattery.*$/d'     "${file}"
+    sed -i '/^HandleLowBattery=poweroff$/d'                "${file}"
+}
+
+clean_legacy_upower() {
+    local file="${1:-/etc/UPower/UPower.conf}"
+    [ -f "${file}" ] || return 0
+    sed -i '/^# Added by x120x-dkms installer.*$/d'        "${file}"
+    sed -i '/^# HybridSleep hangs on Raspberry Pi.*$/d'    "${file}"
+    sed -i '/^CriticalPowerAction=PowerOff$/d'             "${file}"
+    sed -i '/^# driver sends uevents.*$/d'                 "${file}"
+    sed -i '/^NoPollBatteries=true$/d'                     "${file}"
+}
+
+# -------------------------------------------------------------------------
 # Argument parsing
 # -------------------------------------------------------------------------
 
@@ -51,7 +160,15 @@ OPT_BOARD=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --battery-mah)
-            OPT_MAH="$2"
+            case "${2:-}" in
+                ''|*[!0-9]*)
+                    die "--battery-mah requires a positive integer (got: ${2:-<missing>})"
+                    ;;
+            esac
+            # Strip leading zeros for cleanliness; reject 0.
+            OPT_MAH=$((10#$2))
+            [ "${OPT_MAH}" -gt 0 ] \
+                || die "--battery-mah must be greater than zero"
             shift 2
             ;;
         --charge-mode)
@@ -183,8 +300,20 @@ if ! command -v dtc &>/dev/null; then
         || die "Failed to install device-tree-compiler"
 fi
 
-cd "${SRC_DIR}"
-dtc -@ -I dts -O dtb -o x120x.dtbo x120x-overlay.dts \
+# Compile the overlay in a root-owned tmpdir rather than the source
+# directory.  If SRC_DIR happens to live on a path an unprivileged user
+# can write to, compiling in-place would open a TOCTOU window between
+# the dtc output and the cp into /boot/firmware/overlays/.  A private
+# tmpdir created by root closes that window.
+DTBO_TMPDIR=$(mktemp -d -t x120x-dtbo.XXXXXX) \
+    || die "Failed to create temporary directory for overlay compile"
+chmod 700 "${DTBO_TMPDIR}"
+# shellcheck disable=SC2064
+trap "rm -rf -- '${DTBO_TMPDIR}'" EXIT
+
+dtc -@ -I dts -O dtb \
+    -o "${DTBO_TMPDIR}/x120x.dtbo" \
+    "${SRC_DIR}/x120x-overlay.dts" \
     || die "Failed to compile device tree overlay"
 ok "Overlay compiled"
 
@@ -236,7 +365,7 @@ ok "Battery configuration written"
 # -------------------------------------------------------------------------
 
 info "Step 6/10 — Installing device tree overlay to ${OVERLAYS_DIR}..."
-cp x120x.dtbo "${OVERLAYS_DIR}/" \
+cp "${DTBO_TMPDIR}/x120x.dtbo" "${OVERLAYS_DIR}/" \
     || die "Failed to copy overlay to ${OVERLAYS_DIR}"
 ok "Overlay installed"
 
@@ -320,20 +449,22 @@ fi
 
 info "Step 9/10 — Configuring low-battery shutdown..."
 
-LOGIND_CONF="/etc/systemd/logind.conf"
-if grep -q "^HandleLowBattery=poweroff" "${LOGIND_CONF}" 2>/dev/null; then
-    ok "HandleLowBattery=poweroff already set in ${LOGIND_CONF}"
-else
-    # Append a drop-in line. Comment out any existing HandleLowBattery line
-    # first to avoid duplicates.
-    sed -i 's/^HandleLowBattery=/#HandleLowBattery=/' "${LOGIND_CONF}" 2>/dev/null || true
-    echo "" >> "${LOGIND_CONF}"
-    echo "# Added by x120x-dkms installer — clean shutdown when battery reaches" >> "${LOGIND_CONF}"
-    echo "# capacity_level=Critical (cell voltage ≤ 3.20 V on battery)." >> "${LOGIND_CONF}"
-    echo "# To disable: set HandleLowBattery=ignore in ${LOGIND_CONF}" >> "${LOGIND_CONF}"
-    echo "HandleLowBattery=poweroff" >> "${LOGIND_CONF}"
-    ok "HandleLowBattery=poweroff set in ${LOGIND_CONF}"
-fi
+# Strip any bare lines left over from a previous (pre-marker) install.
+# On a fresh system these are no-ops.
+clean_legacy_logind "${LOGIND_CONF:=/etc/systemd/logind.conf}"
+
+# systemd-logind honours the last matching key in the [Login] section,
+# so appending our block at the bottom overrides any earlier setting
+# without commenting out lines we did not write.  See install_ini_block
+# for the marker convention.
+install_ini_block "${LOGIND_CONF}" "Login" "logind-low-battery" \
+    "# Clean shutdown when battery reaches capacity_level=Critical" \
+    "# (cell voltage ≤ 3.20 V on battery)." \
+    "# To opt out, remove the dtoverlay=x120x line or set" \
+    "# HandleLowBattery=ignore in a drop-in file under" \
+    "# /etc/systemd/logind.conf.d/" \
+    "HandleLowBattery=poweroff"
+ok "HandleLowBattery=poweroff set in ${LOGIND_CONF}"
 
 # UPower configuration:
 #   CriticalPowerAction=PowerOff  — HybridSleep hangs on Raspberry Pi.
@@ -345,24 +476,16 @@ fi
 #                                   gnome-power-statistics graphs.
 UPOWER_CONF="/etc/UPower/UPower.conf"
 if [ -f "${UPOWER_CONF}" ]; then
-    if grep -q "^CriticalPowerAction=PowerOff" "${UPOWER_CONF}" 2>/dev/null; then
-        ok "CriticalPowerAction=PowerOff already set in ${UPOWER_CONF}"
-    else
-        sed -i 's/^CriticalPowerAction=/#CriticalPowerAction=/' "${UPOWER_CONF}" 2>/dev/null || true
-        echo "" >> "${UPOWER_CONF}"
-        echo "# Added by x120x-dkms installer — HybridSleep hangs on Raspberry Pi." >> "${UPOWER_CONF}"
-        echo "CriticalPowerAction=PowerOff" >> "${UPOWER_CONF}"
-        ok "CriticalPowerAction=PowerOff set in ${UPOWER_CONF}"
-    fi
-    if grep -q "^NoPollBatteries=true" "${UPOWER_CONF}" 2>/dev/null; then
-        ok "NoPollBatteries=true already set in ${UPOWER_CONF}"
-    else
-        sed -i 's/^NoPollBatteries=/#NoPollBatteries=/' "${UPOWER_CONF}" 2>/dev/null || true
-        echo "" >> "${UPOWER_CONF}"
-        echo "# Added by x120x-dkms installer — driver sends uevents; polling causes races." >> "${UPOWER_CONF}"
-        echo "NoPollBatteries=true" >> "${UPOWER_CONF}"
-        ok "NoPollBatteries=true set in ${UPOWER_CONF}"
-    fi
+    # Strip legacy bare lines first (no-op on a fresh system).
+    clean_legacy_upower "${UPOWER_CONF}"
+
+    install_ini_block "${UPOWER_CONF}" "UPower" "upower-pi-tweaks" \
+        "# HybridSleep hangs on Raspberry Pi — use PowerOff instead." \
+        "CriticalPowerAction=PowerOff" \
+        "# Driver sends uevents on all state changes; polling causes" \
+        "# races that produce spurious 0%/unknown history entries." \
+        "NoPollBatteries=true"
+    ok "UPower tweaks installed in ${UPOWER_CONF}"
     systemctl restart upower 2>/dev/null || true
 else
     warn "UPower config not found at ${UPOWER_CONF} — skipping UPower configuration"

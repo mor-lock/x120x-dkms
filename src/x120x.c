@@ -104,6 +104,7 @@
 #include <linux/of.h>
 #include <linux/pm.h>
 #include <linux/power_supply.h>
+#include <linux/reboot.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
@@ -321,6 +322,7 @@ struct x120x_chip {
 	int			 capacity_256;	/* full precision: raw SOC word */
 	int			 ac_online;
 	bool			 conservation_mode;	/* true = Long life, threshold hysteresis active */
+	bool			 charger_inhibited;	/* cached GPIO16 state: true = high (stopped) */
 	bool			 present;
 	int			 i2c_errors;
 
@@ -462,29 +464,47 @@ static void x120x_gpio_set(struct gpio_desc *desc, int val)
 /* -------------------------------------------------------------------------
  * Power-off hook (X728 / X708 / X729 only)
  *
- * After the OS has halted, the UPS board will not cut power automatically
- * (unlike X120x which powers off via POWER_OFF_ON_HALT=1 in the bootloader).
- * Instead, a GPIO pulse of ~3 seconds is required to tell the UPS to cut
- * power.  We install this as pm_power_off so the kernel calls it during
- * systemctl poweroff / halt.
+ * The UPS board on these variants does not cut power automatically when
+ * Linux halts (unlike X120x, which is handled by POWER_OFF_ON_HALT=1 in
+ * the bootloader EEPROM).  Instead, a GPIO pulse of ~3 seconds tells
+ * the UPS to cut power.
  *
- * EXPERIMENTAL: untested on real hardware.
+ * We register a SYS_OFF_MODE_POWER_OFF_PREPARE handler rather than the
+ * legacy pm_power_off function pointer:
+ *
+ *   - PREPARE-mode handlers are allowed to sleep (POWER_OFF mode is
+ *     not), so we can use msleep for the 3-second pulse rather than
+ *     busy-waiting with mdelay.
+ *
+ *   - The sys-off API supports stacking; we don't unconditionally
+ *     clobber a power-off handler installed by another driver.
+ *
+ *   - devm_register_sys_off_handler ties unregistration to device
+ *     lifetime, so remove() no longer has to track and undo the global
+ *     pointer manually.
+ *
+ * The handler runs once, drives the GPIO high for 3 seconds, then
+ * releases it.  The UPS hardware sees the pulse and proceeds to cut
+ * its 5V rail once the kernel completes its shutdown sequence.
+ *
+ * EXPERIMENTAL: this entire path is only reached on x728/x708/x729
+ * boards, which the author has not tested.
  * ---------------------------------------------------------------------- */
 
-static struct x120x_chip *x120x_poweroff_chip;
-
-static void x120x_do_poweroff(void)
+static int x120x_do_poweroff(struct sys_off_data *data)
 {
-	struct x120x_chip *chip = x120x_poweroff_chip;
+	struct x120x_chip *chip = data->cb_data;
 
 	if (!chip || !chip->gpio_poweroff)
-		return;
+		return NOTIFY_DONE;
 
 	dev_info(&chip->client->dev,
 		 "pulsing power-off GPIO for 3 s\n");
 	gpiod_set_value_cansleep(chip->gpio_poweroff, 1);
-	mdelay(3000);
+	msleep(3000);
 	gpiod_set_value_cansleep(chip->gpio_poweroff, 0);
+
+	return NOTIFY_DONE;
 }
 
 static void x120x_poll_work(struct work_struct *work)
@@ -705,69 +725,78 @@ static void x120x_poll_work(struct work_struct *work)
 	conservation_mode_snap = chip->conservation_mode;
 	capacity_pct_snap      = chip->capacity_pct;
 
-	mutex_unlock(&chip->lock);
-
-notify:
-	/*
-	 * Emit uevents only when state actually changed to avoid storms.
-	 * An AC change also implies battery STATUS changed, so force
-	 * bat_changed in that case.
-	 */
 	/*
 	 * Long life / conservation mode hysteresis.
 	 *
-	 * When conservation_mode is active, control GPIO16 based on SoC%:
-	 *   capacity >= conservation_end   → stop charging  (GPIO16 high)
-	 *   capacity <= conservation_start → resume charging (GPIO16 low)
+	 * GPIO16 is driven based on a single SoC threshold:
+	 *   capacity >= end_thr → stop charging   (GPIO16 high)
+	 *   capacity <  end_thr → resume charging (GPIO16 low)
 	 *
-	 * In Fast mode a float-protection hysteresis is applied when AC is
-	 * present: the charger is disabled at 100% and re-enabled at 95%.
-	 * This prevents constant micro-cycling at full charge, which degrades
-	 * cells even at "100%".  On battery there is no AC so GPIO16 is
-	 * irrelevant — the charger cannot run without input power.
+	 * In Fast mode end_thr is 100 (float-protection: disable the
+	 * charger when SoC hits 100% so the cells don't micro-cycle at
+	 * full charge).  In Long Life mode end_thr is the user-configured
+	 * `conservation_end` parameter (default 80%).
 	 *
-	 * In Long Life mode the user-configured conservation thresholds are
-	 * used instead (default 75%/80%).
+	 * `conservation_start` is exposed as a sysfs property for the
+	 * benefit of UPower's EnableChargeThreshold model but is no longer
+	 * used directly in the hysteresis: SoC dropping below `end_thr`
+	 * is sufficient to re-enable charging, since the natural lag in
+	 * the fuel gauge between hitting the upper threshold and falling
+	 * back below it provides all the hysteresis the cell needs.
+	 *
+	 * On battery (no AC) GPIO16 is irrelevant — the charger cannot
+	 * run without input power — but we manage the cached state
+	 * regardless so sysfs reads stay consistent.
+	 *
+	 * Performed under chip->lock so the read-modify-write of GPIO16
+	 * and chip->charger_inhibited is atomic with respect to
+	 * x120x_charger_set_property when the user toggles charge_type.
+	 * gpiod_set_value_cansleep is safe to call under a mutex.
 	 */
 	if (chip->gpio_chrg) {
-		int gpio_val     = x120x_gpio_get(chip->gpio_chrg);
-		int new_gpio_val = gpio_val;
-		int end_thr, start_thr;
+		int end_thr;
+		bool want_inhibit;
 
 		if (conservation_mode_snap) {
-			/* Long Life: user-configured thresholds */
-			end_thr   = conservation_end;
-			start_thr = conservation_start;
+			/* Long Life: user-configured threshold */
+			end_thr = conservation_end;
 		} else {
-			/* Fast: float-protection at 95%/100% */
-			end_thr   = 100;
-			start_thr = 95;
+			/* Fast: float-protection at 100% */
+			end_thr = 100;
 		}
 
 		/*
-		 * Default to charging enabled.  Only disable the charger when
-		 * SoC is reliably at or above the stop threshold.  This means
-		 * the charger is always on at boot, after a deep discharge, or
-		 * any time the SoC reading is uncertain — it is never harmful
-		 * to charge too much; it is harmful to leave a low battery
-		 * uncharged.
+		 * Default to charging enabled.  Only disable the charger
+		 * when SoC is reliably at or above the stop threshold.  This
+		 * means the charger is always on at boot, after a deep
+		 * discharge, or any time the SoC reading is uncertain — it
+		 * is never harmful to charge too much; it is harmful to
+		 * leave a low battery uncharged.
 		 */
-		if (capacity_pct_snap >= end_thr)
-			new_gpio_val = 1; /* stop charging */
-		else
-			new_gpio_val = 0; /* charging enabled (default) */
+		want_inhibit = (capacity_pct_snap >= end_thr);
 
-		if (new_gpio_val != gpio_val) {
-			x120x_gpio_set(chip->gpio_chrg, new_gpio_val);
+		if (want_inhibit != chip->charger_inhibited) {
+			x120x_gpio_set(chip->gpio_chrg, want_inhibit ? 1 : 0);
+			chip->charger_inhibited = want_inhibit;
 			dev_dbg(&chip->client->dev,
 				"%s mode: %s charging at %d%%\n",
 				conservation_mode_snap ? "conservation" : "float",
-				new_gpio_val ? "stopped" : "resumed",
+				want_inhibit ? "stopped" : "resumed",
 				capacity_pct_snap);
 			chrg_changed = true;
 			bat_changed  = true;
 		}
 	}
+
+	mutex_unlock(&chip->lock);
+
+notify:
+	/*
+	 * Emit uevents only when state actually changed to avoid storms.
+	 * power_supply_changed() must NOT be called under chip->lock — it
+	 * can call back into our get_property handlers which take the
+	 * same lock.
+	 */
 
 	if (chrg_changed)
 		power_supply_changed(chip->charger);
@@ -826,7 +855,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	struct x120x_chip *chip = power_supply_get_drvdata(psy);
 	int ac_online, capacity_pct, capacity_256, voltage_uv, energy_rate_uw;
 	s64 energy_now_uwh, energy_full_uwh;
-	bool present, conservation_mode, battery_dead;
+	bool present, conservation_mode, battery_dead, charger_inhibited;
 
 	mutex_lock(&chip->lock);
 	ac_online        = chip->ac_online;
@@ -835,6 +864,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	voltage_uv       = chip->voltage_uv;
 	present          = chip->present;
 	conservation_mode = chip->conservation_mode;
+	charger_inhibited = chip->charger_inhibited;
 	energy_now_uwh  = chip->energy_now_uwh;
 	energy_full_uwh = chip->energy_full_uwh;
 	energy_rate_uw  = chip->energy_rate_uw;
@@ -842,15 +872,14 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	mutex_unlock(&chip->lock);
 
 	/*
-	 * In conservation mode, GPIO16 is managed by the hysteresis loop.
-	 * When GPIO16 is low (charging resumed below start threshold) the
-	 * battery is actively charging even though conservation_mode is true.
-	 * Read the actual GPIO state to report the correct status.
+	 * conservation_mode + charger_inhibited fully describe the charger
+	 * state from this snapshot.  No need to touch the GPIO directly:
+	 * the cached value is what the poll loop and set_property write
+	 * under the same lock, so it cannot disagree with conservation_mode.
 	 */
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS: {
-		bool chrg_inhibited = conservation_mode && chip->gpio_chrg &&
-				      x120x_gpio_get(chip->gpio_chrg);
+		bool chrg_inhibited = conservation_mode && charger_inhibited;
 		if (!present)
 			val->intval = POWER_SUPPLY_STATUS_UNKNOWN;
 		else if (!ac_online)
@@ -1061,11 +1090,12 @@ static int x120x_charger_get_property(struct power_supply *psy,
 				       union power_supply_propval *val)
 {
 	struct x120x_chip *chip = power_supply_get_drvdata(psy);
-	bool conservation_mode;
+	bool conservation_mode, charger_inhibited;
 	int ac_online;
 
 	mutex_lock(&chip->lock);
 	conservation_mode = chip->conservation_mode;
+	charger_inhibited = chip->charger_inhibited;
 	ac_online         = chip->ac_online;
 	mutex_unlock(&chip->lock);
 
@@ -1077,8 +1107,7 @@ static int x120x_charger_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STATUS:
 		if (!ac_online)
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-		else if (conservation_mode && chip->gpio_chrg &&
-			 x120x_gpio_get(chip->gpio_chrg))
+		else if (conservation_mode && charger_inhibited)
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		else
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;
@@ -1155,12 +1184,15 @@ static int x120x_charger_set_property(struct power_supply *psy,
 	conservation_mode_default = disable ? 1 : 0;
 	if (!disable) {
 		/*
-		 * Switching to Fast mode: enable charging immediately so the
-		 * battery starts charging without waiting for the next poll.
-		 * The poll loop will apply float-protection (95%/100%) from
-		 * the next tick onward.
+		 * Switching to Fast mode: enable charging immediately so
+		 * the battery starts charging without waiting for the next
+		 * poll.  The poll loop will apply float-protection from the
+		 * next tick onward.  Both the hardware GPIO and the cached
+		 * flag are updated under the same lock so any concurrent
+		 * sysfs read sees a consistent state.
 		 */
 		x120x_gpio_set(chip->gpio_chrg, 0);
+		chip->charger_inhibited = false;
 	}
 	/* GPIO16 is managed by the polling loop in both modes */
 	mutex_unlock(&chip->lock);
@@ -1453,6 +1485,13 @@ static DEFINE_SIMPLE_DEV_PM_OPS(x120x_pm_ops, x120x_suspend, x120x_resume);
  * Probe / remove
  * ---------------------------------------------------------------------- */
 
+/*
+ * Set true by probe() on success; consulted by x120x_init() to decide
+ * whether to skip the manual i2c_client fallback path when DT has
+ * already bound the driver.  See the comment block at x120x_init().
+ */
+static bool x120x_probe_bound;
+
 static int x120x_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -1549,9 +1588,27 @@ static int x120x_probe(struct i2c_client *client)
 				return ret;
 			}
 			if (chip->gpio_poweroff) {
-				x120x_poweroff_chip = chip;
-				pm_power_off = x120x_do_poweroff;
-				dev_info(dev, "power-off GPIO registered\n");
+				/*
+				 * Register at default priority — we have
+				 * nothing platform-specific to defer to and
+				 * no reason to outrank other handlers.
+				 * PREPARE mode allows sleeping (we use msleep
+				 * for the 3-second pulse).  devm cleanup
+				 * tears this down automatically on unbind.
+				 */
+				ret = devm_register_sys_off_handler(
+					dev,
+					SYS_OFF_MODE_POWER_OFF_PREPARE,
+					SYS_OFF_PRIO_DEFAULT,
+					x120x_do_poweroff,
+					chip);
+				if (ret) {
+					dev_err(dev,
+						"failed to register power-off handler: %d\n",
+						ret);
+					return ret;
+				}
+				dev_info(dev, "power-off handler registered\n");
 			} else {
 				dev_warn(dev,
 					 "power-off GPIO not found — UPS may not "
@@ -1678,6 +1735,15 @@ static int x120x_probe(struct i2c_client *client)
 		 x120x_charger_desc.name,
 		 chip->hwmon_dev ? dev_name(chip->hwmon_dev) : "disabled");
 
+	/*
+	 * Flag that some probe() invocation succeeded.  Read by
+	 * x120x_init() to decide whether to skip the manual i2c_client
+	 * fallback when DT has already bound us.  Once set it stays set
+	 * for the lifetime of the module — that's fine, it's only
+	 * consulted once during init.
+	 */
+	x120x_probe_bound = true;
+
 	return 0;
 }
 
@@ -1687,11 +1753,11 @@ static void x120x_remove(struct i2c_client *client)
 
 	cancel_delayed_work_sync(&chip->work);
 
-	/* Unregister power-off hook if we installed it */
-	if (chip->gpio_poweroff && pm_power_off == x120x_do_poweroff) {
-		pm_power_off = NULL;
-		x120x_poweroff_chip = NULL;
-	}
+	/*
+	 * The sys-off handler registered in probe is owned by devm and
+	 * torn down automatically when the device unbinds.  Nothing to
+	 * unwind manually here.
+	 */
 }
 
 /* -------------------------------------------------------------------------
@@ -1728,6 +1794,22 @@ static struct i2c_driver x120x_driver = {
  * by probing the addresses in i2c_addrs[].  This allows `modprobe x120x`
  * to work on stock Raspberry Pi OS without any DT or config.txt changes,
  * which is the expected experience for most users.
+ *
+ * When the DT overlay IS present, the i2c subsystem instantiates an
+ * i2c_client at 0x36 from the DT node before our module loads, and
+ * i2c_add_driver() synchronously binds that client and runs probe()
+ * before it returns.  In that case the manual probe loop below should
+ * be skipped entirely — otherwise the loop's first i2c_new_client_device
+ * collides with the DT client (EBUSY, logged by the i2c subsystem
+ * itself), then falls through to the next address and registers a
+ * phantom client where no chip exists (EREMOTEIO from probe).  Neither
+ * failure breaks the (DT-bound) driver but both leak scary lines into
+ * the boot log.
+ *
+ * Detection: x120x_probe_bound is set to true by probe() on success.
+ * After i2c_add_driver() returns, if the flag is set we know a DT
+ * binding already happened and there is nothing for the manual
+ * fallback to do.
  * ---------------------------------------------------------------------- */
 
 static struct i2c_client *x120x_i2c_client;
@@ -1742,6 +1824,14 @@ static int __init x120x_init(void)
 	ret = i2c_add_driver(&x120x_driver);
 	if (ret)
 		return ret;
+
+	/*
+	 * If probe() ran successfully against a DT-instantiated client
+	 * during i2c_add_driver(), the driver is already bound and we
+	 * skip the manual fallback path.
+	 */
+	if (x120x_probe_bound)
+		return 0;
 
 	adapter = i2c_get_adapter(i2c_bus);
 	if (!adapter) {
@@ -1784,7 +1874,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.4.1");
+MODULE_VERSION("0.4.2");
 MODULE_LICENSE("GPL v2");
 
 /*

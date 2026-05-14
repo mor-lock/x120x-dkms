@@ -677,17 +677,31 @@ The uninstall script removes:
 - The `dtoverlay=x120x` and `gpio=6=pu` lines from `config.txt`
 - `/etc/modprobe.d/x120x.conf`
 - The charge mode persistence script and udev rule
-- The `HandleLowBattery=poweroff` line added to `/etc/systemd/logind.conf`
-- The `CriticalPowerAction=PowerOff` and `NoPollBatteries=true` lines added to `/etc/UPower/UPower.conf`
+- The marker-wrapped block that the installer added to
+  `/etc/systemd/logind.conf` (delimited by
+  `# >>> x120x-dkms: logind-low-battery (do not edit) >>>` ...
+  `# <<< x120x-dkms: logind-low-battery <<<`)
+- The marker-wrapped block that the installer added to
+  `/etc/UPower/UPower.conf` (delimited by
+  `# >>> x120x-dkms: upower-pi-tweaks (do not edit) >>>` ...
+  `# <<< x120x-dkms: upower-pi-tweaks <<<`)
+- Any bare lines left over from older (pre-marker) installer versions
 
 The following are intentionally left unchanged:
 
-- The `dkms` and `raspberrypi-kernel-headers` packages — removing them
+- The `dkms` and `linux-headers-$(uname -r)` packages — removing them
   could break other DKMS modules on the system.
 - Bootloader EEPROM settings (`POWER_OFF_ON_HALT`, `PSU_MAX_CURRENT`) —
   these are system-level settings that may have been configured
   independently.  To revert them, run `sudo rpi-eeprom-config -e` and
   remove the relevant lines manually.
+- Lines outside the installer's marker block in `logind.conf` and
+  `UPower.conf`.  In particular, previously commented-out keys (such
+  as a deliberate `#HandleLowBattery=ignore`) are **never**
+  uncommented — the installer has no way to tell whether a comment
+  was its own or yours, and silently reactivating a setting you had
+  intentionally disabled would be surprising.  If you had pre-existing
+  values in those files, review them manually after uninstall.
 
 ---
 
@@ -700,27 +714,34 @@ suitable for your setup, follow these instructions.
 
 ```bash
 sudo apt update
-sudo apt install dkms raspberrypi-kernel-headers
+sudo apt install dkms linux-headers-$(uname -r)
 ```
 
 `dkms` manages the kernel module and rebuilds it automatically after
-kernel updates.  `raspberrypi-kernel-headers` provides the kernel
-headers needed to compile the module.
+kernel updates.  `linux-headers-$(uname -r)` provides headers that
+match the currently running kernel exactly, which is what DKMS needs
+to compile the module.
+
+> **Note:** older Raspberry Pi OS releases used a single metapackage
+> `raspberrypi-kernel-headers`.  On Bookworm and later this metapackage
+> may pull headers for a different kernel than the one you booted with,
+> which causes DKMS builds to fail with `kernel headers ... cannot be
+> found`.  Use the kernel-specific package shown above to avoid that.
 
 #### Step 2 — Copy source to the DKMS tree
 
 DKMS expects the source under `/usr/src/<name>-<version>/`:
 
 ```bash
-sudo cp -r . /usr/src/x120x-0.4.1
+sudo cp -r . /usr/src/x120x-0.4.2
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.4.1
-sudo dkms build x120x/0.4.1
-sudo dkms install x120x/0.4.1
+sudo dkms add x120x/0.4.2
+sudo dkms build x120x/0.4.2
+sudo dkms install x120x/0.4.2
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -733,7 +754,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.4.1, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.4.2, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Compile the device tree overlay
 
@@ -1278,6 +1299,100 @@ itself should be suspected and replaced.  The driver cannot work around
 a permanently failed GPIO6 output stage.
 
 ## Changelog
+
+### v0.4.2 — Security audit follow-ups
+
+**Installer**
+- `set -euo pipefail` so unset variables and pipeline failures abort
+  the install rather than continuing silently.
+- `--battery-mah` is now validated as a positive integer at parse
+  time.  The value is interpolated directly into
+  `/etc/modprobe.d/x120x.conf`, so any non-numeric, empty, negative,
+  zero, or shell-injection-shaped input is rejected before anything
+  is written.  Leading zeros are normalised away to avoid any octal
+  interpretation downstream.
+- The device tree overlay is now compiled into a root-owned
+  `mktemp -d` (mode 700, cleaned up on `EXIT`) rather than the source
+  directory, and copied from there into `/boot/firmware/overlays/`.
+  If the source tree happens to live on a path an unprivileged user
+  can write to, compiling in place opened a brief TOCTOU window
+  between `dtc` finishing and `cp` running.  A private tmpdir closes
+  it.
+- `logind.conf` and `UPower.conf` edits are wrapped in marker blocks
+  delimited by `# >>> x120x-dkms: <tag> (do not edit) >>>` /
+  `# <<< x120x-dkms: <tag> <<<`.  The installer:
+  - never comments out lines it did not write;
+  - relies on the systemd / UPower INI rule that the **last** matching
+    key in a section wins, so appending our block at the bottom
+    overrides any earlier user setting without disturbing it;
+  - creates the `[Login]` / `[UPower]` section header on a minimal
+    config file before writing the block;
+  - is idempotent — a second install replaces the existing block in
+    place rather than appending a duplicate;
+  - cleans up bare lines left behind by pre-v0.4.2 installers
+    (via `clean_legacy_logind` / `clean_legacy_upower`) so an upgrade
+    from an older install doesn't accumulate dead comments.
+
+**Uninstaller**
+- **Regression fix:** the uninstaller no longer uncomments any line.
+  Previous versions ran
+  `sed -i 's/^#HandleLowBattery=/HandleLowBattery=/'` and the two
+  analogous lines for `UPower.conf`, intending to "restore" what the
+  installer had commented out.  But the installer commented blindly
+  without recording which lines were originally uncommented, so a
+  user who had deliberately written e.g. `#HandleLowBattery=ignore`
+  to disable that policy would silently have it reactivated on
+  uninstall.  All three restoration steps are removed.
+- Marker-wrapped blocks are removed by `remove_ini_block`; lines
+  outside the markers are never touched.
+- Legacy line-by-line cleanup is retained (factored into the same
+  `clean_legacy_logind` / `clean_legacy_upower` helpers used by the
+  installer) so users upgrading from older installer versions still
+  get cleaned up correctly.
+- `set -euo pipefail`.
+
+**Kernel driver**
+- `pm_power_off` legacy function pointer replaced with
+  `devm_register_sys_off_handler(SYS_OFF_MODE_POWER_OFF_PREPARE, ...)`.
+  Only applies to the experimental X728/X708/X729 board variants
+  (X120x does not use this path).  Benefits:
+  - PREPARE-mode handlers may sleep, so the 3-second power-off pulse
+    now uses `msleep(3000)` instead of a `mdelay(3000)` busy-wait.
+  - The sys-off API supports stacking; we no longer unconditionally
+    clobber a power-off handler that another driver may have
+    installed.
+  - `devm` cleanup tears down the handler automatically on unbind, so
+    `x120x_remove` is simpler and the static global
+    `x120x_poweroff_chip` is gone.
+- GPIO16 (charge-control) state is now cached in
+  `chip->charger_inhibited`, and the entire read-modify-write of the
+  cached flag plus the hardware GPIO is performed under `chip->lock`.
+  This closes a race where `x120x_poll_work`'s hysteresis decision
+  could in principle disagree with a concurrent `charge_type` write
+  from sysfs, briefly inhibiting charging based on stale state for
+  one poll tick.  The same change also removes three unlocked reads
+  of the hardware GPIO from the sysfs `get_property` callbacks; they
+  now read the cached value, which is by definition consistent with
+  `conservation_mode` because both are written under the same lock.
+- README: the manual-install instructions now use
+  `linux-headers-$(uname -r)` (matching the running kernel) rather
+  than `raspberrypi-kernel-headers`, which can pull stale headers on
+  Bookworm and cause DKMS builds to fail.
+- Boot-log noise eliminated: when the DT overlay is present the
+  module init function no longer races against it.  Previously, after
+  `i2c_add_driver` returned (with the DT-instantiated client at 0x36
+  already bound), the manual probe loop would try to register a
+  duplicate client at 0x36, get EBUSY (logged by the i2c subsystem),
+  fall through to 0x55, succeed in creating a phantom client, and
+  produce three scary lines in dmesg
+  (`Failed to register i2c client x120x at 0x36 (-16)`,
+  `1-0055: failed to read chip version: -121`, and
+  `1-0055: probe with driver x120x failed with error -121`).
+  `probe()` now sets a flag on success; `x120x_init` checks the flag
+  immediately after `i2c_add_driver` returns and skips the manual
+  fallback entirely if a DT binding already happened.  Cosmetic only
+  — the driver was functional before — but stops people thinking
+  their install is broken.
 
 ### v0.4.1 — Installer and uninstaller robustness, locking cleanup
 

@@ -733,15 +733,15 @@ to compile the module.
 DKMS expects the source under `/usr/src/<name>-<version>/`:
 
 ```bash
-sudo cp -r . /usr/src/x120x-0.4.2
+sudo cp -r . /usr/src/x120x-0.4.3
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.4.2
-sudo dkms build x120x/0.4.2
-sudo dkms install x120x/0.4.2
+sudo dkms add x120x/0.4.3
+sudo dkms build x120x/0.4.3
+sudo dkms install x120x/0.4.3
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -754,7 +754,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.4.2, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.4.3, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Compile the device tree overlay
 
@@ -1298,7 +1298,140 @@ reboots with the v0.3.0+ driver and `gpio=6=pu` in place, the board
 itself should be suspected and replaced.  The driver cannot work around
 a permanently failed GPIO6 output stage.
 
+### Incident 3 — uevent storm from uninitialised stack variable (2026-05-20)
+
+#### What happened
+
+The system fan on the host Pi 5 had been audibly revving for an extended
+period.  CPU temperature was a benign **65.9 °C** and the SoC was not
+thermally throttled (`vcgencmd get_throttled` reported `0x0`), but the
+fan's PWM cooling device was sitting at `cur_state=2/4` continuously,
+indicating sustained cooling demand driven by compute load rather than
+silicon heat.
+
+`uptime` reported a load average of **7.01** on a 4-core Pi 5 — fully
+saturated.  `ps` showed three processes consuming the bulk of the CPU:
+
+```
+    345 91.7 systemd-udevd
+ 818657 87.1 (udev-worker)
+ 818612 83.6 (udev-worker)
+```
+
+`udevadm monitor --kernel` revealed a continuous flood of `change`
+uevents from `/sys/class/power_supply/x120x-charger`, advancing the
+kernel `SEQNUM` counter by roughly **820 events per second**.  Over the
+21 h uptime preceding the diagnosis, the system had emitted approximately
+**62 million** uevents on this single device — every one of them carrying
+identical property values, and every one of them woken up udev to scan
+the rules database and re-evaluate the same hook chain.
+
+#### Root cause analysis
+
+**Uninitialised `chrg_changed` stack variable in `x120x_poll_work`.**
+
+The poll work function declared three booleans on entry:
+
+```c
+bool bat_changed, ac_changed, chrg_changed;
+```
+
+In the I²C error paths all three were set to `false` before the
+`goto notify` jump.  In the happy path `bat_changed` and `ac_changed`
+were assigned unconditionally from the new vs. cached comparisons, but
+`chrg_changed` was only assigned to `true` inside the conservation-mode
+hysteresis block when `want_inhibit != chip->charger_inhibited` — i.e.
+only when GPIO16 actually needed to flip.  In the steady state this
+branch is rarely taken, so the variable was read at the notify site with
+whatever garbage the stack happened to contain.
+
+The compiler-generated stack frame produced a truthy value on most
+invocations, causing `power_supply_changed(chip->charger)` to fire every
+poll.  This kicked off a tight feedback loop via the `supplied_to`
+notification chain:
+
+1. `power_supply_changed(charger)` schedules `power_supply_changed_work`
+2. The kernel walks supplicants — the battery is supplied by the charger
+3. The battery's `external_power_changed` callback fires
+4. That callback calls `mod_delayed_work(system_wq, &chip->work, 0)`,
+   kicking `x120x_poll_work` to run immediately
+5. The poll reads I²C, finds no real state change, but reads the
+   uninitialised `chrg_changed` as truthy and fires
+   `power_supply_changed(charger)` again
+6. Goto 1
+
+`bpftrace`-confirmed rates during the incident:
+
+| Function                       | Calls / second |
+|---|---|
+| `x120x_poll_work`              | ~405 (vs. the intended 2 Hz) |
+| `power_supply_changed_work`    | ~412 |
+| `power_supply_changed(charger)`| ~423 |
+| kernel `uevent_seqnum` growth  | ~820 |
+
+The poll loop was running **200× faster than designed**, each iteration
+re-triggering the loop on a stack-resident phantom.
+
+The bug was latent from v0.4.1, where the polling work function was
+restructured to take snapshots of `conservation_mode` and `capacity_pct`
+under the chip mutex (see that release's changelog).  The refactor
+introduced the unconditional read of `chrg_changed` at the notify site
+without ensuring the variable was initialised on every path leading
+there.  GCC's `-Wmaybe-uninitialized` does not fire on this case because
+the variable *is* assigned on the failing path (via the
+`if (want_inhibit != chip->charger_inhibited)` branch), just not on
+every path.
+
+#### What was added to the driver
+
+**Default-initialise `bat_changed`, `ac_changed`, and `chrg_changed`
+at declaration.**  All three booleans now default to `false`, so the
+notify site reads `true` only when an explicit assignment marked a real
+state change.  Defensive initialisation of all three (not just the
+one that bit us) prevents the same class of bug from reappearing the
+next time a path is added to the function.
+
+#### Operational lesson
+
+**Sustained fan noise without a hot SoC means a software bug, not a
+thermal one.**  At 65 °C the Pi 5's silicon is well inside its comfort
+envelope; the fan curve responds to total CPU load, not just core
+temperature.  If the fan is loud while `vcgencmd measure_temp` reports
+something benign, the first place to look is `uptime` and the top of
+`ps`.  In this case the load average pointed at udev within seconds —
+and `udevadm monitor --kernel` exposed the storm in another two.
+
+`/sys/kernel/uevent_seqnum` is an underused diagnostic.  Reading it
+twice with a delay gives the kernel-wide uevent rate in a single
+shell pipeline:
+
+```bash
+s1=$(cat /sys/kernel/uevent_seqnum); sleep 2; \
+  s2=$(cat /sys/kernel/uevent_seqnum); echo $(( (s2-s1) / 2 ))/sec
+```
+
+A healthy idle system reports `0/sec`.  Anything higher than the low
+tens, sustained, is a misbehaving driver.
+
 ## Changelog
+
+### v0.4.3 — uevent storm fix
+
+**Kernel driver**
+- Initialise `bat_changed`, `ac_changed`, and `chrg_changed` to `false`
+  at declaration in `x120x_poll_work`.  Previously `chrg_changed` was
+  declared without an initialiser and only assigned to `true` inside
+  the conservation-mode hysteresis block; in the steady state (the
+  common case) the variable was read uninitialised at the notify site
+  and the compiler-generated stack value was truthy often enough to
+  fire `power_supply_changed(chip->charger)` on most poll cycles.
+  Combined with the `supplied_to` propagation chain back into the
+  battery's `external_power_changed` callback (which immediately
+  reschedules the poll work), this turned a 2 Hz poll into a ~400 Hz
+  feedback loop and produced approximately 820 `change` uevents per
+  second on `/sys/class/power_supply/x120x-charger`.  The flood
+  saturated `systemd-udevd` and two worker processes at ~90% CPU each.
+  See *Real-world incidents — Incident 3* for the full diagnosis.
 
 ### v0.4.2 — Security audit follow-ups
 

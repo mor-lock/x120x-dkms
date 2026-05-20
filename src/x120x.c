@@ -514,7 +514,7 @@ static void x120x_poll_work(struct work_struct *work)
 	unsigned int vcell_raw, soc_raw;
 	int new_uv, new_pct, new_256, new_ac, ret;
 	bool new_present;
-	bool bat_changed, ac_changed, chrg_changed;
+	bool bat_changed = false, ac_changed = false, chrg_changed = false;
 	/* Snapshots of shared chip state taken under the lock and used
 	 * in the unlocked hysteresis / notification region below.
 	 */
@@ -1874,7 +1874,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.4.2");
+MODULE_VERSION("0.4.3");
 MODULE_LICENSE("GPL v2");
 
 /*

@@ -1413,6 +1413,41 @@ s1=$(cat /sys/kernel/uevent_seqnum); sleep 2; \
 A healthy idle system reports `0/sec`.  Anything higher than the low
 tens, sustained, is a misbehaving driver.
 
+#### Independent confirmation on a different board variant
+
+A second user ([issue #2](https://github.com/mor-lock/x120x-dkms/issues/2))
+hit the same bug independently on a **Geekworm X1209 + X1002 NVMe**
+expansion board running v0.4.2, on the same day the author diagnosed
+it on a X1206.  Their symptom was different — no audible fan, but the
+attached Samsung 970 Evo NVMe was heatsoaking to **70–75 °C** at idle
+versus a normal **~51 °C** on v0.4.1.  The mechanism is the same: the
+udev rule `90-x120x-persist.rules` runs
+`/usr/local/lib/x120x-persist-mode.sh` on every `change` event, and at
+~820 events per second the constant `fork`+`exec` plus small writes
+keep the NVMe controller pinned in its highest active power state and
+the PCIe link out of L1 substates.  After upgrading to v0.4.3 their
+NVMe settled back to **51–52 °C** within ~15 minutes and
+`uevent_seqnum` delta reported `0/sec`.
+
+The same reporter noted that their v0.4.1 idle NVMe temperature
+(**58–61 °C**) was elevated above the clean v0.4.3 baseline
+(**51–52 °C**) by ~7–10 °C.  This is consistent with the uninitialised
+`chrg_changed` reading as *intermittently* truthy on v0.4.1's stack
+frame layout — same bug, but a lower duty cycle than the
+always-truthy pathology v0.4.2 happened to produce.  v0.4.3's explicit
+`= false` initialiser makes the variable deterministically falsy on
+every entry, so the baseline should now match a system that never had
+the bug.
+
+This second data point matters because it widens the symptom set
+documented for this incident: the same bug can present as fan noise
+on a host with mediocre case airflow and no NVMe, as silent NVMe heat
+on a host with a stack expansion board, or — in principle — as
+elevated power draw and slightly shortened battery runtime on any
+host.  Future reports that don't match the original "loud fan" shape
+should still trigger the same diagnostic (`uevent_seqnum` delta) as
+the first step.
+
 ## Changelog
 
 ### v0.4.3 — uevent storm fix

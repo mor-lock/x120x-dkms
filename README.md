@@ -395,7 +395,27 @@ to that point.
 > - Runtime is treated as proportional to the state-of-charge span,
 >   ignoring the nonlinear "knee" near the bottom of the discharge curve.
 
-Under those assumptions (base case: 3%/yr vs 2%/yr):
+**These rates assume moderate-quality NMC, not any particular cell.**
+Cell quality shifts the result but rarely the ranking.  The "more
+runtime" comparison is driven by *geometry* — `Long Life` gives up ~21%
+of its usable span up front and must claw it back through slower aging —
+so what matters is how fast the cells age relative to that handicap:
+
+- **Premium cells** (e.g. Molicel) age slowly in absolute terms, so the
+  year-0 runtime gap — which is pure starting charge, not aging —
+  persists for longer.  `Fast` wins *more* decisively and the crossover
+  pushes well past year 20.
+- **Budget or hot-running cells** age fast, eroding both columns
+  quickly and pulling the crossover in.  With genuinely poor cells (or
+  a pack baking in the Pi's exhaust), `Long Life` can edge ahead as
+  early as year 10.
+
+What would change the model itself is **chemistry, not brand**: the
+numbers bake in NMC at 4.2 V.  LiFePO₄ cells have far flatter calendar
+aging and much weaker sensitivity to storage charge, which shrinks the
+`Long Life` benefit toward nothing and makes `Fast` win harder still.
+
+Under the moderate-NMC assumptions (base case: 3%/yr vs 2%/yr):
 
 | Years in service | `Fast` (rest ~95%) | `Long Life` (hold 80%) | More runtime |
 |---|---|---|---|

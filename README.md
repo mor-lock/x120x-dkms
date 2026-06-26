@@ -317,9 +317,12 @@ The driver supports two charge modes, selectable via `charge_type`:
   idle life at a noticeably lower voltage, where calendar aging is
   dramatically reduced.  The trade-off is 20% less runtime during an
   outage; the benefit is that the cells retain meaningfully more of
-  their original capacity after several years.  Best for always-on
-  systems where the UPS will sit on mains for months or years between
-  actual outages.
+  their original capacity after several years.  Best when the pack is
+  oversized relative to your worst realistic outage, or when deferring
+  the eventual cell replacement matters more than per-outage runtime.
+  See **Choosing a profile** below — slower aging does *not*
+  automatically mean more runtime years later, because `Long Life`
+  also starts every outage at a lower charge.
 
 Enable and disable conservation mode from the command line:
 
@@ -348,6 +351,95 @@ parameters in `/etc/modprobe.d/x120x.conf`:
 ```
 options x120x battery_mah=20000 conservation_start=75 conservation_end=80
 ```
+
+### Choosing a profile: runtime vs. longevity
+
+The choice between `Fast` and `Long Life` is usually framed as "more
+backup capacity now" versus "longer battery lifespan later."  That
+framing is incomplete.  It overlooks one fact: in `Long Life` mode the
+battery does not only age more slowly — it also **starts every outage
+15–20 percentage points lower**.  Slower aging has to first overcome
+that head start before it yields any extra *usable runtime*, and for a
+UPS that is sized close to its actual backup needs, it often never does
+within the life of the device.
+
+The model below estimates **usable runtime at the start of an outage**,
+as a function of years in service, for both profiles.  Usable runtime
+is the energy available between the resting state of charge and the
+10% safe-shutdown floor, scaled by the capacity the cells have retained
+to that point.
+
+> **Assumptions (read these before trusting the numbers).**  These are
+> a *model*, not measurements of your hardware, and the ranking is only
+> as good as the assumptions behind it:
+>
+> - **Load:** ~8–9 W continuous (a Raspberry Pi 5 with NVMe).  Runtime
+>   scales inversely with load — double the load, halve every number.
+> - **Pack:** an X1206 with 4× 21700 cells, fresh full→empty ≈ 7 h.
+>   Runtime scales linearly with pack capacity; a smaller pack shifts
+>   every row down proportionally but does **not** change the ranking.
+> - **Shutdown floor:** 10% SoC (the driver's clean-shutdown trigger).
+> - **Resting charge:** `Fast` rests at ~95% true SoC (observed 4.186 V
+>   on a healthy NMC pack with the charger disabled); `Long Life` holds
+>   80%.
+> - **Calendar aging:** assumed **3%/yr capacity loss at ~95% SoC** and
+>   **2%/yr at 80% SoC**, at a moderate ~25 °C.  These are illustrative
+>   midpoints from general Li-ion NMC literature, **not** measured for
+>   any specific cell.  Real rates vary widely with cell quality and,
+>   especially, **temperature** — calendar aging roughly doubles per
+>   +10 °C, so a pack running warm (e.g. in the Pi's exhaust) ages far
+>   faster than this and *both* columns shrink.
+> - **Cycle aging is neglected** — a UPS sees very few cycles, so
+>   calendar aging dominates.  This assumption fails if your grid drops
+>   often enough to cycle the pack regularly.
+> - Runtime is treated as proportional to the state-of-charge span,
+>   ignoring the nonlinear "knee" near the bottom of the discharge curve.
+
+Under those assumptions (base case: 3%/yr vs 2%/yr):
+
+| Years in service | `Fast` (rest ~95%) | `Long Life` (hold 80%) | More runtime |
+|---|---|---|---|
+| 0  | 5.9 h | 4.9 h | `Fast` (+1.0 h) |
+| 5  | 5.1 h | 4.4 h | `Fast` (+0.7 h) |
+| 10 | 4.4 h | 4.0 h | `Fast` (+0.4 h) |
+| 15 | 3.8 h | 3.6 h | `Fast` (+0.1 h) |
+| 20 | 3.2 h | 3.3 h | `Long Life` (+0.1 h) |
+
+The counter-intuitive result: **`Fast` delivers more usable runtime
+than `Long Life` for roughly the first two decades.**  The lower
+starting charge in `Long Life` costs ~21% of the usable span up front,
+and the slower aging does not repay that until the curves cross at
+around year 20 — by which point the pack is well past a routine
+replacement anyway.  The crossover is sensitive to the aging gap: if
+`Long Life` ages much more slowly than assumed (e.g. 1.5%/yr) the
+crossover pulls in toward year 15; if the benefit is smaller (2.5%/yr)
+`Fast` wins past year 20.  In none of these cases does `Long Life` win
+at year 10.
+
+What `Long Life` *does* buy is **capacity retention**, not runtime: at
+year 10 the 80%-held pack retains ~82% of its original capacity versus
+~74% for the 95%-held pack.  That defers the eventual *replacement*; it
+does not give you a longer outage on any given day.
+
+So the two profiles optimise different things:
+
+- **`Fast` (default)** — choose when **outage ride-through is the
+  priority** and the pack is sized close to your needs.  Wins on
+  runtime for the realistic life of the device.
+- **`Long Life`** — choose when the pack is **oversized** relative to
+  your worst realistic outage (you have runtime to spare, so giving
+  some back costs nothing useful), when **postponing cell replacement**
+  matters more than per-outage runtime, or when the cells are
+  **expensive or awkward to replace**.
+
+Note that **both** profiles already disable the charger once the pack
+reaches its ceiling, rather than holding it on a continuous float — so
+both avoid the single worst calendar-aging stressor (sitting pinned at
+4.2 V indefinitely).  The remaining difference between them is only the
+resting state of charge.  If you are unsure, the default `Fast` is the
+right call for a capacity-constrained UPS: keep the cells cool, never
+let them deep-discharge (see *Incident 1*), and a replacement — if ever
+needed — is cheap and infrequent.
 
 ### Dead battery detection
 

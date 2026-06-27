@@ -354,14 +354,44 @@ options x120x battery_mah=20000 conservation_start=75 conservation_end=80
 
 ### Choosing a profile: runtime vs. longevity
 
-The choice between `Fast` and `Long Life` is usually framed as "more
-backup capacity now" versus "longer battery lifespan later."  That
-framing is incomplete.  It overlooks one fact: in `Long Life` mode the
-battery does not only age more slowly — it also **starts every outage
-15–20 percentage points lower**.  Slower aging has to first overcome
-that head start before it yields any extra *usable runtime*, and for a
-UPS that is sized close to its actual backup needs, it often never does
-within the life of the device.
+**Quick answer — pick by how often the battery actually gets used:**
+
+| Your setup | Profile |
+|---|---|
+| **Standby UPS** — runs on mains, discharges only during occasional outages | **`Fast`** (default) |
+| **Frequently cycled (e.g. portable)** — runs off the battery away from mains and recharges when docked, cycling most days | **`Long Life`** |
+
+Most x120x installs are the first case, so `Fast` is the default — and
+on a standby UPS, limiting charge to 80% mostly just throws away backup
+time.  But if the pack is cycled hard, `Long Life` can double or triple
+its lifespan.  The rest of this section explains why the right answer
+hinges entirely on cycling, and what each profile costs.
+
+#### Two ways a cell wears out
+
+Lithium-ion cells age by two largely independent mechanisms:
+
+- **Calendar aging** — damage from *time spent* sitting at a high state
+  of charge, regardless of use.  Runs faster the closer to full (and
+  the warmer) the cell sits.
+- **Cycle aging** — damage *per charge/discharge cycle*, concentrated at
+  the voltage extremes, especially the top of the charge.
+
+Which one dominates is set entirely by **how often you cycle**.  A
+standby UPS cycles a few times a year, so calendar aging dominates.  A
+portable build, run off the pack away from mains and recharged when
+docked, may cycle daily, so cycle aging dominates.  Each profile targets
+one of these — which is why the right choice flips depending on your use.
+
+#### Standby UPS — why `Fast` wins
+
+On a standby UPS, calendar aging dominates, and the usual "more capacity
+now vs. longer life later" framing is incomplete.  It overlooks one
+fact: in `Long Life` mode the battery does not only age more slowly — it
+also **starts every outage 15–20 percentage points lower**.  Slower
+aging has to first overcome that head start before it yields any extra
+*usable runtime*, and for a UPS sized close to its actual backup needs,
+it often never does within the life of the device.
 
 The model below estimates **usable runtime at the start of an outage**,
 as a function of years in service, for both profiles.  Usable runtime
@@ -379,9 +409,8 @@ to that point.
 >   Runtime scales linearly with pack capacity; a smaller pack shifts
 >   every row down proportionally but does **not** change the ranking.
 > - **Shutdown floor:** 10% SoC (the driver's clean-shutdown trigger).
-> - **Resting charge:** `Fast` rests at ~95% true SoC (observed 4.186 V
->   on a healthy NMC pack with the charger disabled); `Long Life` holds
->   80%.
+> - **Resting charge:** `Fast` rests at ~95% true SoC (about 4.18 V on a
+>   healthy NMC pack with the charger disabled); `Long Life` holds 80%.
 > - **Calendar aging:** assumed **3%/yr capacity loss at ~95% SoC** and
 >   **2%/yr at 80% SoC**, at a moderate ~25 °C.  These are illustrative
 >   midpoints from general Li-ion NMC literature, **not** measured for
@@ -389,9 +418,10 @@ to that point.
 >   especially, **temperature** — calendar aging roughly doubles per
 >   +10 °C, so a pack running warm (e.g. in the Pi's exhaust) ages far
 >   faster than this and *both* columns shrink.
-> - **Cycle aging is neglected** — a UPS sees very few cycles, so
->   calendar aging dominates.  This assumption fails if your grid drops
->   often enough to cycle the pack regularly.
+> - **Cycle aging is neglected** — a standby UPS sees very few cycles,
+>   so calendar aging dominates.  This breaks down for a frequently
+>   cycled build (e.g. portable), where cycle aging takes over — see
+>   *Frequently cycled builds* below.
 > - Runtime is treated as proportional to the state-of-charge span,
 >   ignoring the nonlinear "knee" near the bottom of the discharge curve.
 
@@ -441,33 +471,71 @@ year 10 the 80%-held pack retains ~82% of its original capacity versus
 ~74% for the 95%-held pack.  That defers the eventual *replacement*; it
 does not give you a longer outage on any given day.
 
-So the two profiles optimise different things:
+So on a UPS the two profiles trade off cleanly: `Fast` wins on
+**runtime** for the realistic life of the device, while `Long Life` only
+wins on **capacity retention** — worthwhile if the pack is oversized
+relative to your worst outage, or if postponing the eventual (cheap)
+replacement matters more than per-outage runtime.  For most standby
+installs that is not a good trade, which is why `Fast` is the default.
 
-- **`Fast` (default)** — choose when **outage ride-through is the
-  priority** and the pack is sized close to your needs.  Wins on
-  runtime for the realistic life of the device.
-- **`Long Life`** — choose when the pack is **oversized** relative to
-  your worst realistic outage (you have runtime to spare, so giving
-  some back costs nothing useful), when **postponing cell replacement**
-  matters more than per-outage runtime, or when the cells are
-  **expensive or awkward to replace**.
+#### Frequently cycled builds (e.g. portable) — why `Long Life` wins
 
-Note that **both** profiles already disable the charger once the pack
-reaches its ceiling, rather than holding it on a continuous float — so
-both avoid the single worst calendar-aging stressor (sitting pinned at
-4.2 V indefinitely).  The remaining difference between them is only the
-resting state of charge.  If you are unsure, the default `Fast` is the
-right call for a capacity-constrained UPS: keep the cells cool, never
-let them deep-discharge (see *Incident 1*), and a replacement — if ever
-needed — is cheap and infrequent.
+The exception is a Pi that genuinely cycles the pack often — most
+realistically a **portable build**, where the unit runs off the battery
+away from mains and is recharged whenever it is docked.  A pack cycled
+most days is a different regime entirely: cycle aging now dominates, and
+it is heavily concentrated at the **top of the charge**.  Taking an NMC
+cell all the way to 4.2 V means:
 
-#### Measured runtime, and what 80% actually costs
+- the cathode is fully delithiated and under maximum lattice strain, so
+  it micro-cracks a little more each cycle;
+- electrolyte oxidation accelerates sharply above ~4.0–4.1 V, growing
+  resistive films on the cathode; and
+- the graphite anode is fully lithiated, raising the risk of lithium
+  plating (permanent capacity loss), worst when charging fast or cold.
 
-The model's year-0 row is not just theory — it matches a real
-full-depth discharge captured in the power database (the *Incident 1*
-outage, before the undervoltage shutdown existed, so the pack drained
-all the way down).  On an X1206 (4× 21700) at ~5 W idle load, measured
-from a full start:
+`Long Life` stops before that zone, and because cycle life is strongly
+nonlinear in the charge window, trimming the top buys a lot:
+
+| Charge ceiling | Approx. cycle life (to 80% capacity) |
+|---|---|
+| 4.2 V (100%) | baseline (1×) |
+| 4.1 V (~90%) | ~1.5–2× |
+| 4.0 V (~80%, `Long Life` default) | **~2–3×** |
+| 3.9 V (~70%) | ~3–4× |
+
+(Approximate NMC figures; exact numbers vary by cell.)  So a pack that
+cycles daily can last **two to three times as many cycles** before it
+wears out — a benefit that lands immediately and compounds on every
+cycle, not the decades-away payoff of the calendar case.  This is the
+same reason laptops, phones and EVs cap charging at 80% by default: they
+are battery-cycling devices, not standby reserves.
+
+The trade is still real — `Long Life` gives up ~15–20% of per-charge
+runtime — but here you are paying it to roughly triple the pack's
+lifespan, rather than (as on a standby UPS) getting almost nothing back.
+And because the charge mode can be switched at runtime, a portable user
+can flip to `Fast` before a long outing when full capacity is needed,
+then back to `Long Life` for everyday use.
+
+#### Both profiles already avoid the worst stressor
+
+Whichever you choose, **both** profiles disable the charger once the
+pack reaches its ceiling rather than holding it on a continuous float —
+so both avoid the single worst calendar-aging stressor (sitting pinned
+at 4.2 V indefinitely).  The only difference between them is the resting
+state of charge.  If you are unsure, you almost certainly have a standby
+UPS: leave it on the default `Fast`, keep the cells cool, never let them
+deep-discharge (see *Incident 1*), and a replacement — if ever needed —
+is cheap and infrequent.
+
+#### Measured runtime, and what 80% actually costs a UPS
+
+Back to the standby-UPS numbers: the model's year-0 row is not just
+theory — it matches a real full-depth discharge logged during the
+*Incident 1* outage (before the undervoltage shutdown existed, so the
+pack drained all the way down).  On an X1206 (4× 21700) at ~5 W idle
+load, from a full start:
 
 | Milestone | Time on battery |
 |---|---|

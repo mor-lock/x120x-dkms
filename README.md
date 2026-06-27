@@ -43,13 +43,17 @@ Two charge modes are available — choose one before installing:
 
 - **Fast** (default) — charges to 100%, then disables the charger
   and leaves the battery floating.  Charging resumes when the state
-  of charge (SoC) drops to 95% due to self-discharge.  Best when
-  maximum backup capacity is the priority.
+  of charge (SoC) drops to 95% due to self-discharge.  Best for a
+  **standby UPS** (on mains, occasional outages) — it maximises backup
+  runtime, which is what matters when an outage is unannounced.  This is
+  the right choice for almost all installs.
 - **Long Life** — charges to 80%, then disables the charger and leaves
   the battery floating.  Charging resumes when SoC drops to 75% due
-  to self-discharge.  Best when the system is permanently on mains
-  and full capacity is rarely needed — keeping cells below full charge
-  significantly extends their lifespan.
+  to self-discharge.  Best for a **frequently cycled build** (e.g. a
+  portable unit charged and discharged most days), where keeping cells
+  below full charge greatly extends cycle life.  On an always-on UPS it
+  mostly just costs backup runtime — see *Choosing a profile* for the
+  full reasoning.
 
 Replace `<your_capacity>` with your total pack capacity in mAh —
 multiply per-cell capacity by number of cells.  The mAh rating is
@@ -66,11 +70,11 @@ printed on the battery cell itself.  Common values:
 git clone https://github.com/mor-lock/x120x-dkms.git
 cd x120x-dkms
 
-# Permanently on mains — preserve battery longevity
-sudo bash install.sh --battery-mah <your_capacity> --charge-mode longlife
-
-# Maximum backup capacity
+# Standby UPS on mains (the common case) — maximise backup runtime
 sudo bash install.sh --battery-mah <your_capacity> --charge-mode fast
+
+# Frequently cycled / portable build — extend cell lifespan
+sudo bash install.sh --battery-mah <your_capacity> --charge-mode longlife
 
 sudo reboot
 ```
@@ -299,9 +303,12 @@ discharge cycles) and **calendar aging** (time spent sitting at high
 state of charge, especially near 100%).  A UPS battery sees very few
 cycles — it charges once and then sits on mains for weeks or months
 between outages — so calendar aging at full charge is the dominant wear
-mechanism for always-on systems.  Conservation mode addresses this by
-holding the battery at a lower resting state of charge, where calendar
-aging is significantly slower.
+mechanism for always-on systems.  Conservation mode slows it by holding
+the battery at a lower resting state of charge.  Note, though, that on a
+standby UPS slower aging does **not** translate into more backup runtime
+(see *Choosing a profile: runtime vs. longevity*) — which is why `Fast`
+is the default, and conservation mode is aimed mainly at frequently
+cycled builds.
 
 The driver supports two charge modes, selectable via `charge_type`:
 
@@ -317,11 +324,13 @@ The driver supports two charge modes, selectable via `charge_type`:
   idle life at a noticeably lower voltage, where calendar aging is
   dramatically reduced.  The trade-off is 20% less runtime during an
   outage; the benefit is that the cells retain meaningfully more of
-  their original capacity after several years.  Best when the pack is
-  oversized relative to your worst realistic outage, or when deferring
-  the eventual cell replacement matters more than per-outage runtime.
-  See **Choosing a profile** below — slower aging does *not*
-  automatically mean more runtime years later, because `Long Life`
+  their original capacity after several years.  Best for a **frequently
+  cycled build** (e.g. a portable unit), where cycle aging dominates and
+  trimming the top of the charge greatly extends cell life — or, on a
+  UPS, only when the pack is oversized relative to your worst outage or
+  deferring the eventual replacement matters more than runtime.  See
+  **Choosing a profile** below — on a standby UPS, slower aging does
+  *not* automatically mean more runtime years later, because `Long Life`
   also starts every outage at a lower charge.
 
 Enable and disable conservation mode from the command line:
@@ -634,17 +643,19 @@ x120x 1-0036: battery appears dead: 3050 mV on grid for 600 s with <10 mV/h rise
 The health flag clears automatically if the condition resolves — for
 example after replacing the cells.
 
-#### Further protection with Long Life mode
+#### Does Long Life give more outage runtime over time?
 
-Long Life mode also provides an indirect safety benefit during outages.
-Over months or years of always-on operation, cells held at 80% retain
-more of their original capacity than cells held at 100% — they have
-aged less.  When an outage eventually happens, a Long Life battery
-starts from a lower state of charge but delivers closer to its rated
-runtime from that point, while a 100%-held battery starts higher but
-has lost more capacity over the same period.  For systems where the
-UPS is rarely called on, this capacity retention compounds over the
-lifespan of the cells.
+It is sometimes assumed that over years of always-on operation Long Life
+ends up giving *more* outage runtime — the idea being that its cells age
+less, so the retained capacity offsets the lower starting charge.  For
+the realistic life of a UPS this is **not** true.  Long Life also starts
+every outage 15–20 points lower, and that head start is not repaid by
+slower aging until roughly two decades in; until then a 100%-held
+(`Fast`) battery delivers more usable runtime despite aging faster (see
+*Choosing a profile: runtime vs. longevity* for the year-by-year model).
+On a standby UPS, Long Life's real benefit is **deferred cell
+replacement, not better outage protection** — which is why `Fast` is the
+default.
 
 ### Charge mode persistence
 
@@ -855,7 +866,7 @@ sudo bash install.sh --battery-mah 20000
 # X1205 with two 5000 mAh 21700 cells
 sudo bash install.sh --battery-mah 10000
 
-# X1206 always-on server — Long Life mode
+# Portable build cycled most days — Long Life to extend cell lifespan
 sudo bash install.sh --battery-mah 20000 --charge-mode longlife
 
 

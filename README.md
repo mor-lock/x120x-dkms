@@ -461,6 +461,34 @@ right call for a capacity-constrained UPS: keep the cells cool, never
 let them deep-discharge (see *Incident 1*), and a replacement — if ever
 needed — is cheap and infrequent.
 
+#### Measured runtime, and what 80% actually costs
+
+The model's year-0 row is not just theory — it matches a real
+full-depth discharge captured in the power database (the *Incident 1*
+outage, before the undervoltage shutdown existed, so the pack drained
+all the way down).  On an X1206 (4× 21700) at ~5 W idle load, measured
+from a full start:
+
+| Milestone | Time on battery |
+|---|---|
+| Down to 50% | ~4.2 h |
+| **10% — clean auto-shutdown** | **~5.9 h** |
+| 0% — fully empty | ~7.0 h |
+
+Note the curve: the first half drains slowly on the flat part of the
+discharge (~4 h to 50%), then collapses — the back half is gone in
+under two hours.  This is why the 10% shutdown floor matters, and why
+starting lower hurts disproportionately.
+
+Because `Long Life` begins every outage at 80% instead of ~95%, it
+enters that drain ~15 points down and reaches the shutdown floor at
+roughly **4.8 h instead of 5.9 h** — about **one hour less ride-through,
+immediately, on every outage**.  And as the table above shows, that lost
+hour is not repaid by slower aging until ~year 20.  So on a pack sized
+close to its job (here ~6 h against typical 2–5 h outages), limiting to
+80% sheds backup time you are actually using, with no practical payback
+— which is exactly why `Fast` is the default.
+
 ### Dead battery detection
 
 #### How lithium-ion cells die

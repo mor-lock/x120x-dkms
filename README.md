@@ -322,9 +322,10 @@ The driver supports two charge modes, selectable via `charge_type`:
   80%), disables the charger, and re-enables it at
   `charge_control_start_threshold` (default 75%).  Cells spend their
   idle life at a noticeably lower voltage, where calendar aging is
-  dramatically reduced.  The trade-off is roughly an hour (~15%) less
-  runtime during an outage; the benefit is that the cells retain
-  meaningfully more of their original capacity after several years.  Best for a **frequently
+  dramatically reduced.  The trade-off is about 20% less runtime during
+  an outage (~1.3 h on a full X1206); the benefit is that the cells
+  retain meaningfully more of their original capacity after several
+  years.  Best for a **frequently
   cycled build** (e.g. a portable unit), where cycle aging dominates and
   trimming the top of the charge greatly extends cell life — or, on a
   UPS, only when the pack is oversized relative to your worst outage or
@@ -397,7 +398,7 @@ one of these — which is why the right choice flips depending on your use.
 On a standby UPS, calendar aging dominates, and the usual "more capacity
 now vs. longer life later" framing is incomplete.  It overlooks one
 fact: in `Long Life` mode the battery does not only age more slowly — it
-also **starts every outage 15–20 percentage points lower**.  Slower
+also **starts every outage a full 20 percentage points lower**.  Slower
 aging has to first overcome that head start before it yields any extra
 *usable runtime*, and for a UPS sized close to its actual backup needs,
 it often never does within the life of the device.
@@ -423,11 +424,15 @@ capacity the cells have retained to that point.
 >   driver-only behaviour that almost all installs have; if you also run
 >   the optional companion daemon, it shuts down earlier at its own ~10%
 >   floor, for correspondingly less runtime.
-> - **Resting charge:** `Fast` rests at ~95% true SoC (about 4.18 V on a
->   healthy NMC pack with the charger disabled); `Long Life` holds 80%.
-> - **Calendar aging:** assumed **3%/yr capacity loss at ~95% SoC** and
->   **2%/yr at 80% SoC**, at a moderate ~25 °C.  These are illustrative
->   midpoints from general Li-ion NMC literature, **not** measured for
+> - **Starting charge:** `Fast` begins an outage at ~100%, `Long Life` at
+>   80% — each pack sits at its charge ceiling.  Self-discharge is
+>   negligible (measured at well under 1%/month with the charger
+>   disabled), so neither drifts down to its resume threshold beforehand;
+>   `Fast` relaxes to ~4.18 V at rest but holds essentially full charge.
+> - **Calendar aging:** assumed **3%/yr capacity loss at full charge
+>   (~100% SoC)** and **2%/yr at 80% SoC**, at a moderate ~25 °C.  These
+>   are illustrative midpoints from general Li-ion NMC literature,
+>   **not** measured for
 >   any specific cell.  Real rates vary widely with cell quality and,
 >   especially, **temperature** — calendar aging roughly doubles per
 >   +10 °C, so a pack running warm (e.g. in the Pi's exhaust) ages far
@@ -441,18 +446,18 @@ capacity the cells have retained to that point.
 
 **These rates assume moderate-quality NMC, not any particular cell.**
 Cell quality shifts the result but rarely the ranking.  The "more
-runtime" comparison is driven by *geometry* — `Long Life` gives up ~16%
+runtime" comparison is driven by *geometry* — `Long Life` gives up ~20%
 of its usable span up front and must claw it back through slower aging —
 so what matters is how fast the cells age relative to that handicap:
 
 - **Premium cells** (e.g. Molicel) age slowly in absolute terms, so the
   year-0 runtime gap — which is pure starting charge, not aging —
   persists for longer.  `Fast` wins *more* decisively and the crossover
-  pushes well past year 20.
+  pushes well past year 30.
 - **Budget or hot-running cells** age fast, eroding both columns
   quickly and pulling the crossover in.  With genuinely poor cells (or
-  a pack baking in the Pi's exhaust), `Long Life` can edge ahead as
-  early as year 10.
+  a pack baking in the Pi's exhaust), `Long Life` can edge ahead in the
+  early teens.
 
 What would change the model itself is **chemistry, not brand**: the
 numbers bake in NMC at 4.2 V.  LiFePO₄ cells have far flatter calendar
@@ -461,28 +466,28 @@ aging and much weaker sensitivity to storage charge, which shrinks the
 
 Under the moderate-NMC assumptions (base case: 3%/yr vs 2%/yr):
 
-| Years in service | `Fast` (rest ~95%) | `Long Life` (hold 80%) | More runtime |
+| Years in service | `Fast` (~100%) | `Long Life` (hold 80%) | More runtime |
 |---|---|---|---|
-| 0  | 6.2 h | 5.2 h | `Fast` (+1.0 h) |
-| 5  | 5.3 h | 4.7 h | `Fast` (+0.6 h) |
-| 10 | 4.6 h | 4.2 h | `Fast` (+0.3 h) |
-| 15 | 3.9 h | 3.8 h | `Fast` (+0.1 h) |
-| 20 | 3.4 h | 3.5 h | `Long Life` (+0.1 h) |
+| 0  | 6.2 h | 4.9 h | `Fast` (+1.3 h) |
+| 5  | 5.3 h | 4.5 h | `Fast` (+0.9 h) |
+| 10 | 4.6 h | 4.0 h | `Fast` (+0.5 h) |
+| 15 | 3.9 h | 3.6 h | `Fast` (+0.3 h) |
+| 20 | 3.4 h | 3.3 h | `Fast` (+0.1 h) |
+| 25 | 2.9 h | 3.0 h | `Long Life` (+0.1 h) |
 
 (Runtime to the driver's 2% shutdown.  The year-0 Fast figure of 6.2 h
-is the *measured* value from the *Incident 1* discharge, not just a model
-output; the later years scale it by assumed capacity retention.)
+is the *measured* value from the *Incident 1* full discharge, not just a
+model output; the later years scale it by assumed capacity retention.)
 
 The counter-intuitive result: **`Fast` delivers more usable runtime
-than `Long Life` for the better part of two decades.**  The lower
-starting charge in `Long Life` costs about an hour of runtime up front
-(~16% of the usable span), and the slower aging does not repay that
-until the curves cross at around year 17 — by which point the pack is
-well past a routine replacement anyway.  The crossover is sensitive to
-the aging gap: if `Long Life` ages much more slowly than assumed
-(e.g. 1.5%/yr) it pulls in toward year 12; if the benefit is smaller
-(2.5%/yr) `Fast` wins past year 30.  In none of these cases does
-`Long Life` win at year 10.
+than `Long Life` for more than two decades.**  The lower starting charge
+in `Long Life` costs ~1.3 h of runtime up front (~20% of the usable
+span), and the slower aging does not repay that until the curves cross
+at around year 22 — by which point the pack is well past a routine
+replacement anyway.  The crossover is sensitive to the aging gap: if
+`Long Life` ages much more slowly than assumed (e.g. 1.5%/yr) it pulls
+in toward year 15; if the benefit is smaller (2.5%/yr) `Fast` wins past
+year 40.  In none of these cases does `Long Life` win at year 10.
 
 What `Long Life` *does* buy is **capacity retention**, not runtime: at
 year 10 the 80%-held pack retains ~82% of its original capacity versus
@@ -529,7 +534,7 @@ cycle, not the decades-away payoff of the calendar case.  This is the
 same reason laptops, phones and EVs cap charging at 80% by default: they
 are battery-cycling devices, not standby reserves.
 
-The trade is still real — `Long Life` gives up ~15–20% of per-charge
+The trade is still real — `Long Life` gives up ~20% of per-charge
 runtime — but here you are paying it to roughly triple the pack's
 lifespan, rather than (as on a standby UPS) getting almost nothing back.
 And because the charge mode can be switched at runtime, a portable user
@@ -569,11 +574,11 @@ here); the 10% `Low`-battery warning lands at ~5.9 h, only ~18 minutes
 earlier, because the bottom drains so fast.  The lesson: most of the
 runtime is in the top half, so starting lower hurts disproportionately.
 
-Because `Long Life` begins every outage at 80% instead of ~95%, it
-enters that drain ~15 points down and reaches the 2% shutdown about an
-hour sooner — **~5.2 h instead of ~6.2 h**, roughly one hour less
+Because `Long Life` begins every outage at 80% instead of ~100%, it
+enters that drain a full 20 points down and reaches the 2% shutdown well
+over an hour sooner — **~4.9 h instead of ~6.2 h**, roughly 1.3 h less
 ride-through, immediately, on every outage.  And as the table above
-shows, that lost hour is not repaid by slower aging until ~year 17.  So
+shows, that lost time is not repaid by slower aging until ~year 22.  So
 on a pack sized close to its job (here ~6 h against typical 2–5 h
 outages), limiting to 80% sheds backup time you are actually using, with
 no practical payback — which is exactly why `Fast` is the default.
@@ -661,8 +666,8 @@ It is sometimes assumed that over years of always-on operation Long Life
 ends up giving *more* outage runtime — the idea being that its cells age
 less, so the retained capacity offsets the lower starting charge.  For
 the realistic life of a UPS this is **not** true.  Long Life also starts
-every outage 15–20 points lower, and that head start is not repaid by
-slower aging until roughly two decades in; until then a 100%-held
+every outage a full 20 points lower, and that head start is not repaid by
+slower aging until well over two decades in; until then a 100%-held
 (`Fast`) battery delivers more usable runtime despite aging faster (see
 *Choosing a profile: runtime vs. longevity* for the year-by-year model).
 On a standby UPS, Long Life's real benefit is **deferred cell

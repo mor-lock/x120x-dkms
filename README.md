@@ -1911,11 +1911,12 @@ the first step.
 - `NoPollBatteries=true` set in `UPower.conf` by installer — eliminates
   spurious `0%/unknown` history entries caused by UPower polling the
   kernel independently of driver notifications
-- Battery status during Fast mode float is `Discharging` rather than
-  `Not charging` — UPower records `discharging` history entries during
-  float so gnome-power-statistics graphs stay populated
-- Self-discharge floor (−1 mW) reported as `power_now` when SoC is
-  stable for >90 s — prevents graph gaps during float periods
+- Battery status during Fast-mode float is reported as `Full` (on AC at
+  ≥95% SoC); UPower history stays populated via the 30-second heartbeat
+  below rather than by faking a discharge
+- `power_now` reported as `0` when SoC is stable for >90 s — the driver
+  cannot measure true self-discharge, so it reports zero rather than a
+  fabricated floor
 - 30-second heartbeat `power_supply_changed()` notification — keeps
   UPower history recording active during extended stable float periods
 - AC state change no longer resets the rate tracking window — rate
@@ -1942,41 +1943,6 @@ the first step.
   and SoC ≤ 2% — detects cells destroyed by deep discharge
 - Kernel log entry emitted on confirmation; clears automatically if
   voltage recovers
-
-**Deep discharge recovery hardening**
-- `capacity_level=Critical` only reported when on battery
-  (`ac_online=0`) — on AC the battery is charging; reporting Critical
-  caused UPower to trigger an immediate shutdown livelock after a deep
-  discharge event
-- 0% SoC no longer treated as implausible — quick-start command not
-  issued on a genuinely empty battery, avoiding a fuel gauge reset
-  during recovery
-- Charger (GPIO16) explicitly forced low at probe — charging starts
-  immediately on every boot regardless of any previously latched state
-- Charger default changed to always-on: the resume threshold is
-  removed; the charger is enabled whenever SoC is below the stop
-  threshold, defaulting to on in all uncertain or low-SoC states
-
-**GPIO6 pull-up**
-- `gpio=6=pu` added to `config.txt` by installer — prevents GPIO6
-  floating low at boot before the X1206 hardware asserts the AC-present
-  signal, eliminating false `ac_online=0` readings after a power outage
-  or PSU overload at boot
-
-**UPower history and graph fixes**
-- `NoPollBatteries=true` set in `UPower.conf` by installer — eliminates
-  spurious `0%/unknown` history entries caused by UPower polling the
-  kernel independently of driver notifications
-- Battery status during Fast mode float is `Discharging` rather than
-  `Not charging` — UPower records `discharging` history entries during
-  float so gnome-power-statistics graphs stay populated
-- Self-discharge floor (−1 mW) reported as `power_now` when SoC is
-  stable for >90 s — prevents graph gaps during float periods
-- 30-second heartbeat `power_supply_changed()` notification — keeps
-  UPower history recording active during extended stable float periods
-- AC state change no longer resets the rate tracking window — rate
-  computation is continuous across grid transitions, eliminating
-  transition spikes in the rate graph
 
 **Migration guide**
 - Added guide for users migrating from existing GPIO scripts

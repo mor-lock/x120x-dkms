@@ -609,10 +609,11 @@ present, even at 0% SoC, `capacity_level` is never reported as Critical
 — the battery is charging and shutting down would cause a livelock on
 recovery from a deep discharge event.  UPower then fires
 `warning-level: action` when SoC reaches its `PercentageAction`
-threshold (default 2%), which causes `systemd-logind` to initiate a
-clean OS shutdown — well before the cells reach a dangerous voltage.
-The install script configures this automatically via
-`HandleLowBattery=poweroff` in `logind.conf` and
+threshold, which the installer sets to **2%** — well above the 3.20 V
+floor.  This causes `systemd-logind` to initiate a clean OS shutdown.
+The install script configures the whole chain automatically:
+`HandleLowBattery=poweroff` in `logind.conf`, and
+`UsePercentageForPolicy=true`, `PercentageAction=2` and
 `CriticalPowerAction=PowerOff` in `UPower.conf`.
 
 With the driver installed, the shutdown sequence on a prolonged outage
@@ -710,7 +711,8 @@ sysfs files will also work automatically.
 ### systemd-logind shutdown
 
 On headless systems, `systemd-logind` initiates a clean shutdown when
-UPower's `PercentageAction` threshold is reached (default 2% SoC).
+UPower's `PercentageAction` threshold is reached, which the installer
+sets to 2% SoC.
 The driver reports `capacity_level=Critical` at 5% SoC, which triggers
 UPower's low battery warning.  The actual shutdown fires at 2% when
 UPower escalates to `warning-level: action`.
@@ -728,9 +730,13 @@ To disable it, change the line to:
 HandleLowBattery=ignore
 ```
 
-The installer also configures `/etc/UPower/UPower.conf` with two
-settings:
+The installer also configures `/etc/UPower/UPower.conf`:
 
+- `UsePercentageForPolicy=true` — act on battery percentage; a UPS HAT
+  reports no time-to-empty estimate for UPower to use.
+- `PercentageAction=2` — fire the PowerOff action at 2% SoC.  Debian/
+  RPi-OS ship `PercentageAction=0`, which would only act at 0% — no
+  margin above the 3.20 V floor; the installer overrides it to 2%.
 - `CriticalPowerAction=PowerOff` — the default `HybridSleep` requires
   swap space and hangs indefinitely on a Raspberry Pi.
 - `NoPollBatteries=true` — the driver sends UPower a notification on
@@ -970,15 +976,15 @@ to compile the module.
 DKMS expects the source under `/usr/src/<name>-<version>/`:
 
 ```bash
-sudo cp -r . /usr/src/x120x-0.4.4
+sudo cp -r . /usr/src/x120x-0.4.5
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.4.4
-sudo dkms build x120x/0.4.4
-sudo dkms install x120x/0.4.4
+sudo dkms add x120x/0.4.5
+sudo dkms build x120x/0.4.5
+sudo dkms install x120x/0.4.5
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -991,7 +997,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.4.4, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.4.5, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Compile the device tree overlay
 
@@ -1066,9 +1072,10 @@ Save and exit.
 #### Step 8 — Configure low-battery shutdown
 
 The driver reports `capacity_level=Critical` when SoC drops below 5%.
-UPower escalates to `warning-level: action` at 2% SoC (its default
-`PercentageAction` threshold), which triggers a clean OS shutdown via
-logind.  To enable this, add the following to `/etc/systemd/logind.conf`:
+UPower escalates to `warning-level: action` at 2% SoC (the
+`PercentageAction` threshold the installer sets), which triggers a clean
+OS shutdown via logind.  To enable this, add the following to
+`/etc/systemd/logind.conf`:
 
 ```bash
 sudo nano /etc/systemd/logind.conf
@@ -1261,8 +1268,9 @@ cat /sys/class/power_supply/x120x-battery/status        # Charging | Discharging
 
 Scripts that poll AC state and call `shutdown` when power is lost
 can be removed entirely.  The driver reports `capacity_level=Critical`
-below 5% SoC, and UPower's `PercentageAction` (default 2% SoC) then
-causes systemd-logind to initiate a clean shutdown automatically — no
+below 5% SoC, and UPower's `PercentageAction` (set to 2% SoC by the
+installer) then causes systemd-logind to initiate a clean shutdown
+automatically — no
 script required.  This works identically on headless and desktop
 installations.
 
@@ -1687,6 +1695,20 @@ should still trigger the same diagnostic (`uevent_seqnum` delta) as
 the first step.
 
 ## Changelog
+
+### v0.4.5 — enforce the 2% low-battery shutdown threshold
+
+**Installer**
+- `install.sh` now sets `UsePercentageForPolicy=true` and
+  `PercentageAction=2` in `UPower.conf`, in addition to
+  `CriticalPowerAction=PowerOff`.  Previously the installer relied on the
+  distribution default for `PercentageAction`; Debian/Raspberry Pi OS
+  ship it as **0**, so UPower's PowerOff action only fired at 0% SoC
+  (≈3.3 V, almost no margin above the 3.20 V floor) rather than the
+  documented 2%.  UPower (GLib `GKeyFile`) honours the last value, so the
+  appended `PercentageAction=2` overrides the distro default.
+- Kernel module is unchanged from v0.4.4; version bumped to keep the
+  package, DKMS, and module versions in lockstep.
 
 ### v0.4.4 — charge hysteresis band restored
 

@@ -201,7 +201,7 @@ done
 # -------------------------------------------------------------------------
 
 PKG_NAME="x120x"
-PKG_VERSION="0.4.4"
+PKG_VERSION="0.4.5"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Detect Pi model for correct boot path
@@ -468,6 +468,13 @@ ok "HandleLowBattery=poweroff set in ${LOGIND_CONF}"
 
 # UPower configuration:
 #   CriticalPowerAction=PowerOff  — HybridSleep hangs on Raspberry Pi.
+#   UsePercentageForPolicy=true   — Act on SoC %, not time-to-empty
+#                                   (a UPS HAT reports no time estimate).
+#   PercentageAction=2            — Power off at 2% SoC.  Debian/RPi-OS
+#                                   ship PercentageAction=0, which would
+#                                   only act at 0% — no margin above the
+#                                   3.20 V floor.  GKeyFile honours the
+#                                   last value, so this overrides the 0.
 #   NoPollBatteries=true          — The driver sends uevents on all state
 #                                   changes and on a 30s heartbeat.  UPower
 #                                   polling the kernel independently causes
@@ -482,6 +489,12 @@ if [ -f "${UPOWER_CONF}" ]; then
     install_ini_block "${UPOWER_CONF}" "UPower" "upower-pi-tweaks" \
         "# HybridSleep hangs on Raspberry Pi — use PowerOff instead." \
         "CriticalPowerAction=PowerOff" \
+        "# Act on battery percentage; a UPS HAT reports no time-to-empty." \
+        "UsePercentageForPolicy=true" \
+        "# Fire the PowerOff action at 2% SoC.  Debian/RPi-OS default" \
+        "# PercentageAction=0 would only act at 0% — no margin above the" \
+        "# 3.20 V floor.  UPower (GKeyFile) honours this last value." \
+        "PercentageAction=2" \
         "# Driver sends uevents on all state changes; polling causes" \
         "# races that produce spurious 0%/unknown history entries." \
         "NoPollBatteries=true"

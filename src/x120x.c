@@ -1889,7 +1889,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.4.4");
+MODULE_VERSION("0.4.5");
 MODULE_LICENSE("GPL v2");
 
 /*

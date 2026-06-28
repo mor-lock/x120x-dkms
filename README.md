@@ -42,14 +42,15 @@ so the UPS can restart it automatically when mains returns.
 Two charge modes are available — choose one before installing:
 
 - **Fast** (default) — charges to 100%, then disables the charger
-  and leaves the battery floating.  Charging resumes when the state
-  of charge (SoC) drops to 95% due to self-discharge.  Best for a
+  and leaves the battery floating.  Charging only resumes if SoC falls
+  back below 100%; since self-discharge is negligible it stays off and
+  the pack rests near full.  Best for a
   **standby UPS** (on mains, occasional outages) — it maximises backup
   runtime, which is what matters when an outage is unannounced.  This is
   the right choice for almost all installs.
 - **Long Life** — charges to 80%, then disables the charger and leaves
-  the battery floating.  Charging resumes when SoC drops to 75% due
-  to self-discharge.  Best for a **frequently cycled build** (e.g. a
+  the battery floating.  Charging resumes once SoC drops back below
+  80%.  Best for a **frequently cycled build** (e.g. a
   portable unit charged and discharged most days), where keeping cells
   below full charge greatly extends cycle life.  On an always-on UPS it
   mostly just costs backup runtime — see *Choosing a profile* for the
@@ -162,10 +163,10 @@ Available board variants: `x120x` (default), `x728v2`, `x728v1`, `x708`, `x729`.
 **Important notes for experimental boards:**
 
 - Long Life mode is only available on boards with charge control (X120x and
-  X728 V2.5). On all other boards `charge_type` is read-only and always
-  returns `Fast`.
-- The power-off GPIO pulse is registered via `pm_power_off` and fires after
-  `systemctl poweroff`. The DT overlay must provide the `power-off-gpios`
+  X728 V2.5). On all other boards a `Long Life` write is rejected and
+  `charge_type` always reads `Fast`.
+- The power-off GPIO pulse is registered via a sys-off handler
+  (`SYS_OFF_MODE_POWER_OFF_PREPARE`) and fires after `systemctl poweroff`. The DT overlay must provide the `power-off-gpios`
   property for this to work — without it a warning is logged and the UPS
   will not cut power automatically after shutdown.
 - The DS1307 RTC on X728/X729 is handled by the existing mainline
@@ -230,7 +231,7 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     online                          1 = mains present
     status                          Charging | Not charging | Discharging
     charge_type                     Fast | Long Life  (writeable)
-    charge_control_start_threshold  SoC % to resume charging in Long life mode (writeable, default 75)
+    charge_control_start_threshold  Lower threshold; exposed for UPower, not used in hysteresis (writeable, default 75)
     charge_control_end_threshold    SoC % to stop charging in Long life mode (writeable, default 80)
 ```
 
@@ -313,14 +314,17 @@ cycled builds.
 The driver supports two charge modes, selectable via `charge_type`:
 
 - **`Fast`** (default) — charges to 100%, disables the charger, and
-  re-enables it at 95% to replace self-discharge.  The 5% hysteresis
-  band prevents the charger from micro-cycling against the full-charge
-  cutoff.  Cells rest at or near full voltage, so calendar aging
+  re-enables it only if SoC falls back below 100% (the fuel gauge's
+  natural lag supplies the hysteresis, so it never micro-cycles against
+  the cutoff).  Since self-discharge is negligible the charger stays off
+  and the cells rest at or near full voltage, so calendar aging
   continues at its normal rate.  Best when the priority is maximum
   backup capacity at the moment an outage begins.
 - **`Long Life`** — charges to `charge_control_end_threshold` (default
-  80%), disables the charger, and re-enables it at
-  `charge_control_start_threshold` (default 75%).  Cells spend their
+  80%), disables the charger, and re-enables it once SoC drops back
+  below that threshold.  (`charge_control_start_threshold`, default 75%,
+  is exposed for UPower compatibility but is not used in the driver's
+  own hysteresis.)  Cells spend their
   idle life at a noticeably lower voltage, where calendar aging is
   dramatically reduced.  The trade-off is about 20% less runtime during
   an outage (~1.3 h on a full X1206); the benefit is that the cells
@@ -337,7 +341,7 @@ The driver supports two charge modes, selectable via `charge_type`:
 Enable and disable conservation mode from the command line:
 
 ```bash
-# Enable conservation mode (charges to 80%, resumes at 75%)
+# Enable conservation mode (charges to 80%, re-enables below 80%)
 echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 
 # Disable conservation mode (charges to 100%)
@@ -346,7 +350,7 @@ echo "Fast" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 # Check current mode
 cat /sys/class/power_supply/x120x-charger/charge_type
 
-# Adjust thresholds (example: stop at 85%, resume at 70%)
+# Adjust thresholds (example: stop charging at 85%; the start value is advisory only)
 echo 70 | sudo tee /sys/class/power_supply/x120x-charger/charge_control_start_threshold
 echo 85 | sudo tee /sys/class/power_supply/x120x-charger/charge_control_end_threshold
 ```
@@ -427,8 +431,9 @@ capacity the cells have retained to that point.
 > - **Starting charge:** `Fast` begins an outage at ~100%, `Long Life` at
 >   80% — each pack sits at its charge ceiling.  Self-discharge is
 >   negligible (measured at well under 1%/month with the charger
->   disabled), so neither drifts down to its resume threshold beforehand;
->   `Fast` relaxes to ~4.18 V at rest but holds essentially full charge.
+>   disabled), so neither drifts down enough to re-engage its charger
+>   beforehand; `Fast` relaxes to ~4.18 V at rest but holds essentially
+>   full charge.
 > - **Calendar aging:** assumed **3%/yr capacity loss at full charge
 >   (~100% SoC)** and **2%/yr at 80% SoC**, at a moderate ~25 °C.  These
 >   are illustrative midpoints from general Li-ion NMC literature,
@@ -640,10 +645,10 @@ be at or below the cell damage threshold.
 #### Detection of already-destroyed cells
 
 If cells have already been deep-discharged and destroyed, the driver
-detects this automatically.  When the system is on grid power and the
+detects this automatically.  When the system is on grid power, the
 cell voltage remains below 3.10 V for 10 minutes with no meaningful
-voltage rise (less than 10 mV/h), the battery health is reported as
-`Dead`:
+voltage rise (less than 10 mV/h), and SoC is at or below 2%, the
+battery health is reported as `Dead`:
 
 ```bash
 cat /sys/class/power_supply/x120x-battery/health
@@ -1114,7 +1119,7 @@ Expected output from `dmesg | grep x120x`:
 ```
 x120x: loading out-of-tree module taints kernel.
 x120x 1-0036: MAX1704x at 0x36 version 0x000
-x120x 1-0036: x120x UPS ready (battery=x120x-battery ac=x120x-ac charger=x120x-charger)
+x120x 1-0036: x120x UPS ready (battery=x120x-battery ac=x120x-ac charger=x120x-charger hwmon=hwmon3)
 ```
 
 The "taints kernel" message is normal for any out-of-tree module.
@@ -1166,7 +1171,7 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `gpio_ac`           | `6`                   | BCM GPIO for AC-present              |
 | `gpio_charge_ctrl`  | `16`                  | BCM GPIO for charge control          |
 | `battery_mah`       | `1000`                | Total pack capacity in mAh           |
-| `conservation_start`        | `75`  | SoC % at which charging resumes in Long Life mode |
+| `conservation_start`        | `75`  | Advisory lower threshold, exposed for UPower; not used in the charge hysteresis |
 | `conservation_end`          | `80`  | SoC % at which charging stops in Long Life mode   |
 | `conservation_mode_default` | `0`   | Start in Long Life mode (`1`) or Fast mode (`0`). Updated automatically on every `charge_type` sysfs write and persisted to `modprobe.d` by a udev rule. |
 | `board`                     | `x120x` | Board variant: `x120x`, `x728v2`, `x728v1`, `x708`, `x729`. Set by installer. Variants other than `x120x` are experimental. |
@@ -1226,16 +1231,16 @@ driver manages it safely with proper locking and hysteresis.
 In practice there should be little need to control GPIO16 directly:
 
 - **Fast mode** — the driver automatically stops charging at 100%
-  and floats the battery, resuming at 95%.  No script needed to
-  prevent micro-cycling.
-- **Long Life mode** — the driver manages hysteresis between the
-  configured thresholds (default 75%/80%).  Equivalent to what
+  and floats the battery, re-enabling the charger only if SoC falls
+  back below 100%.  No script needed to prevent micro-cycling.
+- **Long Life mode** — the driver stops charging at the configured
+  stop threshold (default 80%) and re-enables below it.  Equivalent to what
   GPIO16 scripts were trying to achieve, but implemented correctly
   in the kernel with mutex protection.
 - **Charge mode** is selectable and persistent via sysfs:
 
 ```bash
-# Enable Long Life mode (stop at 80%, resume at 75%)
+# Enable Long Life mode (stop charging at 80%)
 echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 
 # Adjust thresholds
@@ -1403,10 +1408,10 @@ system entered a livelock: it booted, UPower immediately read
 `systemctl poweroff`, the UPS cut and then restored power, and the
 cycle repeated.  This drained the cells further on every cycle.
 
-The livelock ran across three dates — 2026-03-11 (2 cycles from the
+The livelock ran across three dates — 2026-03-29 (2 cycles from the
 initial recovery attempt), 2026-03-30 (11 cycles), and 2026-04-02 (5
 cycles, the last confirmed shutdown voltage 3.15 V) — for a total of
-**21 forced shutdowns** before the board was replaced.  The database
+**18 forced shutdowns** before the board was replaced.  The database
 records no `ac_online=1` after the original outage, because the board
 was never able to drive GPIO6 high again.
 

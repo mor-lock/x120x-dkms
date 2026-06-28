@@ -322,9 +322,9 @@ The driver supports two charge modes, selectable via `charge_type`:
   80%), disables the charger, and re-enables it at
   `charge_control_start_threshold` (default 75%).  Cells spend their
   idle life at a noticeably lower voltage, where calendar aging is
-  dramatically reduced.  The trade-off is 20% less runtime during an
-  outage; the benefit is that the cells retain meaningfully more of
-  their original capacity after several years.  Best for a **frequently
+  dramatically reduced.  The trade-off is roughly an hour (~15%) less
+  runtime during an outage; the benefit is that the cells retain
+  meaningfully more of their original capacity after several years.  Best for a **frequently
   cycled build** (e.g. a portable unit), where cycle aging dominates and
   trimming the top of the charge greatly extends cell life — or, on a
   UPS, only when the pack is oversized relative to your worst outage or
@@ -404,23 +404,25 @@ it often never does within the life of the device.
 
 The model below estimates **usable runtime at the start of an outage**,
 as a function of years in service, for both profiles.  Usable runtime
-is the energy available between the resting state of charge and a
-conservative 10% reserve floor, scaled by the capacity the cells have
-retained to that point.
+is the energy available between the resting state of charge and the
+2% shutdown floor — where the driver actually powers off — scaled by the
+capacity the cells have retained to that point.
 
 > **Assumptions (read these before trusting the numbers).**  These are
 > a *model*, not measurements of your hardware, and the ranking is only
 > as good as the assumptions behind it:
 >
-> - **Load:** ~8–9 W continuous (a Raspberry Pi 5 with NVMe).  Runtime
->   scales inversely with load — double the load, halve every number.
+> - **Load:** ~5 W continuous (a Raspberry Pi 5 with NVMe at idle).
+>   Runtime scales inversely with load — double the load, halve every
+>   number.
 > - **Pack:** an X1206 with 4× 21700 cells, fresh full→empty ≈ 7 h.
 >   Runtime scales linearly with pack capacity; a smaller pack shifts
 >   every row down proportionally but does **not** change the ranking.
-> - **Reserve floor:** 10% SoC, used as a conservative planning reserve.
->   The driver's own clean shutdown actually fires lower — UPower powers
->   off at 2% SoC — so real usable runtime runs slightly past these
->   figures.
+> - **Shutdown floor:** 2% SoC — where the driver's UPower
+>   `PercentageAction` fires the clean OS shutdown.  This is the
+>   driver-only behaviour that almost all installs have; if you also run
+>   the optional companion daemon, it shuts down earlier at its own ~10%
+>   floor, for correspondingly less runtime.
 > - **Resting charge:** `Fast` rests at ~95% true SoC (about 4.18 V on a
 >   healthy NMC pack with the charger disabled); `Long Life` holds 80%.
 > - **Calendar aging:** assumed **3%/yr capacity loss at ~95% SoC** and
@@ -439,7 +441,7 @@ retained to that point.
 
 **These rates assume moderate-quality NMC, not any particular cell.**
 Cell quality shifts the result but rarely the ranking.  The "more
-runtime" comparison is driven by *geometry* — `Long Life` gives up ~21%
+runtime" comparison is driven by *geometry* — `Long Life` gives up ~16%
 of its usable span up front and must claw it back through slower aging —
 so what matters is how fast the cells age relative to that handicap:
 
@@ -461,22 +463,26 @@ Under the moderate-NMC assumptions (base case: 3%/yr vs 2%/yr):
 
 | Years in service | `Fast` (rest ~95%) | `Long Life` (hold 80%) | More runtime |
 |---|---|---|---|
-| 0  | 5.9 h | 4.9 h | `Fast` (+1.0 h) |
-| 5  | 5.1 h | 4.4 h | `Fast` (+0.7 h) |
-| 10 | 4.4 h | 4.0 h | `Fast` (+0.4 h) |
-| 15 | 3.8 h | 3.6 h | `Fast` (+0.1 h) |
-| 20 | 3.2 h | 3.3 h | `Long Life` (+0.1 h) |
+| 0  | 6.2 h | 5.2 h | `Fast` (+1.0 h) |
+| 5  | 5.3 h | 4.7 h | `Fast` (+0.6 h) |
+| 10 | 4.6 h | 4.2 h | `Fast` (+0.3 h) |
+| 15 | 3.9 h | 3.8 h | `Fast` (+0.1 h) |
+| 20 | 3.4 h | 3.5 h | `Long Life` (+0.1 h) |
+
+(Runtime to the driver's 2% shutdown.  The year-0 Fast figure of 6.2 h
+is the *measured* value from the *Incident 1* discharge, not just a model
+output; the later years scale it by assumed capacity retention.)
 
 The counter-intuitive result: **`Fast` delivers more usable runtime
-than `Long Life` for roughly the first two decades.**  The lower
-starting charge in `Long Life` costs ~21% of the usable span up front,
-and the slower aging does not repay that until the curves cross at
-around year 20 — by which point the pack is well past a routine
-replacement anyway.  The crossover is sensitive to the aging gap: if
-`Long Life` ages much more slowly than assumed (e.g. 1.5%/yr) the
-crossover pulls in toward year 15; if the benefit is smaller (2.5%/yr)
-`Fast` wins past year 20.  In none of these cases does `Long Life` win
-at year 10.
+than `Long Life` for the better part of two decades.**  The lower
+starting charge in `Long Life` costs about an hour of runtime up front
+(~16% of the usable span), and the slower aging does not repay that
+until the curves cross at around year 17 — by which point the pack is
+well past a routine replacement anyway.  The crossover is sensitive to
+the aging gap: if `Long Life` ages much more slowly than assumed
+(e.g. 1.5%/yr) it pulls in toward year 12; if the benefit is smaller
+(2.5%/yr) `Fast` wins past year 30.  In none of these cases does
+`Long Life` win at year 10.
 
 What `Long Life` *does* buy is **capacity retention**, not runtime: at
 year 10 the 80%-held pack retains ~82% of its original capacity versus
@@ -558,20 +564,19 @@ load, from a full start:
 
 Note the curve: the first half drains slowly on the flat part of the
 discharge (~4 h to 50%), then collapses — the bottom half is gone in
-about two hours.  The model above uses the 10% mark as a conservative
-reserve; the driver's own shutdown fires lower, at 2% (~6.2 h), so real
-usable runtime is a touch longer than the table's figures.  Either way
-the lesson is the same: most of the runtime is in the top half, so
-starting lower hurts disproportionately.
+about two hours.  The driver's clean shutdown fires at 2% SoC (~6.2 h
+here); the 10% `Low`-battery warning lands at ~5.9 h, only ~18 minutes
+earlier, because the bottom drains so fast.  The lesson: most of the
+runtime is in the top half, so starting lower hurts disproportionately.
 
 Because `Long Life` begins every outage at 80% instead of ~95%, it
-enters that drain ~15 points down and reaches the same floor about an
-hour sooner — roughly **one hour less ride-through, immediately, on
-every outage**.  And as the table above shows, that lost
-hour is not repaid by slower aging until ~year 20.  So on a pack sized
-close to its job (here ~6 h against typical 2–5 h outages), limiting to
-80% sheds backup time you are actually using, with no practical payback
-— which is exactly why `Fast` is the default.
+enters that drain ~15 points down and reaches the 2% shutdown about an
+hour sooner — **~5.2 h instead of ~6.2 h**, roughly one hour less
+ride-through, immediately, on every outage.  And as the table above
+shows, that lost hour is not repaid by slower aging until ~year 17.  So
+on a pack sized close to its job (here ~6 h against typical 2–5 h
+outages), limiting to 80% sheds backup time you are actually using, with
+no practical payback — which is exactly why `Fast` is the default.
 
 ### Dead battery detection
 
@@ -1488,7 +1493,7 @@ lasting ~0.5 s was recorded — this corresponds to the v0.4.0 driver
 module being reloaded during installation.  Charging continued without
 interruption.
 
-The cells charged from 0.01% / 3.34 V to 100% / 4.19 V in
+The cells charged from 0.01% / 3.34 V to 99.6% / 4.22 V in
 approximately **6.7 hours**, consistent with the X1206's 3 A charge
 ceiling (~15 W) applied to a 20 Ah pack.  PSU draw measured via the
 driver's hwmon interface held steady at **~16.7 W** throughout the bulk

@@ -404,9 +404,9 @@ it often never does within the life of the device.
 
 The model below estimates **usable runtime at the start of an outage**,
 as a function of years in service, for both profiles.  Usable runtime
-is the energy available between the resting state of charge and the
-10% safe-shutdown floor, scaled by the capacity the cells have retained
-to that point.
+is the energy available between the resting state of charge and a
+conservative 10% reserve floor, scaled by the capacity the cells have
+retained to that point.
 
 > **Assumptions (read these before trusting the numbers).**  These are
 > a *model*, not measurements of your hardware, and the ranking is only
@@ -417,7 +417,10 @@ to that point.
 > - **Pack:** an X1206 with 4× 21700 cells, fresh full→empty ≈ 7 h.
 >   Runtime scales linearly with pack capacity; a smaller pack shifts
 >   every row down proportionally but does **not** change the ranking.
-> - **Shutdown floor:** 10% SoC (the driver's clean-shutdown trigger).
+> - **Reserve floor:** 10% SoC, used as a conservative planning reserve.
+>   The driver's own clean shutdown actually fires lower — UPower powers
+>   off at 2% SoC — so real usable runtime runs slightly past these
+>   figures.
 > - **Resting charge:** `Fast` rests at ~95% true SoC (about 4.18 V on a
 >   healthy NMC pack with the charger disabled); `Long Life` holds 80%.
 > - **Calendar aging:** assumed **3%/yr capacity loss at ~95% SoC** and
@@ -549,18 +552,22 @@ load, from a full start:
 | Milestone | Time on battery |
 |---|---|
 | Down to 50% | ~4.2 h |
-| **10% — clean auto-shutdown** | **~5.9 h** |
-| 0% — fully empty | ~7.0 h |
+| 10% — driver flags `capacity_level=Low` | ~5.9 h |
+| **2% — clean OS shutdown fires** | **~6.2 h** |
+| 0% — fully empty (no shutdown was in place) | ~7.0 h |
 
 Note the curve: the first half drains slowly on the flat part of the
-discharge (~4 h to 50%), then collapses — the back half is gone in
-under two hours.  This is why the 10% shutdown floor matters, and why
+discharge (~4 h to 50%), then collapses — the bottom half is gone in
+about two hours.  The model above uses the 10% mark as a conservative
+reserve; the driver's own shutdown fires lower, at 2% (~6.2 h), so real
+usable runtime is a touch longer than the table's figures.  Either way
+the lesson is the same: most of the runtime is in the top half, so
 starting lower hurts disproportionately.
 
 Because `Long Life` begins every outage at 80% instead of ~95%, it
-enters that drain ~15 points down and reaches the shutdown floor at
-roughly **4.8 h instead of 5.9 h** — about **one hour less ride-through,
-immediately, on every outage**.  And as the table above shows, that lost
+enters that drain ~15 points down and reaches the same floor about an
+hour sooner — roughly **one hour less ride-through, immediately, on
+every outage**.  And as the table above shows, that lost
 hour is not repaid by slower aging until ~year 20.  So on a pack sized
 close to its job (here ~6 h against typical 2–5 h outages), limiting to
 80% sheds backup time you are actually using, with no practical payback
@@ -1243,9 +1250,10 @@ cat /sys/class/power_supply/x120x-battery/status        # Charging | Discharging
 
 Scripts that poll AC state and call `shutdown` when power is lost
 can be removed entirely.  The driver reports `capacity_level=Critical`
-at 2% SoC (via UPower PercentageAction), which causes systemd-logind to initiate a
-clean shutdown automatically — no script required.  This works
-identically on headless and desktop installations.
+below 5% SoC, and UPower's `PercentageAction` (default 2% SoC) then
+causes systemd-logind to initiate a clean shutdown automatically — no
+script required.  This works identically on headless and desktop
+installations.
 
 ## Companion daemon
 

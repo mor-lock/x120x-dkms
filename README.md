@@ -970,15 +970,15 @@ to compile the module.
 DKMS expects the source under `/usr/src/<name>-<version>/`:
 
 ```bash
-sudo cp -r . /usr/src/x120x-0.4.3
+sudo cp -r . /usr/src/x120x-0.4.4
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.4.3
-sudo dkms build x120x/0.4.3
-sudo dkms install x120x/0.4.3
+sudo dkms add x120x/0.4.4
+sudo dkms build x120x/0.4.4
+sudo dkms install x120x/0.4.4
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -991,7 +991,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.4.3, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.4.4, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Compile the device tree overlay
 

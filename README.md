@@ -491,8 +491,8 @@ year 40.  In none of these cases does `Long Life` win at year 10.
 
 What `Long Life` *does* buy is **capacity retention**, not runtime: at
 year 10 the 80%-held pack retains ~82% of its original capacity versus
-~74% for the 95%-held pack.  That defers the eventual *replacement*; it
-does not give you a longer outage on any given day.
+~74% for the full-charge (`Fast`) pack.  That defers the eventual
+*replacement*; it does not give you a longer outage on any given day.
 
 So on a UPS the two profiles trade off cleanly: `Fast` wins on
 **runtime** for the realistic life of the device, while `Long Life` only

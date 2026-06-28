@@ -41,16 +41,15 @@ so the UPS can restart it automatically when mains returns.
 
 Two charge modes are available — choose one before installing:
 
-- **Fast** (default) — charges to 100%, then disables the charger
-  and leaves the battery floating.  Charging only resumes if SoC falls
-  back below 100%; since self-discharge is negligible it stays off and
-  the pack rests near full.  Best for a
+- **Fast** (default) — charges to 100%, then disables the charger and
+  leaves the battery floating.  Charging resumes when SoC drops to 95%
+  as the pack slowly self-discharges.  Best for a
   **standby UPS** (on mains, occasional outages) — it maximises backup
   runtime, which is what matters when an outage is unannounced.  This is
   the right choice for almost all installs.
 - **Long Life** — charges to 80%, then disables the charger and leaves
-  the battery floating.  Charging resumes once SoC drops back below
-  80%.  Best for a **frequently cycled build** (e.g. a
+  the battery floating.  Charging resumes when SoC drops to 75%.  Best
+  for a **frequently cycled build** (e.g. a
   portable unit charged and discharged most days), where keeping cells
   below full charge greatly extends cycle life.  On an always-on UPS it
   mostly just costs backup runtime — see *Choosing a profile* for the
@@ -231,7 +230,7 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     online                          1 = mains present
     status                          Charging | Not charging | Discharging
     charge_type                     Fast | Long Life  (writeable)
-    charge_control_start_threshold  Lower threshold; exposed for UPower, not used in hysteresis (writeable, default 75)
+    charge_control_start_threshold  SoC % to resume charging in Long life mode (writeable, default 75)
     charge_control_end_threshold    SoC % to stop charging in Long life mode (writeable, default 80)
 ```
 
@@ -314,17 +313,15 @@ cycled builds.
 The driver supports two charge modes, selectable via `charge_type`:
 
 - **`Fast`** (default) — charges to 100%, disables the charger, and
-  re-enables it only if SoC falls back below 100% (the fuel gauge's
-  natural lag supplies the hysteresis, so it never micro-cycles against
-  the cutoff).  Since self-discharge is negligible the charger stays off
-  and the cells rest at or near full voltage, so calendar aging
-  continues at its normal rate.  Best when the priority is maximum
-  backup capacity at the moment an outage begins.
+  re-enables it once SoC falls to 95%.  This 100%/95% hysteresis band
+  lets the pack self-discharge a little before topping up, instead of
+  micro-cycling against the full-charge cutoff.  Cells rest at or near
+  full voltage, so calendar aging continues at its normal rate.  Best
+  when the priority is maximum backup capacity at the moment an outage
+  begins.
 - **`Long Life`** — charges to `charge_control_end_threshold` (default
-  80%), disables the charger, and re-enables it once SoC drops back
-  below that threshold.  (`charge_control_start_threshold`, default 75%,
-  is exposed for UPower compatibility but is not used in the driver's
-  own hysteresis.)  Cells spend their
+  80%), disables the charger, and re-enables it at
+  `charge_control_start_threshold` (default 75%).  Cells spend their
   idle life at a noticeably lower voltage, where calendar aging is
   dramatically reduced.  The trade-off is about 20% less runtime during
   an outage (~1.3 h on a full X1206); the benefit is that the cells
@@ -341,7 +338,7 @@ The driver supports two charge modes, selectable via `charge_type`:
 Enable and disable conservation mode from the command line:
 
 ```bash
-# Enable conservation mode (charges to 80%, re-enables below 80%)
+# Enable conservation mode (charges to 80%, resumes at 75%)
 echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 
 # Disable conservation mode (charges to 100%)
@@ -350,7 +347,7 @@ echo "Fast" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 # Check current mode
 cat /sys/class/power_supply/x120x-charger/charge_type
 
-# Adjust thresholds (example: stop charging at 85%; the start value is advisory only)
+# Adjust thresholds (example: stop at 85%, resume at 70%)
 echo 70 | sudo tee /sys/class/power_supply/x120x-charger/charge_control_start_threshold
 echo 85 | sudo tee /sys/class/power_supply/x120x-charger/charge_control_end_threshold
 ```
@@ -428,12 +425,11 @@ capacity the cells have retained to that point.
 >   driver-only behaviour that almost all installs have; if you also run
 >   the optional companion daemon, it shuts down earlier at its own ~10%
 >   floor, for correspondingly less runtime.
-> - **Starting charge:** `Fast` begins an outage at ~100%, `Long Life` at
->   80% — each pack sits at its charge ceiling.  Self-discharge is
->   negligible (measured at well under 1%/month with the charger
->   disabled), so neither drifts down enough to re-engage its charger
->   beforehand; `Fast` relaxes to ~4.18 V at rest but holds essentially
->   full charge.
+> - **Starting charge:** `Fast` floats between 100% (charge stop) and 95%
+>   (resume); `Long Life` between 80% and 75%.  We model the top of each
+>   band as the outage start — an outage can in fact begin anywhere in
+>   the band, up to ~0.3 h lower at the bottom.  (`Fast` relaxes to
+>   ~4.18 V at rest.)
 > - **Calendar aging:** assumed **3%/yr capacity loss at full charge
 >   (~100% SoC)** and **2%/yr at 80% SoC**, at a moderate ~25 °C.  These
 >   are illustrative midpoints from general Li-ion NMC literature,
@@ -1171,7 +1167,7 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `gpio_ac`           | `6`                   | BCM GPIO for AC-present              |
 | `gpio_charge_ctrl`  | `16`                  | BCM GPIO for charge control          |
 | `battery_mah`       | `1000`                | Total pack capacity in mAh           |
-| `conservation_start`        | `75`  | Advisory lower threshold, exposed for UPower; not used in the charge hysteresis |
+| `conservation_start`        | `75`  | SoC % at which charging resumes in Long Life mode |
 | `conservation_end`          | `80`  | SoC % at which charging stops in Long Life mode   |
 | `conservation_mode_default` | `0`   | Start in Long Life mode (`1`) or Fast mode (`0`). Updated automatically on every `charge_type` sysfs write and persisted to `modprobe.d` by a udev rule. |
 | `board`                     | `x120x` | Board variant: `x120x`, `x728v2`, `x728v1`, `x708`, `x729`. Set by installer. Variants other than `x120x` are experimental. |
@@ -1231,16 +1227,16 @@ driver manages it safely with proper locking and hysteresis.
 In practice there should be little need to control GPIO16 directly:
 
 - **Fast mode** — the driver automatically stops charging at 100%
-  and floats the battery, re-enabling the charger only if SoC falls
-  back below 100%.  No script needed to prevent micro-cycling.
-- **Long Life mode** — the driver stops charging at the configured
-  stop threshold (default 80%) and re-enables below it.  Equivalent to what
+  and floats the battery, resuming at 95%.  No script needed to
+  prevent micro-cycling.
+- **Long Life mode** — the driver manages hysteresis between the
+  configured thresholds (default 75%/80%).  Equivalent to what
   GPIO16 scripts were trying to achieve, but implemented correctly
   in the kernel with mutex protection.
 - **Charge mode** is selectable and persistent via sysfs:
 
 ```bash
-# Enable Long Life mode (stop charging at 80%)
+# Enable Long Life mode (stop at 80%, resume at 75%)
 echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 
 # Adjust thresholds
@@ -1691,6 +1687,26 @@ should still trigger the same diagnostic (`uevent_seqnum` delta) as
 the first step.
 
 ## Changelog
+
+### v0.4.4 — charge hysteresis band restored
+
+**Kernel driver**
+- Charging now resumes at the lower threshold again, restoring a proper
+  hysteresis band: **Fast** stops at 100% and resumes at 95%; **Long
+  Life** stops at `conservation_end` (80%) and resumes at
+  `conservation_start` (75%); the charger holds its state in between.
+  The v0.3.0 "always-on" change had re-enabled the charger as soon as
+  SoC fell below the *stop* threshold, so the pack was topped back up
+  almost immediately and never rested below ~100% (Fast) or ~80% (Long
+  Life) — defeating Long Life's longevity benefit and making the true
+  self-discharge rate impossible to observe (the charger masked it).
+- Deep-discharge safety is preserved: `charger_inhibited` still starts
+  `false` (charging on) and any SoC at or below the resume threshold
+  forces the charger on, so the charger is still always on at boot,
+  after a deep discharge, and in any low/uncertain-SoC state — only an
+  in-band reading holds the previous state.
+- `conservation_start` is used by the hysteresis again (it had been
+  exposed over sysfs but ignored).
 
 ### v0.4.3 — uevent storm fix
 

@@ -175,9 +175,10 @@ MODULE_PARM_DESC(battery_mah,
 	"Total battery pack capacity in mAh (default 1000)");
 
 /*
- * Charge threshold parameters for Long life / conservation mode.
- * Only active when charge_type is set to Long life.  In Fast mode
- * GPIO16 is held low (charging always enabled) and these are ignored.
+ * Charge threshold parameters for Long Life / conservation mode.
+ * conservation_end/start are the stop/resume thresholds used in Long
+ * Life mode.  Fast mode uses a fixed 100%/95% band instead (see the
+ * hysteresis block in x120x_poll_work).
  */
 static int conservation_start = 75;
 module_param(conservation_start, int, 0644);
@@ -257,6 +258,7 @@ MODULE_PARM_DESC(conservation_mode_default,
 #define X120X_SOC_CRITICAL_PCT	 5	/* CRITICAL below this % → logind poweroff */
 #define X120X_SOC_LOW_PCT	10	/* LOW below this % → desktop warning      */
 #define X120X_SOC_FULL_PCT	95	/* FULL above this %                        */
+#define X120X_FAST_RESUME_PCT	95	/* Fast mode: resume charging at/below this % */
 
 /* Manufacturer and model name strings */
 #define X120X_MANUFACTURER		"SupTronics"
@@ -726,23 +728,25 @@ static void x120x_poll_work(struct work_struct *work)
 	capacity_pct_snap      = chip->capacity_pct;
 
 	/*
-	 * Long life / conservation mode hysteresis.
+	 * Charge hysteresis.
 	 *
-	 * GPIO16 is driven based on a single SoC threshold:
-	 *   capacity >= end_thr → stop charging   (GPIO16 high)
-	 *   capacity <  end_thr → resume charging (GPIO16 low)
+	 * GPIO16 is driven from two SoC thresholds, so the charger does not
+	 * micro-cycle at the top and the pack is allowed to self-discharge
+	 * back down to the resume point before topping up again:
+	 *   capacity >= end_thr   → stop charging   (GPIO16 high)
+	 *   capacity <= start_thr → resume charging (GPIO16 low)
+	 *   in between            → hold the current state (hysteresis band)
 	 *
-	 * In Fast mode end_thr is 100 (float-protection: disable the
-	 * charger when SoC hits 100% so the cells don't micro-cycle at
-	 * full charge).  In Long Life mode end_thr is the user-configured
-	 * `conservation_end` parameter (default 80%).
+	 * Fast mode:      end_thr = 100, start_thr = X120X_FAST_RESUME_PCT
+	 *                 (95).  Long Life mode: end_thr = conservation_end
+	 *                 (80), start_thr = conservation_start (75).
 	 *
-	 * `conservation_start` is exposed as a sysfs property for the
-	 * benefit of UPower's EnableChargeThreshold model but is no longer
-	 * used directly in the hysteresis: SoC dropping below `end_thr`
-	 * is sufficient to re-enable charging, since the natural lag in
-	 * the fuel gauge between hitting the upper threshold and falling
-	 * back below it provides all the hysteresis the cell needs.
+	 * Safety: chip->charger_inhibited starts false (charging enabled),
+	 * and any SoC at or below start_thr forces the charger on.  So the
+	 * charger is always on at boot, after a deep discharge, and in any
+	 * low-SoC state — it is never harmful to charge too much, but it is
+	 * harmful to leave a low battery uncharged.  Only an in-band reading
+	 * (start_thr < SoC < end_thr) holds the previous state.
 	 *
 	 * On battery (no AC) GPIO16 is irrelevant — the charger cannot
 	 * run without input power — but we manage the cached state
@@ -754,26 +758,37 @@ static void x120x_poll_work(struct work_struct *work)
 	 * gpiod_set_value_cansleep is safe to call under a mutex.
 	 */
 	if (chip->gpio_chrg) {
-		int end_thr;
+		int start_thr, end_thr;
 		bool want_inhibit;
 
 		if (conservation_mode_snap) {
-			/* Long Life: user-configured threshold */
-			end_thr = conservation_end;
+			/* Long Life: user-configured band */
+			end_thr   = conservation_end;
+			start_thr = conservation_start;
 		} else {
-			/* Fast: float-protection at 100% */
-			end_thr = 100;
+			/* Fast: float-protection band at the top */
+			end_thr   = 100;
+			start_thr = X120X_FAST_RESUME_PCT;
 		}
 
+		/* Defensive: never let a misconfigured band invert */
+		if (start_thr >= end_thr)
+			start_thr = end_thr - 1;
+
 		/*
-		 * Default to charging enabled.  Only disable the charger
-		 * when SoC is reliably at or above the stop threshold.  This
-		 * means the charger is always on at boot, after a deep
-		 * discharge, or any time the SoC reading is uncertain — it
-		 * is never harmful to charge too much; it is harmful to
-		 * leave a low battery uncharged.
+		 * Two-threshold hysteresis.  Stop at end_thr, resume at
+		 * start_thr, hold the current state in between.  Defaulting
+		 * to the held state in-band — combined with charger_inhibited
+		 * starting false and the explicit resume at/below start_thr —
+		 * keeps the charger on at boot, after a deep discharge, and in
+		 * any low-SoC state.
 		 */
-		want_inhibit = (capacity_pct_snap >= end_thr);
+		if (capacity_pct_snap >= end_thr)
+			want_inhibit = true;
+		else if (capacity_pct_snap <= start_thr)
+			want_inhibit = false;
+		else
+			want_inhibit = chip->charger_inhibited;
 
 		if (want_inhibit != chip->charger_inhibited) {
 			x120x_gpio_set(chip->gpio_chrg, want_inhibit ? 1 : 0);
@@ -1874,7 +1889,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.4.3");
+MODULE_VERSION("0.4.4");
 MODULE_LICENSE("GPL v2");
 
 /*

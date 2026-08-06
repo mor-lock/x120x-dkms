@@ -45,7 +45,32 @@ Release history of [x120x-dkms](README.md), newest first.
 
 ### v0.4.9 — Ubuntu install support
 
+**Fuel gauge / state of charge**
+- New `soc_source` module param (default `voltage`) derives SoC from cell
+  voltage via an NMC open-circuit-voltage model instead of the fuel gauge's
+  SOC register.  The fuel gauge on these boards is a MAX17043-style clone
+  (version reports `0x000`, non-datasheet register map, boots reporting an
+  impossible 102%) whose SoC register over-reads the discharge near full — a
+  *dynamic* stuck-then-catch-up artifact.  A static voltage lookup avoids it:
+  validated against a coulomb-counted (charger-metered) discharge, the model
+  read 90% where the gauge read 86.6% and truth was ~90%.
+- Two curves — charge (on grid) and discharge (on battery) — because charge
+  current lifts terminal voltage ~100–150 mV above the discharge OCV.  Both
+  are empirical, measured on a 4× Molicel INR21700-P50B pack across 216 days
+  (19 discharge / 17 charge events, consistent to 2–6 mV).  A decaying offset
+  re-anchors SoC at each charge↔discharge transition so it never jumps.
+  `soc_source=gauge` restores the raw register behaviour.  Hardware is
+  fixed-4.2 V Li-ion (terminal 4.23 V) so the NMC/NCA curve covers every
+  supported cell; LiFePO4 is not supported by the hardware.
+
 **Installer**
+- New `--soc-source voltage|gauge` flag (default `voltage`), resolved with the
+  same flag > existing-conf > default precedence as the other options and
+  written to `/etc/modprobe.d/x120x.conf`.
+- Fixed a latent `set -euo pipefail` abort: reading a config that lacks any
+  key (e.g. a pre-`board` conf on upgrade) aborted the installer because a
+  no-match `grep` in the per-key extraction propagated failure.  All four
+  extractions now tolerate a missing key.
 - Ubuntu for Raspberry Pi is now supported.  `install.sh` detected the
   firmware partition at `/boot/firmware` but hardcoded the overlays
   subdirectory as `overlays/`, whereas Ubuntu's flash-kernel layout keeps

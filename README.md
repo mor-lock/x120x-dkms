@@ -87,6 +87,17 @@ right for almost every UPS install.  A battery-preserving **Long Life**
 mode can be enabled at any time after install — see *Battery
 conservation mode*.
 
+**State of charge** defaults to a voltage-based model (`--soc-source
+voltage`): SoC is read from cell voltage via an NMC open-circuit-voltage
+curve rather than the fuel gauge's SOC register.  The gauge on these
+boards is a MAX17043-*style* clone that over-reads the discharge near
+full; the voltage model tracks a coulomb-counted reference far more
+closely.  It uses separate charge and discharge curves (charge current
+lifts terminal voltage) with a smooth, no-jump handoff between them.
+Pass `--soc-source gauge` to use the raw fuel-gauge register instead.
+The curves assume 4.2 V Li-ion (NMC/NCA) cells, which is all the
+hardware can charge.
+
 Before rebooting, make sure the power supply is connected to the
 **UPS board's own power input**, not the Pi's USB-C port.  The Pi is
 powered through the UPS; a charger plugged into the Pi directly will
@@ -194,10 +205,12 @@ indicator enabled in their panel/applet settings.
 
 ### capacity reads 0% or nonsense on the first boot
 
-The MAX17043 fuel gauge needs a little time to converge after first
-power-up — give it a few minutes.  If it stays at 0% with the charger
-connected, the cells may have been deep-discharged; see *Dead battery
-detection* and the deep-discharge recovery notes.
+With the default `--soc-source voltage` model this is largely moot — SoC
+comes from cell voltage and is meaningful immediately.  With
+`--soc-source gauge` the MAX17043 clone needs a little time to converge
+after first power-up — give it a few minutes.  If it stays at 0% with
+the charger connected, the cells may have been deep-discharged; see
+*Dead battery detection* and the deep-discharge recovery notes.
 
 ### ac_online is 0 with the charger plugged in
 

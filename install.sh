@@ -9,6 +9,9 @@
 # Options:
 #   --battery-mah N        Total battery pack capacity in mAh (default: 1000)
 #                          Example: 4x 5000mAh cells = 20000
+#   --soc-source SRC       State-of-charge source: voltage (default) or gauge.
+#                          voltage = NMC OCV model (avoids the fuel gauge's
+#                          near-full over-read); gauge = raw MAX17043 register.
 #   --charge-mode MODE     Initial charge mode: fast or longlife (default: fast)
 #                          longlife limits charging to 75-80% to extend battery life
 #                          Can be changed at any time via sysfs; persisted across reboots
@@ -204,15 +207,21 @@ DROPIN_EOF
 
 resolve_battery_settings() {
     local conf="${1:-/etc/modprobe.d/x120x.conf}"
-    local opts="" conf_mah="" conf_cons="" conf_board=""
+    local opts="" conf_mah="" conf_cons="" conf_board="" conf_soc=""
 
     if [ -f "${conf}" ]; then
         # Last "options x120x" line wins, mirroring modprobe semantics;
         # per-key extraction tolerates any order and missing keys.
         opts=$(sed -n 's/^options[[:space:]]\{1,\}x120x[[:space:]]\{1,\}//p' "${conf}" | tail -1)
-        conf_mah=$(printf '%s\n' "${opts}" | grep -o 'battery_mah=[^[:space:]]*' | tail -1 | cut -d= -f2)
-        conf_cons=$(printf '%s\n' "${opts}" | grep -o 'conservation_mode_default=[^[:space:]]*' | tail -1 | cut -d= -f2)
-        conf_board=$(printf '%s\n' "${opts}" | grep -o 'board=[^[:space:]]*' | tail -1 | cut -d= -f2)
+        # `|| true` on each: under set -euo pipefail a grep with no match
+        # returns 1, which pipefail propagates and set -e would treat as
+        # fatal — aborting the installer on any old conf that predates a
+        # given key (e.g. a pre-board or pre-soc_source config on upgrade).
+        # The value is already empty in that case; we just want no abort.
+        conf_mah=$(printf '%s\n' "${opts}" | grep -o 'battery_mah=[^[:space:]]*' | tail -1 | cut -d= -f2) || true
+        conf_cons=$(printf '%s\n' "${opts}" | grep -o 'conservation_mode_default=[^[:space:]]*' | tail -1 | cut -d= -f2) || true
+        conf_board=$(printf '%s\n' "${opts}" | grep -o 'board=[^[:space:]]*' | tail -1 | cut -d= -f2) || true
+        conf_soc=$(printf '%s\n' "${opts}" | grep -o 'soc_source=[^[:space:]]*' | tail -1 | cut -d= -f2) || true
     fi
 
     if [ -n "${OPT_MAH}" ]; then
@@ -265,6 +274,23 @@ resolve_battery_settings() {
         esac
     else
         BOARD_VARIANT="x120x"; BOARD_SRC="default"
+    fi
+
+    if [ -n "${OPT_SOC_SOURCE}" ]; then
+        SOC_SOURCE="${OPT_SOC_SOURCE}"; SOC_SRC="from --soc-source"
+    elif [ -n "${conf_soc}" ]; then
+        case "${conf_soc}" in
+            voltage|gauge)
+                SOC_SOURCE="${conf_soc}"
+                SOC_SRC="kept from existing configuration"
+                ;;
+            *)
+                warn "Ignoring invalid soc_source='${conf_soc}' in ${conf} — using default voltage"
+                SOC_SOURCE="voltage"; SOC_SRC="default"
+                ;;
+        esac
+    else
+        SOC_SOURCE="voltage"; SOC_SRC="default"
     fi
 
     # An if, not `[ ... ] && ...`: as the function's last command the
@@ -407,6 +433,7 @@ configure_bootloader() {
 OPT_MAH=""
 OPT_CHARGE_MODE=""
 OPT_BOARD=""
+OPT_SOC_SOURCE=""
 SKIP_EEPROM=0
 
 while [ $# -gt 0 ]; do
@@ -448,12 +475,25 @@ while [ $# -gt 0 ]; do
             esac
             shift 2
             ;;
+        --soc-source)
+            case "${2:-}" in
+                '') die "--soc-source requires a value  (use voltage or gauge)" ;;
+                voltage|gauge) OPT_SOC_SOURCE="$2" ;;
+                *) die "Unknown SoC source: $2  (use voltage or gauge)" ;;
+            esac
+            shift 2
+            ;;
         --skip-eeprom)
             SKIP_EEPROM=1
             shift
             ;;
         --help|-h)
-            echo "Usage: sudo bash install.sh [--battery-mah N] [--charge-mode fast|longlife] [--board x120x|x728v2|x728v1|x708|x729] [--skip-eeprom]"
+            echo "Usage: sudo bash install.sh [--battery-mah N] [--charge-mode fast|longlife] [--board x120x|x728v2|x728v1|x708|x729] [--soc-source voltage|gauge] [--skip-eeprom]"
+            echo
+            echo "  --soc-source   State-of-charge source: voltage (default) or gauge."
+            echo "                 voltage uses an NMC open-circuit-voltage model (charge"
+            echo "                 and discharge curves) that avoids the fuel gauge's"
+            echo "                 near-full over-read; gauge uses the raw MAX17043 register."
             echo
             echo "  --skip-eeprom  Do not modify Raspberry Pi bootloader EEPROM settings"
             echo "                 (POWER_OFF_ON_HALT, PSU_MAX_CURRENT).  You are then"
@@ -637,6 +677,7 @@ resolve_battery_settings "${MODPROBE_CONF}"
 info "battery_mah=${INPUT_MAH} (${MAH_SRC})"
 info "conservation_mode_default=${CONSERVATION_DEFAULT} (${CONS_SRC})"
 info "board=${BOARD_VARIANT} (${BOARD_SRC})"
+info "soc_source=${SOC_SOURCE} (${SOC_SRC})"
 
 # Warn if an experimental board is in effect — reachable via the
 # --board flag once per-board overlays ship, or today via a board=
@@ -663,12 +704,14 @@ cat > "${MODPROBE_CONF}" << MODPROBE_EOF
 #
 # battery_mah     — total pack capacity in mAh
 #                   (number of cells × per-cell capacity)
+# soc_source      — state-of-charge source: voltage (NMC OCV model, default)
+#                   or gauge (raw MAX17043 register)
 #
 # After editing, reload the driver:
 #   sudo rmmod x120x && sudo modprobe x120x
 # Or simply reboot.
 
-options x120x battery_mah=${INPUT_MAH} conservation_mode_default=${CONSERVATION_DEFAULT} board=${BOARD_VARIANT}
+options x120x battery_mah=${INPUT_MAH} conservation_mode_default=${CONSERVATION_DEFAULT} board=${BOARD_VARIANT} soc_source=${SOC_SOURCE}
 MODPROBE_EOF
 ok "Battery configuration written"
 

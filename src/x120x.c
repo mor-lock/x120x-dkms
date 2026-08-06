@@ -211,6 +211,27 @@ MODULE_PARM_DESC(conservation_mode_default,
 	"charge_type sysfs writes (the driver updates this internally and a "
 	"udev rule persists it to modprobe.d), not this read-only param.");
 
+/*
+ * soc_source — where state-of-charge is derived from.
+ *
+ *   "voltage" (default): derive SoC from cell voltage via a generic NMC
+ *              open-circuit-voltage curve while on battery / at rest.  The
+ *              fuel gauge on these boards (a MAX17043-style clone) over-reads
+ *              the discharge near full; voltage is accurate there and the
+ *              pack's IR drop is negligible (~5 mV).  While charging the
+ *              driver automatically defers to the gauge, because charge
+ *              current pushes terminal voltage well above the true OCV.
+ *   "gauge":   use the raw fuel-gauge SOC register unconditionally.
+ *
+ * Written to /etc/modprobe.d/x120x.conf by the installer (--soc-source).
+ */
+static char *soc_source = "voltage";
+module_param(soc_source, charp, 0444);
+MODULE_PARM_DESC(soc_source,
+	"State-of-charge source: \"voltage\" (default, NMC OCV model on "
+	"battery, auto-defers to the gauge while charging) or \"gauge\" "
+	"(raw MAX17043 SOC register).");
+
 /* -------------------------------------------------------------------------
  * MAX17043 register definitions (X120x board layout)
  *
@@ -293,6 +314,128 @@ MODULE_PARM_DESC(conservation_mode_default,
 
 
 /* -------------------------------------------------------------------------
+ * Voltage → state-of-charge model (generic NMC / NCA)
+ *
+ * These SupTronics boards are fixed-4.2 V Li-ion chargers (terminal 4.23 V),
+ * so the only cells they can charge are 4.2 V-class NMC/NCA, which share a
+ * near-identical open-circuit-voltage curve.  LiFePO4 is out of scope — a
+ * 4.2 V charger would overcharge it — and is not supported by the hardware.
+ *
+ * The table is rested-OCV vs SoC.  On battery the pack is a low-impedance
+ * parallel bank under light load, so the IR drop is only a few mV and the
+ * terminal voltage tracks OCV closely.  The model is used on battery / at
+ * rest only; while charging, terminal voltage is pushed well above OCV
+ * (measured +5..7 % SoC on hardware), so the poll loop uses the gauge.
+ *
+ * Values are a generic-NMC starting point (seeded from the Molicel P50B
+ * curve); refine per-pack against a measured full discharge if desired.
+ * Piecewise-linear, interpolated to 1/256 % to match capacity_256.
+ * ---------------------------------------------------------------------- */
+enum x120x_soc_source { X120X_SOC_SRC_VOLTAGE, X120X_SOC_SRC_GAUGE };
+
+struct x120x_ocv_point {
+	int uv;		/* cell voltage in µV      */
+	int soc256;	/* SoC × 256 (0 .. 25600)  */
+};
+
+/*
+ * Discharge curve.  Empirically measured on this pack (Molicel INR21700-P50B
+ * ×4) from 19 discharge events over 216 days — median terminal voltage at each
+ * SoC, consistent to 2–6 mV.  Under the light load of the low-impedance
+ * parallel bank the terminal voltage tracks OCV to within a few mV.  Used as a
+ * static lookup, which has none of the fuel gauge's stuck-then-jump dynamic
+ * over-read (validated: at 4.066 V this gives 90.6 % vs Anker-measured ~90 %,
+ * where the gauge read 86.6 %).  Endpoints extrapolated; the near-full region
+ * (>92 %) is the least certain (surface-charge transient) — refine per pack
+ * against an Anker-integrated full discharge.
+ */
+static const struct x120x_ocv_point x120x_ocv_discharge[] = {
+	{ 3300000,   0 * 256 },
+	{ 3580000,   7 * 256 },
+	{ 3670000,  27 * 256 },
+	{ 3720000,  37 * 256 },
+	{ 3770000,  47 * 256 },
+	{ 3795000,  52 * 256 },
+	{ 3845000,  62 * 256 },
+	{ 3880000,  67 * 256 },
+	{ 3930000,  72 * 256 },
+	{ 3980000,  77 * 256 },
+	{ 4030000,  82 * 256 },
+	{ 4055000,  87 * 256 },
+	{ 4075000,  92 * 256 },
+	{ 4120000,  96 * 256 },
+	{ 4200000, 100 * 256 },
+};
+
+/*
+ * Charge curve.  Also measured on this pack (17 charge events); terminal
+ * voltage runs ~100–150 mV above the discharge curve at the same SoC because
+ * charge current adds overpotential (larger mid-charge, tapering near full to
+ * the 4.23 V CV clamp).  Separate curve, selected while on grid — see the
+ * poll loop.  offset-decay re-anchoring makes the charge↔discharge handoff
+ * continuous.
+ */
+static const struct x120x_ocv_point x120x_ocv_charge[] = {
+	{ 3300000,   0 * 256 },
+	{ 3820000,  30 * 256 },
+	{ 3900000,  40 * 256 },
+	{ 3950000,  50 * 256 },
+	{ 4000000,  60 * 256 },
+	{ 4030000,  65 * 256 },
+	{ 4063000,  70 * 256 },
+	{ 4096000,  75 * 256 },
+	{ 4125000,  80 * 256 },
+	{ 4153000,  85 * 256 },
+	{ 4175000,  90 * 256 },
+	{ 4210000,  95 * 256 },
+	{ 4230000, 100 * 256 },
+};
+
+/**
+ * x120x_ocv_to_soc256() - map a cell voltage to SoC × 256 over an OCV table.
+ * @t:  OCV table (charge or discharge), ascending in both fields.
+ * @n:  number of table entries.
+ * @uv: cell voltage in microvolts.
+ *
+ * Linear interpolation, clamped to [0, 25600].
+ */
+static int x120x_ocv_to_soc256(const struct x120x_ocv_point *t, int n, int uv)
+{
+	int i;
+
+	if (uv <= t[0].uv)
+		return 0;
+	if (uv >= t[n - 1].uv)
+		return 100 * 256;
+
+	for (i = 1; i < n; i++) {
+		if (uv <= t[i].uv) {
+			s64 dv = t[i].uv - t[i - 1].uv;
+			s64 ds = t[i].soc256 - t[i - 1].soc256;
+
+			return t[i - 1].soc256 +
+			       (int)div_s64(ds * (uv - t[i - 1].uv), dv);
+		}
+	}
+	return 100 * 256;
+}
+
+/**
+ * x120x_voltage_soc256() - SoC × 256 from voltage, phase-aware.
+ * @uv:       cell voltage in microvolts.
+ * @charging: true → use the charge curve; false → the discharge/rest curve.
+ */
+static int x120x_voltage_soc256(int uv, bool charging)
+{
+	if (charging)
+		return x120x_ocv_to_soc256(x120x_ocv_charge,
+					   ARRAY_SIZE(x120x_ocv_charge), uv);
+	return x120x_ocv_to_soc256(x120x_ocv_discharge,
+				   ARRAY_SIZE(x120x_ocv_discharge), uv);
+}
+
+
+/* -------------------------------------------------------------------------
  * Driver private state
  * ---------------------------------------------------------------------- */
 
@@ -351,6 +494,26 @@ struct x120x_chip {
 	bool			 charger_inhibited;	/* cached GPIO16 state: true = high (stopped) */
 	bool			 present;
 	int			 i2c_errors;
+
+	/*
+	 * Voltage → SoC model (soc_source=voltage; see the OCV tables).
+	 * @soc_src:     voltage OCV model vs raw fuel gauge.
+	 * @ocv_ema_uv:  EMA of cell voltage feeding the OCV lookup (0 = uninit),
+	 *               warm in both phases so it is ready at a transition and
+	 *               to damp plateau jitter.
+	 * @soc_offset:  offset-decay re-anchor (256ths): captured at each
+	 *               charge↔discharge transition so SoC does not jump, then
+	 *               decayed to 0 as the reading rejoins the active curve.
+	 * @prev_charging: last poll's active-charging state, to detect the
+	 *               curve transition (charge current lifts voltage; a full
+	 *               pack floating on grid is NOT charging → rest curve).
+	 * @model_primed: false until the first voltage-model sample is taken.
+	 */
+	enum x120x_soc_source	 soc_src;
+	int			 ocv_ema_uv;
+	int			 soc_offset;
+	bool			 prev_charging;
+	bool			 model_primed;
 
 	/* Energy tracking for UPower / desktop environment integration */
 	s64			 energy_now_uwh;	 /* µWh = energy_full × soc%/100 */
@@ -630,11 +793,57 @@ static void x120x_poll_work(struct work_struct *work)
 
 	new_present       = true;
 	new_uv            = MAX17043_VCELL_TO_UV(vcell_raw);
-	new_pct           = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
-	new_256           = MAX17043_SOC_256(soc_raw); /* raw, unclamped for rate */
 	new_ac            = x120x_gpio_get(chip->gpio_ac);
 	if (new_ac < 0)
 		new_ac = 0;	/* unreadable: assume on battery (safe) */
+
+	if (chip->soc_src == X120X_SOC_SRC_VOLTAGE) {
+		/*
+		 * Charge curve only while actively charging (grid present AND
+		 * charger not inhibited).  A full pack floating on grid, or one
+		 * held at a Long-Life threshold, has no charge current, so its
+		 * voltage has relaxed toward OCV → use the discharge/rest curve.
+		 * charger_inhibited here is the previous poll's value (the
+		 * hysteresis block updates it later); a one-poll lag is fine.
+		 */
+		bool charging = (new_ac != 0) && !chip->charger_inhibited;
+		int  curve_256;
+
+		/* Warm the voltage EMA every poll (α = 1/8), both phases. */
+		if (chip->ocv_ema_uv == 0)
+			chip->ocv_ema_uv = new_uv;
+		else
+			chip->ocv_ema_uv += (new_uv - chip->ocv_ema_uv) >> 3;
+
+		curve_256 = x120x_voltage_soc256(chip->ocv_ema_uv, charging);
+
+		if (!chip->model_primed) {
+			chip->soc_offset    = 0;
+			chip->prev_charging = charging;
+			chip->model_primed  = true;
+		} else if (charging != chip->prev_charging) {
+			/*
+			 * charge↔discharge/rest transition.  Re-anchor: the new
+			 * curve plus this offset equals the last reported SoC,
+			 * so the reading is continuous (no jump).  capacity_256
+			 * still holds the previous poll's reported value here.
+			 */
+			chip->soc_offset    = chip->capacity_256 - curve_256;
+			chip->prev_charging = charging;
+		}
+
+		new_256 = clamp(curve_256 + chip->soc_offset, 0, 100 * 256);
+
+		/* Decay the re-anchor offset toward 0 (τ ≈ 30 s at 500 ms poll). */
+		chip->soc_offset -= chip->soc_offset >> 6;
+		if (chip->soc_offset < 64 && chip->soc_offset > -64)
+			chip->soc_offset = 0;
+
+		new_pct = clamp(new_256 >> 8, 0, 100);
+	} else {
+		new_pct = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
+		new_256 = MAX17043_SOC_256(soc_raw); /* raw, unclamped for rate */
+	}
 	mutex_lock(&chip->lock);
 	chip->i2c_errors  = 0;
 	bat_changed       = (chip->present      != new_present  ||
@@ -1818,6 +2027,22 @@ static int x120x_probe(struct i2c_client *client)
 	}
 	dev_info(dev, "MAX1704x at 0x%02x version 0x%03x\n",
 		 client->addr, version & MAX17043_VERSION_MASK);
+
+	/* -- SoC source: voltage OCV model (default) or raw gauge --------- */
+	if (soc_source && !strcmp(soc_source, "gauge")) {
+		chip->soc_src = X120X_SOC_SRC_GAUGE;
+	} else {
+		chip->soc_src = X120X_SOC_SRC_VOLTAGE;
+		if (soc_source && strcmp(soc_source, "voltage"))
+			dev_warn(dev,
+				 "unknown soc_source \"%s\", using \"voltage\"\n",
+				 soc_source);
+	}
+	dev_info(dev, "SoC source: %s\n",
+		 chip->soc_src == X120X_SOC_SRC_GAUGE ?
+		 "gauge (raw MAX17043 register)" :
+		 "voltage (NMC OCV model: charge curve on grid, discharge curve "
+		 "on battery, offset-decay re-anchoring)");
 
 	/* -- GPIO6: AC present -------------------------------------------- */
 	chip->gpio_ac = devm_gpiod_get_optional(dev, "ac-present", GPIOD_IN);

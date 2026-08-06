@@ -258,7 +258,7 @@ run_rbs() {  # mah-flag mode-flag board-flag conf-file
     (
         info() { :; }
         warn() { echo "warn:$*"; }
-        OPT_MAH="$1"; OPT_CHARGE_MODE="$2"; OPT_BOARD="$3"
+        OPT_MAH="$1"; OPT_CHARGE_MODE="$2"; OPT_BOARD="$3"; OPT_SOC_SOURCE="${5:-}"
         eval "${RBS_SRC}"
         resolve_battery_settings "$4"
         echo "V=${INPUT_MAH}/${CONSERVATION_DEFAULT}/${BOARD_VARIANT}"
@@ -266,6 +266,7 @@ run_rbs() {  # mah-flag mode-flag board-flag conf-file
         # set -u would abort here if the function left it unset (the
         # summary at the end of install.sh reads it)
         echo "M=${CHARGE_MODE_DEFAULT}"
+        echo "SOC=${SOC_SOURCE}|${SOC_SRC}"
     ) 2>&1
 }
 
@@ -294,6 +295,20 @@ out=$(run_rbs "" "" "" "${CONF}")
 assert "14 old conf, no board key: board defaults, rest kept" 'printf "%s" "'"$out"'" | grep -q "V=12000/0/x120x"'
 assert "14 old conf: board source is default" 'printf "%s" "'"$out"'" | grep -q "|default$"'
 
+# soc_source resolution (voltage OCV model; precedence flag > conf > default)
+printf 'options x120x battery_mah=20000 conservation_mode_default=0 board=x120x\n' > "${CONF}"
+out=$(run_rbs "" "" "" "${CONF}")
+assert "14 soc_source: default voltage when absent" 'printf "%s" "'"$out"'" | grep -q "SOC=voltage|default"'
+out=$(run_rbs "" "" "" "${CONF}" "gauge")
+assert "14 soc_source: flag overrides"              'printf "%s" "'"$out"'" | grep -q "SOC=gauge|from --soc-source"'
+printf 'options x120x battery_mah=20000 soc_source=gauge board=x120x\n' > "${CONF}"
+out=$(run_rbs "" "" "" "${CONF}")
+assert "14 soc_source: kept from existing conf"     'printf "%s" "'"$out"'" | grep -q "SOC=gauge|kept from existing"'
+printf 'options x120x battery_mah=20000 soc_source=bogus board=x120x\n' > "${CONF}"
+out=$(run_rbs "" "" "" "${CONF}")
+assert "14 soc_source: invalid falls back to voltage" 'printf "%s" "'"$out"'" | grep -q "SOC=voltage|default"'
+assert "14 soc_source: invalid warns naming value"    'printf "%s" "'"$out"'" | grep -q "warn:.*soc_source=.bogus."'
+
 # The install script runs under set -euo pipefail, so the function
 # must return 0 on every path — a trailing `[ cond ] && x` made it
 # return 1 in Fast mode and killed the installer silently after
@@ -304,7 +319,7 @@ run_rbs_set_e() {  # conf-file
     (
         set -euo pipefail
         info() { :; }; warn() { :; }
-        OPT_MAH=""; OPT_CHARGE_MODE=""; OPT_BOARD=""
+        OPT_MAH=""; OPT_CHARGE_MODE=""; OPT_BOARD=""; OPT_SOC_SOURCE=""
         eval "${RBS_SRC}"
         resolve_battery_settings "$1"
         echo "survived"

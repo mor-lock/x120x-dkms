@@ -366,6 +366,13 @@ struct x120x_ocv_point {
 #define X120X_SURFACE_MAX_UV      120000  /* cap on the initial overpotential, µV */
 #define X120X_SURFACE_DECAY_SHIFT     10  /* τ ≈ 2^10 polls × 0.5 s ≈ 8.5 min     */
 
+/*
+ * SoC-rate power estimate (voltage model only).  Power = E_full × dSoC/dt
+ * sampled over this window; the window is the filter, plus one light EMA pole.
+ * The gauge path keeps its own event-driven estimator (see the poll loop).
+ */
+#define X120X_RATE_WINDOW_US   (20LL * USEC_PER_SEC)
+
 static const struct x120x_ocv_point x120x_ocv_discharge[] = {
 	{ 3300000,   0 * 256 },
 	{ 3580000,   7 * 256 },
@@ -760,6 +767,7 @@ static void x120x_poll_work(struct work_struct *work)
 		container_of(work, struct x120x_chip, work.work);
 	unsigned int vcell_raw, soc_raw;
 	int new_uv, new_pct, new_256, new_ac, ret;
+	int rate_256 = 0;	/* SoC×256 feeding the power-rate estimate */
 	bool new_present;
 	bool bat_changed = false, ac_changed = false, chrg_changed = false;
 	/* Snapshots of shared chip state taken under the lock and used
@@ -883,10 +891,14 @@ static void x120x_poll_work(struct work_struct *work)
 				chip->surface_uv = 0;
 		}
 
+		/* Power rate follows the raw voltage SoC — no re-anchor offset. */
+		rate_256 = clamp(curve_256, 0, 100 * 256);
+
 		new_pct = clamp(new_256 >> 8, 0, 100);
 	} else {
 		new_pct = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
 		new_256 = MAX17043_SOC_256(soc_raw); /* raw, unclamped for rate */
+		rate_256 = new_256;
 	}
 	mutex_lock(&chip->lock);
 	chip->i2c_errors  = 0;
@@ -925,9 +937,12 @@ static void x120x_poll_work(struct work_struct *work)
 		s64 now_us  = ktime_to_us(now);
 
 		/*
-		 * Event-driven rate estimation.
+		 * Charge/discharge power = dE/dt.  Two estimators branch on
+		 * soc_source below: a simple windowed one for the smooth
+		 * voltage SoC, then the event-driven one for the gauge.
 		 *
-		 * We only compute a new rate when the SOC register changes.
+		 * Gauge (event-driven): recompute only when the SOC register
+		 * changes.
 		 * Changes less than 10 s apart are discarded — they indicate
 		 * noise or a rapid double-update from the chip rather than a
 		 * genuine new measurement.
@@ -935,7 +950,34 @@ static void x120x_poll_work(struct work_struct *work)
 		 * rate (µW) = ΔE (µWh) / Δt (µs) × 3600 × 1e6
 		 * Sign: negative = discharging, positive = charging.
 		 */
-		if (new_256 != old_256) {
+		if (chip->soc_src == X120X_SOC_SRC_VOLTAGE) {
+			/*
+			 * Voltage model: power = E_full x dSoC/dt over a fixed
+			 * window.  The window is the filter; one light EMA pole
+			 * on top, no heavy smoothing.  rate_256 is the raw
+			 * voltage SoC, so the post-transition re-anchor decay
+			 * never leaks into the power reading.  A floating pack
+			 * gives de ~ 0 -> rate ~ 0 with no special case.
+			 */
+			s64 e_rate = div_s64(e_full * rate_256, 25600);
+
+			if (chip->rate_prev_time_us == 0) {
+				chip->rate_prev_energy_uwh = e_rate;
+				chip->rate_prev_time_us    = now_us;
+			} else if (now_us - chip->rate_prev_time_us >=
+				   X120X_RATE_WINDOW_US) {
+				s64 rdt  = now_us - chip->rate_prev_time_us;
+				s64 rde  = e_rate - chip->rate_prev_energy_uwh;
+				int inst = (int)div_s64(
+					rde * 3600LL * USEC_PER_SEC, rdt);
+
+				/* light one-pole EMA, alpha = 1/2 */
+				chip->energy_rate_uw =
+					(chip->energy_rate_uw + inst) / 2;
+				chip->rate_prev_energy_uwh = e_rate;
+				chip->rate_prev_time_us    = now_us;
+			}
+		} else if (new_256 != old_256) {
 			s64 dt = now_us - chip->rate_prev_time_us;
 
 			if (chip->rate_prev_time_us != 0 &&

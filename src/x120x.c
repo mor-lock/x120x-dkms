@@ -349,6 +349,23 @@ struct x120x_ocv_point {
  * (>92 %) is the least certain (surface-charge transient) — refine per pack
  * against an Anker-integrated full discharge.
  */
+/*
+ * RC surface-charge compensation (applied in the poll loop).  On a
+ * charge→discharge transition the terminal voltage sits above the rested OCV
+ * by the surface overpotential (~V_start − OCV_full); we subtract a decaying
+ * estimate of it so SoC falls at the true energy rate through the transient
+ * instead of chasing the fast surface-charge voltage sag.  Because the initial
+ * amount is *measured* from the starting voltage, it self-adjusts to how
+ * charged the pack was at grid-loss.
+ *
+ * PARAMETERS BELOW ARE PRE-CALIBRATION ESTIMATES.  OCV_full, the decay τ, and
+ * the rested top of the discharge curve should be refined from a measured
+ * discharge+recharge (coulomb-counted) characterisation.
+ */
+#define X120X_OCV_FULL_UV        4160000  /* rested full-charge OCV, µV (est.)    */
+#define X120X_SURFACE_MAX_UV      120000  /* cap on the initial overpotential, µV */
+#define X120X_SURFACE_DECAY_SHIFT     10  /* τ ≈ 2^10 polls × 0.5 s ≈ 8.5 min     */
+
 static const struct x120x_ocv_point x120x_ocv_discharge[] = {
 	{ 3300000,   0 * 256 },
 	{ 3580000,   7 * 256 },
@@ -364,7 +381,7 @@ static const struct x120x_ocv_point x120x_ocv_discharge[] = {
 	{ 4055000,  87 * 256 },
 	{ 4075000,  92 * 256 },
 	{ 4120000,  96 * 256 },
-	{ 4200000, 100 * 256 },
+	{ X120X_OCV_FULL_UV, 100 * 256 },  /* rested full; surface (4.16–4.2 V+) via RC comp */
 };
 
 /*
@@ -512,6 +529,7 @@ struct x120x_chip {
 	enum x120x_soc_source	 soc_src;
 	int			 ocv_ema_uv;
 	int			 soc_offset;
+	int			 surface_uv;	/* RC surface-charge overpotential (µV), decays */
 	bool			 prev_charging;
 	bool			 model_primed;
 
@@ -807,7 +825,8 @@ static void x120x_poll_work(struct work_struct *work)
 		 * hysteresis block updates it later); a one-poll lag is fine.
 		 */
 		bool charging = (new_ac != 0) && !chip->charger_inhibited;
-		int  curve_256;
+		bool transition;
+		int  curve_256, v_eff;
 
 		/* Warm the voltage EMA every poll (α = 1/8), both phases. */
 		if (chip->ocv_ema_uv == 0)
@@ -815,18 +834,36 @@ static void x120x_poll_work(struct work_struct *work)
 		else
 			chip->ocv_ema_uv += (new_uv - chip->ocv_ema_uv) >> 3;
 
-		curve_256 = x120x_voltage_soc256(chip->ocv_ema_uv, charging);
+		transition = chip->model_primed && (charging != chip->prev_charging);
+
+		/*
+		 * RC surface-charge compensation.  At a charge→discharge
+		 * transition, seed the surface overpotential = how far the
+		 * terminal voltage sits above the rested full OCV.  It then
+		 * decays (τ ≈ 8.5 min); subtracting it on discharge makes SoC
+		 * fall at the true energy rate through the surface transient
+		 * rather than chasing the fast voltage sag.  Cleared on the
+		 * reverse transition and at prime.
+		 */
+		if (transition && !charging)
+			chip->surface_uv = clamp(chip->ocv_ema_uv - X120X_OCV_FULL_UV,
+						 0, X120X_SURFACE_MAX_UV);
+		else if (!chip->model_primed || (transition && charging))
+			chip->surface_uv = 0;
+
+		/* On discharge/rest, look up the surface-corrected voltage. */
+		v_eff = chip->ocv_ema_uv - (charging ? 0 : chip->surface_uv);
+		curve_256 = x120x_voltage_soc256(v_eff, charging);
 
 		if (!chip->model_primed) {
 			chip->soc_offset    = 0;
 			chip->prev_charging = charging;
 			chip->model_primed  = true;
-		} else if (charging != chip->prev_charging) {
+		} else if (transition) {
 			/*
-			 * charge↔discharge/rest transition.  Re-anchor: the new
-			 * curve plus this offset equals the last reported SoC,
-			 * so the reading is continuous (no jump).  capacity_256
-			 * still holds the previous poll's reported value here.
+			 * Re-anchor: the new curve plus this offset equals the
+			 * last reported SoC, so the reading is continuous (no
+			 * jump).  capacity_256 still holds the previous value.
 			 */
 			chip->soc_offset    = chip->capacity_256 - curve_256;
 			chip->prev_charging = charging;
@@ -838,6 +875,13 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->soc_offset -= chip->soc_offset >> 6;
 		if (chip->soc_offset < 64 && chip->soc_offset > -64)
 			chip->soc_offset = 0;
+
+		/* Decay the surface overpotential toward 0 (τ ≈ 8.5 min). */
+		if (chip->surface_uv) {
+			chip->surface_uv -= chip->surface_uv >> X120X_SURFACE_DECAY_SHIFT;
+			if (chip->surface_uv < 256)
+				chip->surface_uv = 0;
+		}
 
 		new_pct = clamp(new_256 >> 8, 0, 100);
 	} else {

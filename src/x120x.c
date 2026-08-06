@@ -368,10 +368,13 @@ struct x120x_ocv_point {
 
 /*
  * SoC-rate power estimate (voltage model only).  Power = E_full × dSoC/dt
- * sampled over this window; the window is the filter, plus one light EMA pole.
- * The gauge path keeps its own event-driven estimator (see the poll loop).
+ * sampled over this window, then one light EMA pole (α = 1/2).  The window
+ * sets both the update cadence and the raw quantisation ripple (≈ t_LSB /
+ * window, t_LSB ≈ 10.4/P s); the EMA smooths it.  10 s settles in ~30-40 s
+ * with ~10 % ripple at a few watts — shorten for snappier, lengthen for
+ * quieter.  The gauge path keeps its own event-driven estimator.
  */
-#define X120X_RATE_WINDOW_US   (20LL * USEC_PER_SEC)
+#define X120X_RATE_WINDOW_US   (10LL * USEC_PER_SEC)
 
 static const struct x120x_ocv_point x120x_ocv_discharge[] = {
 	{ 3300000,   0 * 256 },

@@ -768,6 +768,7 @@ static void x120x_poll_work(struct work_struct *work)
 	unsigned int vcell_raw, soc_raw;
 	int new_uv, new_pct, new_256, new_ac, ret;
 	int rate_256 = 0;	/* SoC×256 feeding the power-rate estimate */
+	bool phase_changed = false;	/* charge↔discharge this poll (rate reset) */
 	bool new_present;
 	bool bat_changed = false, ac_changed = false, chrg_changed = false;
 	/* Snapshots of shared chip state taken under the lock and used
@@ -875,6 +876,7 @@ static void x120x_poll_work(struct work_struct *work)
 			 */
 			chip->soc_offset    = chip->capacity_256 - curve_256;
 			chip->prev_charging = charging;
+			phase_changed       = true;
 		}
 
 		new_256 = clamp(curve_256 + chip->soc_offset, 0, 100 * 256);
@@ -961,7 +963,18 @@ static void x120x_poll_work(struct work_struct *work)
 			 */
 			s64 e_rate = div_s64(e_full * rate_256, 25600);
 
-			if (chip->rate_prev_time_us == 0) {
+			if (phase_changed) {
+				/*
+				 * charge<->discharge: restart the window so the
+				 * curve-switch step is not integrated as energy.
+				 * energy_rate_uw is left as-is; the EMA eases it
+				 * from the old rate through zero to the new one
+				 * over the next few windows -- a smooth sign flip,
+				 * no step spike, no instant flip.
+				 */
+				chip->rate_prev_energy_uwh = e_rate;
+				chip->rate_prev_time_us    = now_us;
+			} else if (chip->rate_prev_time_us == 0) {
 				chip->rate_prev_energy_uwh = e_rate;
 				chip->rate_prev_time_us    = now_us;
 			} else if (now_us - chip->rate_prev_time_us >=

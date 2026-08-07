@@ -342,32 +342,16 @@ struct x120x_ocv_point {
 };
 
 /*
- * Discharge curve.  Empirically measured on this pack (Molicel INR21700-P50B
- * ×4) from 19 discharge events over 216 days — median terminal voltage at each
- * SoC, consistent to 2–6 mV.  Under the light load of the low-impedance
- * parallel bank the terminal voltage tracks OCV to within a few mV.  Used as a
- * static lookup, which has none of the fuel gauge's stuck-then-jump dynamic
- * over-read (validated: at 4.066 V this gives 90.6 % vs Anker-measured ~90 %,
- * where the gauge read 86.6 %).  Endpoints extrapolated; the near-full region
- * (>92 %) is the least certain (surface-charge transient) — refine per pack
- * against an Anker-integrated full discharge.
+ * Full-charge anchor.  X120X_OCV_FULL_UV is the terminal voltage of a freshly
+ * charged pack and defines 100% in the discharge table below.  We anchor 100%
+ * at the *charged* 4.20 V, not the rested ~4.16 V, on purpose: the discharge
+ * OCV table is built from full-start discharges, so the surface-charge
+ * relaxation at the top (the fast 4.20 -> 4.13 V sag in the first minutes off
+ * the charger) is already baked into the measured 96-100% shape.  That makes a
+ * separate RC surface-charge compensation redundant -- the curve carries the
+ * transient itself -- so there isn't one.
  */
-/*
- * RC surface-charge compensation (applied in the poll loop).  On a
- * charge→discharge transition the terminal voltage sits above the rested OCV
- * by the surface overpotential (~V_start − OCV_full); we subtract a decaying
- * estimate of it so SoC falls at the true energy rate through the transient
- * instead of chasing the fast surface-charge voltage sag.  Because the initial
- * amount is *measured* from the starting voltage, it self-adjusts to how
- * charged the pack was at grid-loss.
- *
- * PARAMETERS BELOW ARE PRE-CALIBRATION ESTIMATES.  OCV_full, the decay τ, and
- * the rested top of the discharge curve should be refined from a measured
- * discharge+recharge (coulomb-counted) characterisation.
- */
-#define X120X_OCV_FULL_UV        4160000  /* rested full-charge OCV, µV (est.)    */
-#define X120X_SURFACE_MAX_UV      120000  /* cap on the initial overpotential, µV */
-#define X120X_SURFACE_DECAY_SHIFT     10  /* τ ≈ 2^10 polls × 0.5 s ≈ 8.5 min     */
+#define X120X_OCV_FULL_UV        4200000  /* full-charge terminal, µV = 100%      */
 
 /*
  * power_now (voltage model).  The sign/regime is deterministic from the GPIOs
@@ -404,36 +388,73 @@ struct x120x_ocv_point {
  * (78.5% of rated-to-2.5 V for the P50B pack); refine per pack if desired.
  */
 #define X120X_NOMINAL_MV          3600   /* datasheet nominal cell voltage, mV */
-#define X120X_USABLE_PERMILLE      785   /* usable (4.16→3.2 V) ÷ rated, ×1000  */
+#define X120X_USABLE_PERMILLE      785   /* usable (4.20→3.2 V) ÷ rated, ×1000  */
 
 /*
- * Energy-true discharge OCV curve: SoC is remaining USABLE energy, so under a
- * constant drain SoC falls linearly in time.  0% = 3.20 V (well clear of the
- * 2.5 V damage floor; see empty-voltage rationale).  The 23–100% band is the
- * coulomb-anchored CHARGE curve minus a SoC-dependent overpotential (~95 mV in
- * the CC bulk, tapering to ~47 mV at the CV top and ~85 mV near 23%) — a
- * constant offset compressed the top too much, reading SoC ~2x fast there.
- * The tail (0–23%, below 3.65 V) takes its SHAPE from the March-5 deep
- * discharge (a P50B chemistry property that transfers between packs) rescaled
- * to the coulomb magnitude.  All still pending refinement from a full
- * coulomb-referenced discharge (Phase B trace + its recharge).
+ * Energy-true discharge OCV curve.  SoC is remaining USABLE energy, so under a
+ * constant drain SoC falls linearly in time.  100% = 4.20 V (full-charge
+ * terminal; the surface-charge sag is baked into the 96-100% shape -- see the
+ * full-charge anchor note above), 0% = 3.20 V (clear of the 2.5 V damage floor).
+ * The 24-100% band is the mean of two agreeing full-start discharges of THIS
+ * pack (the 9.7 h and 11.1 h runs, overlapping to ~1%); the 0-24% tail takes
+ * its SHAPE from the March-5 deep discharge (a P50B chemistry property that
+ * transfers between packs).  Monotonic (isotonic/PAVA fit -- a real OCV lookup
+ * must map one voltage to one SoC; measured upticks are load lulls, pooled
+ * away).  The 24% tie-point (hence the tail vertical scale) is anchored via
+ * March-5 energy share pending the recharge coulomb count.
  */
 static const struct x120x_ocv_point x120x_ocv_discharge[] = {
-	{ 3200000,   0 * 256 },  /* 0% cutoff; below here = damage risk         */
-	{ 3300000,        997 }, /* ~3.9%  tail: March-5 shape, coulomb-scaled  */
-	{ 3400000,       2143 }, /* ~8.4%                                       */
-	{ 3500000,       3559 }, /* ~13.9%                                      */
-	{ 3580000,       4969 }, /* ~19.4%                                      */
-	{ 3646000,  23 * 256 },  /* charge curve − SoC-dep overpotential (85mV) */
-	{ 3729000,  30 * 256 },  /* − 95 mV (CC-bulk overpotential)             */
-	{ 3794000,  40 * 256 },  /* − 95 mV                                     */
-	{ 3851000,  50 * 256 },  /* − 95 mV                                     */
-	{ 3921000,  60 * 256 },  /* − 95 mV                                     */
-	{ 3994000,  70 * 256 },  /* − 95 mV                                     */
-	{ 4042000,  80 * 256 },  /* − 88 mV (overpotential tapering)            */
-	{ 4085000,  90 * 256 },  /* − 75 mV                                     */
-	{ 4128000,  95 * 256 },  /* − 62 mV                                     */
-	{ X120X_OCV_FULL_UV, 100 * 256 },  /* − 47 mV (CV); surface via RC comp  */
+	{ 3200000,   0 * 256 },  /* 0% cutoff; below here = damage risk    */
+	{ 3232500,   2 * 256 },  /* --- 0-24% tail: March-5 shape -------- */
+	{ 3262500,   4 * 256 },
+	{ 3297500,   6 * 256 },
+	{ 3330000,   8 * 256 },
+	{ 3355000,  10 * 256 },
+	{ 3375000,  12 * 256 },
+	{ 3410000,  14 * 256 },
+	{ 3430000,  16 * 256 },
+	{ 3452500,  18 * 256 },
+	{ 3470000,  20 * 256 },
+	{ 3500000,  22 * 256 },
+	{ 3521651,  24 * 256 },  /* tie-point (coulomb-pending)            */
+	{ 3542048,  26 * 256 },  /* --- 24-100%: mean of 2 full-start runs */
+	{ 3563002,  28 * 256 },
+	{ 3580919,  30 * 256 },
+	{ 3606075,  32 * 256 },
+	{ 3630807,  34 * 256 },
+	{ 3651668,  36 * 256 },
+	{ 3678209,  38 * 256 },
+	{ 3701820,  40 * 256 },
+	{ 3725742,  42 * 256 },
+	{ 3748828,  44 * 256 },
+	{ 3770001,  46 * 256 },
+	{ 3789417,  48 * 256 },
+	{ 3804618,  50 * 256 },
+	{ 3818138,  52 * 256 },
+	{ 3829899,  54 * 256 },
+	{ 3840645,  56 * 256 },
+	{ 3851856,  58 * 256 },
+	{ 3860319,  60 * 256 },
+	{ 3874552,  62 * 256 },
+	{ 3899947,  64 * 256 },
+	{ 3922527,  66 * 256 },
+	{ 3947732,  68 * 256 },
+	{ 3970606,  70 * 256 },
+	{ 3990362,  72 * 256 },
+	{ 4005481,  74 * 256 },
+	{ 4019153,  76 * 256 },
+	{ 4031085,  78 * 256 },
+	{ 4038973,  80 * 256 },
+	{ 4045491,  82 * 256 },
+	{ 4050298,  84 * 256 },
+	{ 4054484,  86 * 256 },
+	{ 4059067,  88 * 256 },
+	{ 4064938,  90 * 256 },
+	{ 4072612,  92 * 256 },
+	{ 4085975,  94 * 256 },
+	{ 4104510,  96 * 256 },
+	{ 4132594,  98 * 256 },
+	{ X120X_OCV_FULL_UV, 100 * 256 },  /* 4.20 V, surface baked in */
 };
 
 /*
@@ -583,7 +604,6 @@ struct x120x_chip {
 	enum x120x_soc_source	 soc_src;
 	int			 ocv_ema_uv;
 	int			 soc_offset;
-	int			 surface_uv;	/* RC surface-charge overpotential (µV), decays */
 	bool			 prev_charging;
 	bool			 model_primed;
 	/* power_now (voltage model): GPIO-regime state machine + slow rate */
@@ -888,7 +908,7 @@ static void x120x_poll_work(struct work_struct *work)
 		 */
 		bool charging = (new_ac != 0) && !chip->charger_inhibited;
 		bool transition;
-		int  curve_256, v_eff;
+		int  curve_256;
 
 		/* Warm the voltage EMA every poll (α = 1/8), both phases. */
 		if (chip->ocv_ema_uv == 0)
@@ -898,24 +918,7 @@ static void x120x_poll_work(struct work_struct *work)
 
 		transition = chip->model_primed && (charging != chip->prev_charging);
 
-		/*
-		 * RC surface-charge compensation.  At a charge→discharge
-		 * transition, seed the surface overpotential = how far the
-		 * terminal voltage sits above the rested full OCV.  It then
-		 * decays (τ ≈ 8.5 min); subtracting it on discharge makes SoC
-		 * fall at the true energy rate through the surface transient
-		 * rather than chasing the fast voltage sag.  Cleared on the
-		 * reverse transition and at prime.
-		 */
-		if (transition && !charging)
-			chip->surface_uv = clamp(chip->ocv_ema_uv - X120X_OCV_FULL_UV,
-						 0, X120X_SURFACE_MAX_UV);
-		else if (!chip->model_primed || (transition && charging))
-			chip->surface_uv = 0;
-
-		/* On discharge/rest, look up the surface-corrected voltage. */
-		v_eff = chip->ocv_ema_uv - (charging ? 0 : chip->surface_uv);
-		curve_256 = x120x_voltage_soc256(v_eff, charging);
+		curve_256 = x120x_voltage_soc256(chip->ocv_ema_uv, charging);
 
 		if (!chip->model_primed) {
 			chip->soc_offset    = 0;
@@ -937,13 +940,6 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->soc_offset -= chip->soc_offset >> 6;
 		if (chip->soc_offset < 64 && chip->soc_offset > -64)
 			chip->soc_offset = 0;
-
-		/* Decay the surface overpotential toward 0 (τ ≈ 8.5 min). */
-		if (chip->surface_uv) {
-			chip->surface_uv -= chip->surface_uv >> X120X_SURFACE_DECAY_SHIFT;
-			if (chip->surface_uv < 256)
-				chip->surface_uv = 0;
-		}
 
 		new_pct = clamp(new_256 >> 8, 0, 100);
 	} else {

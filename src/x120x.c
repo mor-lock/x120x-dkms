@@ -583,6 +583,7 @@ struct x120x_chip {
 	int			 learned_drain_uw;	/* last stable DRAIN power (µW)   */
 	enum x120x_regime	 prev_regime;		/* regime last poll              */
 	bool			 power_primed;		/* power estimator seeded        */
+	int			 ir_power_uw;		/* slow-smoothed power for IR comp */
 
 	/* Energy tracking for UPower / desktop environment integration */
 	s64			 energy_now_uwh;	 /* µWh = energy_full × soc%/100 */
@@ -892,7 +893,15 @@ static void x120x_poll_work(struct work_struct *work)
 		 * I = power_now/V (signed: charge +, drain -).  Uses last poll's
 		 * power_now; clamped so a bad sample cannot skew SoC.
 		 */
-		ir_uv = clamp((int)div_s64((s64)chip->energy_rate_uw * X120X_R_UOHM,
+		/*
+		 * Slow-smooth the power used for IR (τ ≈ 4 min, α = 1/512): the
+		 * true current changes slowly, but the live power_now is jumpy
+		 * (windowed dSoC/dt on quantised voltage) and feeding it here
+		 * injects SoC noise -- ~doubled the step noise in simulation.
+		 * Reported power_now (energy_rate_uw) stays live for the ABI.
+		 */
+		chip->ir_power_uw += (chip->energy_rate_uw - chip->ir_power_uw) >> 9;
+		ir_uv = clamp((int)div_s64((s64)chip->ir_power_uw * X120X_R_UOHM,
 				   chip->ocv_ema_uv), -150000, 150000);
 		curve_256 = x120x_voltage_soc256(chip->ocv_ema_uv - ir_uv, charging);
 

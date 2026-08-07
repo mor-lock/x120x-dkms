@@ -333,6 +333,9 @@ MODULE_PARM_DESC(soc_source,
  * ---------------------------------------------------------------------- */
 enum x120x_soc_source { X120X_SOC_SRC_VOLTAGE, X120X_SOC_SRC_GAUGE };
 
+/* Battery power regime, decided from the grid + charger GPIOs (not from SoC). */
+enum x120x_regime { X120X_REGIME_CHARGE, X120X_REGIME_FLOAT, X120X_REGIME_DRAIN };
+
 struct x120x_ocv_point {
 	int uv;		/* cell voltage in µV      */
 	int soc256;	/* SoC × 256 (0 .. 25600)  */
@@ -367,14 +370,24 @@ struct x120x_ocv_point {
 #define X120X_SURFACE_DECAY_SHIFT     10  /* τ ≈ 2^10 polls × 0.5 s ≈ 8.5 min     */
 
 /*
- * SoC-rate power estimate (voltage model only).  Power = E_full × dSoC/dt
- * sampled over this window, then one light EMA pole (α = 1/2).  The window
- * sets both the update cadence and the raw quantisation ripple (≈ t_LSB /
- * window, t_LSB ≈ 10.4/P s); the EMA smooths it.  10 s settles in ~30-40 s
- * with ~10 % ripple at a few watts — shorten for snappier, lengthen for
- * quieter.  The gauge path keeps its own event-driven estimator.
+ * power_now (voltage model).  The sign/regime is deterministic from the GPIOs
+ * (grid + charger), so we never infer it from noisy SoC:
+ *   grid off              -> DRAIN   (magnitude estimated live)
+ *   grid on,  charging     -> CHARGE  (magnitude estimated live)
+ *   grid on,  not charging -> FLOAT   (~ -13 mW, seed-only: unmeasurable live)
+ * On a regime edge we seed instantly with the best prior (last value learned
+ * for that regime on this device, else the hardcoded default above), then
+ * crossfade to the live estimate.  The live magnitude is E_full x dSoC/dt from
+ * a HEAVILY dither-smoothed voltage (X120X_OCV_SLOW_SHIFT) differenced over a
+ * multi-minute window (X120X_POWER_WINDOW_US) — short windows on 1.25 mV-
+ * quantised voltage are pure noise (10 s dSoC carries no signal at a few W).
+ * The gauge path keeps its own event-driven estimator.
  */
-#define X120X_RATE_WINDOW_US   (10LL * USEC_PER_SEC)
+#define X120X_POWER_WINDOW_US  (120LL * USEC_PER_SEC) /* SoC-rate window, 2 min */
+#define X120X_OCV_SLOW_SHIFT     6       /* a=1/64 dither-smoothing EMA (power) */
+#define X120X_SEED_CHARGE_UW  11000000   /* +11 W: CC-bulk charge into pack     */
+#define X120X_SEED_DRAIN_UW   (-5000000) /* -5 W: typical Pi load on battery    */
+#define X120X_SEED_FLOAT_UW     (-13000) /* -13 mW: standby sawtooth (seed-only)*/
 
 /*
  * Energy scale.  The pack's rated capacity (battery_mah) is measured by the
@@ -396,29 +409,31 @@ struct x120x_ocv_point {
 /*
  * Energy-true discharge OCV curve: SoC is remaining USABLE energy, so under a
  * constant drain SoC falls linearly in time.  0% = 3.20 V (well clear of the
- * 2.5 V damage floor; see empty-voltage rationale).  Mid-band (30–70%) is
- * coulomb-anchored to this pack (recharge integral minus a ~45 mV charge
- * overpotential); the top (70–100%) is the physical NMC rested shape (the CV
- * taper makes voltage→SoC ill-conditioned there); the tail (0–23%, below
- * 3.69 V) takes its SHAPE from the March-5 deep discharge (a chemistry
- * property that transfers between P50B packs) rescaled to the coulomb-anchored
- * magnitude — refine further from a full coulomb-referenced discharge.
+ * 2.5 V damage floor; see empty-voltage rationale).  The 23–100% band is the
+ * coulomb-anchored CHARGE curve minus a SoC-dependent overpotential (~95 mV in
+ * the CC bulk, tapering to ~47 mV at the CV top and ~85 mV near 23%) — a
+ * constant offset compressed the top too much, reading SoC ~2x fast there.
+ * The tail (0–23%, below 3.65 V) takes its SHAPE from the March-5 deep
+ * discharge (a P50B chemistry property that transfers between packs) rescaled
+ * to the coulomb magnitude.  All still pending refinement from a full
+ * coulomb-referenced discharge (Phase B trace + its recharge).
  */
 static const struct x120x_ocv_point x120x_ocv_discharge[] = {
 	{ 3200000,   0 * 256 },  /* 0% cutoff; below here = damage risk         */
-	{ 3300000,        896 }, /* ~3.5%  tail: March-5 shape, coulomb-scaled  */
-	{ 3400000,       1920 }, /* ~7.5%                                       */
-	{ 3500000,       3200 }, /* ~12.5%                                      */
-	{ 3580000,       4454 }, /* ~17.4%                                      */
-	{ 3660000,       5427 }, /* ~21.2%                                      */
-	{ 3780000,  30 * 256 },  /* coulomb-anchored (this pack)                */
-	{ 3845000,  40 * 256 },  /* coulomb-anchored                            */
-	{ 3900000,  50 * 256 },  /* coulomb-anchored                            */
-	{ 3970000,  60 * 256 },  /* coulomb-anchored                            */
-	{ 4040000,  70 * 256 },  /* coulomb-anchored                            */
-	{ 4080000,  80 * 256 },  /* NMC rested shape (CV taper ill-conditioned) */
-	{ 4110000,  90 * 256 },  /* NMC rested shape                            */
-	{ X120X_OCV_FULL_UV, 100 * 256 },  /* rested full; surface via RC comp   */
+	{ 3300000,        997 }, /* ~3.9%  tail: March-5 shape, coulomb-scaled  */
+	{ 3400000,       2143 }, /* ~8.4%                                       */
+	{ 3500000,       3559 }, /* ~13.9%                                      */
+	{ 3580000,       4969 }, /* ~19.4%                                      */
+	{ 3646000,  23 * 256 },  /* charge curve − SoC-dep overpotential (85mV) */
+	{ 3729000,  30 * 256 },  /* − 95 mV (CC-bulk overpotential)             */
+	{ 3794000,  40 * 256 },  /* − 95 mV                                     */
+	{ 3851000,  50 * 256 },  /* − 95 mV                                     */
+	{ 3921000,  60 * 256 },  /* − 95 mV                                     */
+	{ 3994000,  70 * 256 },  /* − 95 mV                                     */
+	{ 4042000,  80 * 256 },  /* − 88 mV (overpotential tapering)            */
+	{ 4085000,  90 * 256 },  /* − 75 mV                                     */
+	{ 4128000,  95 * 256 },  /* − 62 mV                                     */
+	{ X120X_OCV_FULL_UV, 100 * 256 },  /* − 47 mV (CV); surface via RC comp  */
 };
 
 /*
@@ -571,6 +586,14 @@ struct x120x_chip {
 	int			 surface_uv;	/* RC surface-charge overpotential (µV), decays */
 	bool			 prev_charging;
 	bool			 model_primed;
+	/* power_now (voltage model): GPIO-regime state machine + slow rate */
+	int			 ocv_slow_uv;	 /* heavily-smoothed V for power  */
+	int			 rate_prev_soc256;	/* SoC×256 at power-window start */
+	int			 rate_windows;		/* windows since regime edge     */
+	int			 learned_charge_uw;	/* last stable CHARGE power (µW)  */
+	int			 learned_drain_uw;	/* last stable DRAIN power (µW)   */
+	enum x120x_regime	 prev_regime;		/* regime last poll              */
+	bool			 power_primed;		/* power estimator seeded        */
 
 	/* Energy tracking for UPower / desktop environment integration */
 	s64			 energy_now_uwh;	 /* µWh = energy_full × soc%/100 */
@@ -799,8 +822,6 @@ static void x120x_poll_work(struct work_struct *work)
 		container_of(work, struct x120x_chip, work.work);
 	unsigned int vcell_raw, soc_raw;
 	int new_uv, new_pct, new_256, new_ac, ret;
-	int rate_256 = 0;	/* SoC×256 feeding the power-rate estimate */
-	bool phase_changed = false;	/* charge↔discharge this poll (rate reset) */
 	bool new_present;
 	bool bat_changed = false, ac_changed = false, chrg_changed = false;
 	/* Snapshots of shared chip state taken under the lock and used
@@ -908,7 +929,6 @@ static void x120x_poll_work(struct work_struct *work)
 			 */
 			chip->soc_offset    = chip->capacity_256 - curve_256;
 			chip->prev_charging = charging;
-			phase_changed       = true;
 		}
 
 		new_256 = clamp(curve_256 + chip->soc_offset, 0, 100 * 256);
@@ -925,14 +945,10 @@ static void x120x_poll_work(struct work_struct *work)
 				chip->surface_uv = 0;
 		}
 
-		/* Power rate follows the raw voltage SoC — no re-anchor offset. */
-		rate_256 = clamp(curve_256, 0, 100 * 256);
-
 		new_pct = clamp(new_256 >> 8, 0, 100);
 	} else {
 		new_pct = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
 		new_256 = MAX17043_SOC_256(soc_raw); /* raw, unclamped for rate */
-		rate_256 = new_256;
 	}
 	mutex_lock(&chip->lock);
 	chip->i2c_errors  = 0;
@@ -994,41 +1010,77 @@ static void x120x_poll_work(struct work_struct *work)
 		 */
 		if (chip->soc_src == X120X_SOC_SRC_VOLTAGE) {
 			/*
-			 * Voltage model: power = E_full x dSoC/dt over a fixed
-			 * window.  The window is the filter; one light EMA pole
-			 * on top, no heavy smoothing.  rate_256 is the raw
-			 * voltage SoC, so the post-transition re-anchor decay
-			 * never leaks into the power reading.  A floating pack
-			 * gives de ~ 0 -> rate ~ 0 with no special case.
+			 * GPIO-regime power estimator (see the header comment on
+			 * the seed constants).  Regime comes from grid + charger,
+			 * not from SoC; the magnitude is seeded on the edge then
+			 * crossfaded to a slow, dither-smoothed dSoC/dt.  FLOAT is
+			 * seed-only (its ~0.4%/day drift is unmeasurable live).
 			 */
-			s64 e_rate = div_s64(e_full * rate_256, 25600);
+			bool charging = (new_ac != 0) && !chip->charger_inhibited;
+			enum x120x_regime regime;
+			int soc_slow;
 
-			if (phase_changed) {
-				/*
-				 * charge<->discharge: restart the window so the
-				 * curve-switch step is not integrated as energy.
-				 * energy_rate_uw is left as-is; the EMA eases it
-				 * from the old rate through zero to the new one
-				 * over the next few windows -- a smooth sign flip,
-				 * no step spike, no instant flip.
-				 */
-				chip->rate_prev_energy_uwh = e_rate;
-				chip->rate_prev_time_us    = now_us;
-			} else if (chip->rate_prev_time_us == 0) {
-				chip->rate_prev_energy_uwh = e_rate;
-				chip->rate_prev_time_us    = now_us;
+			if (!new_ac)
+				regime = X120X_REGIME_DRAIN;
+			else if (charging)
+				regime = X120X_REGIME_CHARGE;
+			else
+				regime = X120X_REGIME_FLOAT;
+
+			/* Heavily-smoothed voltage recovers sub-LSB via dither. */
+			if (chip->ocv_slow_uv == 0)
+				chip->ocv_slow_uv = new_uv;
+			else
+				chip->ocv_slow_uv += (new_uv - chip->ocv_slow_uv)
+						     >> X120X_OCV_SLOW_SHIFT;
+			soc_slow = x120x_voltage_soc256(chip->ocv_slow_uv, charging);
+
+			if (!chip->power_primed || regime != chip->prev_regime) {
+				/* Regime edge: seed instantly with the best prior. */
+				int seed;
+
+				if (regime == X120X_REGIME_CHARGE)
+					seed = chip->learned_charge_uw ?
+					       chip->learned_charge_uw :
+					       X120X_SEED_CHARGE_UW;
+				else if (regime == X120X_REGIME_DRAIN)
+					seed = chip->learned_drain_uw ?
+					       chip->learned_drain_uw :
+					       X120X_SEED_DRAIN_UW;
+				else
+					seed = X120X_SEED_FLOAT_UW;
+
+				chip->energy_rate_uw    = seed;
+				chip->rate_prev_soc256  = soc_slow;
+				chip->rate_prev_time_us = now_us;
+				chip->rate_windows      = 0;
+				chip->prev_regime       = regime;
+				chip->power_primed      = true;
+			} else if (regime == X120X_REGIME_FLOAT) {
+				chip->energy_rate_uw = X120X_SEED_FLOAT_UW;
 			} else if (now_us - chip->rate_prev_time_us >=
-				   X120X_RATE_WINDOW_US) {
-				s64 rdt  = now_us - chip->rate_prev_time_us;
-				s64 rde  = e_rate - chip->rate_prev_energy_uwh;
-				int inst = (int)div_s64(
-					rde * 3600LL * USEC_PER_SEC, rdt);
+				   X120X_POWER_WINDOW_US) {
+				/* Live magnitude: E_full × ΔSoC(slow) / Δt. */
+				s64 dt   = now_us - chip->rate_prev_time_us;
+				s64 de   = div_s64(e_full *
+					(soc_slow - chip->rate_prev_soc256), 25600);
+				int live = (int)div_s64(de * 3600LL * USEC_PER_SEC, dt);
 
-				/* light one-pole EMA, alpha = 1/2 */
-				chip->energy_rate_uw =
-					(chip->energy_rate_uw + inst) / 2;
-				chip->rate_prev_energy_uwh = e_rate;
-				chip->rate_prev_time_us    = now_us;
+				/* Crossfade seed -> live (~3 windows ≈ 6 min). */
+				chip->energy_rate_uw += (live - chip->energy_rate_uw) / 3;
+				chip->rate_prev_soc256  = soc_slow;
+				chip->rate_prev_time_us = now_us;
+				if (chip->rate_windows < 100)
+					chip->rate_windows++;
+				/* Once settled, learn this regime's typical power. */
+				if (chip->rate_windows >= 3) {
+					if (regime == X120X_REGIME_CHARGE)
+						chip->learned_charge_uw =
+							chip->energy_rate_uw;
+					else
+						chip->learned_drain_uw =
+							chip->energy_rate_uw;
+				}
 			}
 		} else if (new_256 != old_256) {
 			s64 dt = now_us - chip->rate_prev_time_us;

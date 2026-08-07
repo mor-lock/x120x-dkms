@@ -990,7 +990,7 @@ static void x120x_poll_work(struct work_struct *work)
 			 */
 			bool charging = (new_ac != 0) && !chip->charger_inhibited;
 			enum x120x_regime regime;
-			int soc_slow, ir_slow;
+			int soc_slow;
 
 			if (!new_ac)
 				regime = X120X_REGIME_DRAIN;
@@ -1005,9 +1005,15 @@ static void x120x_poll_work(struct work_struct *work)
 			else
 				chip->ocv_slow_uv += (new_uv - chip->ocv_slow_uv)
 						     >> X120X_OCV_SLOW_SHIFT;
-			ir_slow = clamp((int)div_s64((s64)chip->energy_rate_uw *
-					X120X_R_UOHM, chip->ocv_slow_uv), -150000, 150000);
-			soc_slow = x120x_voltage_soc256(chip->ocv_slow_uv - ir_slow, charging);
+			/*
+			 * Power rate uses the RAW (un-IR-corrected) SoC on
+			 * purpose: feeding the IR-corrected SoC back here made a
+			 * loop (power->IR->SoC->rate->power) with gain >1 that
+			 * oscillated (verified in simulation).  The IR offset is
+			 * ~constant so it cancels in the rate anyway; keeping this
+			 * raw breaks the loop.  power_now -> IR is then one-way.
+			 */
+			soc_slow = x120x_voltage_soc256(chip->ocv_slow_uv, charging);
 
 			if (!chip->power_primed || regime != chip->prev_regime) {
 				/* Regime edge: seed instantly with the best prior. */

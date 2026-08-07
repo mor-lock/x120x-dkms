@@ -389,98 +389,70 @@ struct x120x_ocv_point {
  */
 #define X120X_NOMINAL_MV          3600   /* datasheet nominal cell voltage, mV */
 #define X120X_USABLE_PERMILLE      785   /* usable (4.20→3.2 V) ÷ rated, ×1000  */
+#define X120X_R_UOHM            37000   /* pack DC resistance, uohm (IR comp) */
 
 /*
- * Energy-true discharge OCV curve.  SoC is remaining USABLE energy, so under a
- * constant drain SoC falls linearly in time.  100% = 4.20 V (full-charge
- * terminal; the surface-charge sag is baked into the 96-100% shape -- see the
- * full-charge anchor note above), 0% = 3.20 V (clear of the 2.5 V damage floor).
- * The 24-100% band is the mean of two agreeing full-start discharges of THIS
- * pack (the 9.7 h and 11.1 h runs, overlapping to ~1%); the 0-24% tail takes
- * its SHAPE from the March-5 deep discharge (a P50B chemistry property that
- * transfers between packs).  Monotonic (isotonic/PAVA fit -- a real OCV lookup
- * must map one voltage to one SoC; measured upticks are load lulls, pooled
- * away).  The 24% tie-point (hence the tail vertical scale) is anchored via
- * March-5 energy share pending the recharge coulomb count.
+ * Open-circuit-voltage (OCV) curve.  SoC = remaining usable energy vs the
+ * cell rest voltage.  ONE curve for both directions: the poll loop IR-
+ * compensates the measured terminal to OCV (OCV = V - I*R, I = power_now/V,
+ * signed) before the lookup, so charge rise and drain sag are removed and the
+ * reading is load/charger-independent and continuous across transitions.
+ * Built by splitting the measured charge/discharge hysteresis by the current
+ * ratio (OCV ~1/3 up from discharge); anchored to the coulomb tie-point (9%
+ * discharge endpoint) and 0%=3.20 V, 100%=4.20 V.  R is X120X_R_UOHM.
  */
-static const struct x120x_ocv_point x120x_ocv_discharge[] = {
-	{ 3200000,   0 * 256 },  /* 0% cutoff; below here = damage risk    */
-	{ 3232500,   2 * 256 },  /* --- 0-24% tail: March-5 shape -------- */
-	{ 3262500,   4 * 256 },
-	{ 3297500,   6 * 256 },
-	{ 3330000,   8 * 256 },
-	{ 3355000,  10 * 256 },
-	{ 3375000,  12 * 256 },
-	{ 3410000,  14 * 256 },
-	{ 3430000,  16 * 256 },
-	{ 3452500,  18 * 256 },
-	{ 3470000,  20 * 256 },
-	{ 3500000,  22 * 256 },
-	{ 3521651,  24 * 256 },  /* tie-point (coulomb-pending)            */
-	{ 3542048,  26 * 256 },  /* --- 24-100%: mean of 2 full-start runs */
-	{ 3563002,  28 * 256 },
-	{ 3580919,  30 * 256 },
-	{ 3606075,  32 * 256 },
-	{ 3630807,  34 * 256 },
-	{ 3651668,  36 * 256 },
-	{ 3678209,  38 * 256 },
-	{ 3701820,  40 * 256 },
-	{ 3725742,  42 * 256 },
-	{ 3748828,  44 * 256 },
-	{ 3770001,  46 * 256 },
-	{ 3789417,  48 * 256 },
-	{ 3804618,  50 * 256 },
-	{ 3818138,  52 * 256 },
-	{ 3829899,  54 * 256 },
-	{ 3840645,  56 * 256 },
-	{ 3851856,  58 * 256 },
-	{ 3860319,  60 * 256 },
-	{ 3874552,  62 * 256 },
-	{ 3899947,  64 * 256 },
-	{ 3922527,  66 * 256 },
-	{ 3947732,  68 * 256 },
-	{ 3970606,  70 * 256 },
-	{ 3990362,  72 * 256 },
-	{ 4005481,  74 * 256 },
-	{ 4019153,  76 * 256 },
-	{ 4031085,  78 * 256 },
-	{ 4038973,  80 * 256 },
-	{ 4045491,  82 * 256 },
-	{ 4050298,  84 * 256 },
-	{ 4054484,  86 * 256 },
-	{ 4059067,  88 * 256 },
-	{ 4064938,  90 * 256 },
-	{ 4072612,  92 * 256 },
-	{ 4085975,  94 * 256 },
-	{ 4104510,  96 * 256 },
-	{ 4132594,  98 * 256 },
-	{ X120X_OCV_FULL_UV, 100 * 256 },  /* 4.20 V, surface baked in */
-};
-
-/*
- * Charge curve.  Coulomb-anchored to this pack's recharge (23→100% on the same
- * energy axis as the discharge curve).  Terminal voltage runs only ~45 mV above
- * the rested OCV at this ~0.2C charge rate (confirmed: the 4.207 V charge top
- * relaxes to the 4.16 V rested full).  Voltage→SoC is ill-conditioned in the CV
- * taper (>80%), so those points are regularised.  Below 23% there is no charge
- * data, so the tail mirrors the discharge shape plus the ~45 mV overpotential.
- * Selected only while actively charging; offset-decay re-anchoring makes the
- * charge↔discharge handoff continuous.
- */
-static const struct x120x_ocv_point x120x_ocv_charge[] = {
-	{ 3245000,   0 * 256 },  /* tail: discharge shape + ~45 mV overpotential */
-	{ 3495000,  10 * 256 },
-	{ 3680000,  20 * 256 },
-	{ 3731000,  23 * 256 },  /* coulomb-anchored charge start (this pack)     */
-	{ 3824000,  30 * 256 },  /* coulomb-anchored                             */
-	{ 3889000,  40 * 256 },
-	{ 3946000,  50 * 256 },
-	{ 4016000,  60 * 256 },
-	{ 4089000,  70 * 256 },
-	{ 4130000,  80 * 256 },  /* CV taper regularised (voltage→SoC ill-cond.) */
-	{ 4160000,  90 * 256 },
-	{ 4190000,  95 * 256 },
-	{ 4207000, 100 * 256 },  /* charge terminal at full (rests to 4.16 V)    */
+static const struct x120x_ocv_point x120x_ocv[] = {
+	{ 3214625,   0 * 256 },
+	{ 3314090,   2 * 256 },
+	{ 3406336,   4 * 256 },
+	{ 3483192,   6 * 256 },
+	{ 3554206,   8 * 256 },
+	{ 3599092,  10 * 256 },
+	{ 3617993,  12 * 256 },
+	{ 3636932,  14 * 256 },
+	{ 3654340,  16 * 256 },
+	{ 3674095,  18 * 256 },
+	{ 3691682,  20 * 256 },
+	{ 3708080,  22 * 256 },
+	{ 3724426,  24 * 256 },
+	{ 3742767,  26 * 256 },
+	{ 3759653,  28 * 256 },
+	{ 3776500,  30 * 256 },
+	{ 3792779,  32 * 256 },
+	{ 3808361,  34 * 256 },
+	{ 3823106,  36 * 256 },
+	{ 3836874,  38 * 256 },
+	{ 3848578,  40 * 256 },
+	{ 3859787,  42 * 256 },
+	{ 3870528,  44 * 256 },
+	{ 3880700,  46 * 256 },
+	{ 3890697,  48 * 256 },
+	{ 3900643,  50 * 256 },
+	{ 3909264,  52 * 256 },
+	{ 3921072,  54 * 256 },
+	{ 3937830,  56 * 256 },
+	{ 3955284,  58 * 256 },
+	{ 3972554,  60 * 256 },
+	{ 3990570,  62 * 256 },
+	{ 4007480,  64 * 256 },
+	{ 4021422,  66 * 256 },
+	{ 4032819,  68 * 256 },
+	{ 4043135,  70 * 256 },
+	{ 4052736,  72 * 256 },
+	{ 4061328,  74 * 256 },
+	{ 4068030,  76 * 256 },
+	{ 4073485,  78 * 256 },
+	{ 4078060,  80 * 256 },
+	{ 4082217,  82 * 256 },
+	{ 4086313,  84 * 256 },
+	{ 4090680,  86 * 256 },
+	{ 4095640,  88 * 256 },
+	{ 4103102,  90 * 256 },
+	{ 4113260,  92 * 256 },
+	{ 4125820,  94 * 256 },
+	{ 4140329,  96 * 256 },
+	{ 4162406,  98 * 256 },
+	{ 4200000, 100 * 256 },
 };
 
 /**
@@ -513,17 +485,14 @@ static int x120x_ocv_to_soc256(const struct x120x_ocv_point *t, int n, int uv)
 }
 
 /**
- * x120x_voltage_soc256() - SoC × 256 from voltage, phase-aware.
- * @uv:       cell voltage in microvolts.
- * @charging: true → use the charge curve; false → the discharge/rest curve.
+ * x120x_voltage_soc256() - SoC x256 from a cell voltage via the OCV table.
+ * @uv:       open-circuit cell voltage in microvolts (IR-corrected by caller).
+ * @charging: unused; kept for call-site compatibility (one OCV curve now).
  */
 static int x120x_voltage_soc256(int uv, bool charging)
 {
-	if (charging)
-		return x120x_ocv_to_soc256(x120x_ocv_charge,
-					   ARRAY_SIZE(x120x_ocv_charge), uv);
-	return x120x_ocv_to_soc256(x120x_ocv_discharge,
-				   ARRAY_SIZE(x120x_ocv_discharge), uv);
+	(void)charging;
+	return x120x_ocv_to_soc256(x120x_ocv, ARRAY_SIZE(x120x_ocv), uv);
 }
 
 
@@ -908,7 +877,7 @@ static void x120x_poll_work(struct work_struct *work)
 		 */
 		bool charging = (new_ac != 0) && !chip->charger_inhibited;
 		bool transition;
-		int  curve_256;
+		int  curve_256, ir_uv;
 
 		/* Warm the voltage EMA every poll (α = 1/8), both phases. */
 		if (chip->ocv_ema_uv == 0)
@@ -918,7 +887,14 @@ static void x120x_poll_work(struct work_struct *work)
 
 		transition = chip->model_primed && (charging != chip->prev_charging);
 
-		curve_256 = x120x_voltage_soc256(chip->ocv_ema_uv, charging);
+		/*
+		 * IR-compensate terminal -> OCV before lookup: OCV = V - I*R,
+		 * I = power_now/V (signed: charge +, drain -).  Uses last poll's
+		 * power_now; clamped so a bad sample cannot skew SoC.
+		 */
+		ir_uv = clamp((int)div_s64((s64)chip->energy_rate_uw * X120X_R_UOHM,
+				   chip->ocv_ema_uv), -150000, 150000);
+		curve_256 = x120x_voltage_soc256(chip->ocv_ema_uv - ir_uv, charging);
 
 		if (!chip->model_primed) {
 			chip->soc_offset    = 0;
@@ -1014,7 +990,7 @@ static void x120x_poll_work(struct work_struct *work)
 			 */
 			bool charging = (new_ac != 0) && !chip->charger_inhibited;
 			enum x120x_regime regime;
-			int soc_slow;
+			int soc_slow, ir_slow;
 
 			if (!new_ac)
 				regime = X120X_REGIME_DRAIN;
@@ -1029,7 +1005,9 @@ static void x120x_poll_work(struct work_struct *work)
 			else
 				chip->ocv_slow_uv += (new_uv - chip->ocv_slow_uv)
 						     >> X120X_OCV_SLOW_SHIFT;
-			soc_slow = x120x_voltage_soc256(chip->ocv_slow_uv, charging);
+			ir_slow = clamp((int)div_s64((s64)chip->energy_rate_uw *
+					X120X_R_UOHM, chip->ocv_slow_uv), -150000, 150000);
+			soc_slow = x120x_voltage_soc256(chip->ocv_slow_uv - ir_slow, charging);
 
 			if (!chip->power_primed || regime != chip->prev_regime) {
 				/* Regime edge: seed instantly with the best prior. */

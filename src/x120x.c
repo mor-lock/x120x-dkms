@@ -376,46 +376,75 @@ struct x120x_ocv_point {
  */
 #define X120X_RATE_WINDOW_US   (10LL * USEC_PER_SEC)
 
+/*
+ * Energy scale.  The pack's rated capacity (battery_mah) is measured by the
+ * cell datasheet down to 2.5 V at 3.6 V nominal; we only ever use the window
+ * from full (X120X_OCV_FULL_UV) down to the 0% cutoff (bottom of the discharge
+ * OCV table, 3.2 V), which holds a fixed fraction of rated.  So:
+ *
+ *   ENERGY_FULL_DESIGN = battery_mah × X120X_NOMINAL_MV        (rated, to 2.5 V)
+ *   ENERGY_FULL        = design × X120X_USABLE_PERMILLE / 1000 (usable window)
+ *
+ * ENERGY_FULL (usable) is also the scale for energy_now and the dSoC/dt power
+ * estimate, so power reads true watts and SoC is linear in energy.  The usable
+ * fraction was measured by integrating a full discharge to the 3.2 V cutoff
+ * (78.5% of rated-to-2.5 V for the P50B pack); refine per pack if desired.
+ */
+#define X120X_NOMINAL_MV          3600   /* datasheet nominal cell voltage, mV */
+#define X120X_USABLE_PERMILLE      785   /* usable (4.16→3.2 V) ÷ rated, ×1000  */
+
+/*
+ * Energy-true discharge OCV curve: SoC is remaining USABLE energy, so under a
+ * constant drain SoC falls linearly in time.  0% = 3.20 V (well clear of the
+ * 2.5 V damage floor; see empty-voltage rationale).  Mid-band (30–70%) is
+ * coulomb-anchored to this pack (recharge integral minus a ~45 mV charge
+ * overpotential); the top (70–100%) is the physical NMC rested shape (the CV
+ * taper makes voltage→SoC ill-conditioned there); the tail (0–23%, below
+ * 3.69 V) takes its SHAPE from the March-5 deep discharge (a chemistry
+ * property that transfers between P50B packs) rescaled to the coulomb-anchored
+ * magnitude — refine further from a full coulomb-referenced discharge.
+ */
 static const struct x120x_ocv_point x120x_ocv_discharge[] = {
-	{ 3300000,   0 * 256 },
-	{ 3580000,   7 * 256 },
-	{ 3670000,  27 * 256 },
-	{ 3720000,  37 * 256 },
-	{ 3770000,  47 * 256 },
-	{ 3795000,  52 * 256 },
-	{ 3845000,  62 * 256 },
-	{ 3880000,  67 * 256 },
-	{ 3930000,  72 * 256 },
-	{ 3980000,  77 * 256 },
-	{ 4030000,  82 * 256 },
-	{ 4055000,  87 * 256 },
-	{ 4075000,  92 * 256 },
-	{ 4120000,  96 * 256 },
-	{ X120X_OCV_FULL_UV, 100 * 256 },  /* rested full; surface (4.16–4.2 V+) via RC comp */
+	{ 3200000,   0 * 256 },  /* 0% cutoff; below here = damage risk         */
+	{ 3300000,        896 }, /* ~3.5%  tail: March-5 shape, coulomb-scaled  */
+	{ 3400000,       1920 }, /* ~7.5%                                       */
+	{ 3500000,       3200 }, /* ~12.5%                                      */
+	{ 3580000,       4454 }, /* ~17.4%                                      */
+	{ 3660000,       5427 }, /* ~21.2%                                      */
+	{ 3780000,  30 * 256 },  /* coulomb-anchored (this pack)                */
+	{ 3845000,  40 * 256 },  /* coulomb-anchored                            */
+	{ 3900000,  50 * 256 },  /* coulomb-anchored                            */
+	{ 3970000,  60 * 256 },  /* coulomb-anchored                            */
+	{ 4040000,  70 * 256 },  /* coulomb-anchored                            */
+	{ 4080000,  80 * 256 },  /* NMC rested shape (CV taper ill-conditioned) */
+	{ 4110000,  90 * 256 },  /* NMC rested shape                            */
+	{ X120X_OCV_FULL_UV, 100 * 256 },  /* rested full; surface via RC comp   */
 };
 
 /*
- * Charge curve.  Also measured on this pack (17 charge events); terminal
- * voltage runs ~100–150 mV above the discharge curve at the same SoC because
- * charge current adds overpotential (larger mid-charge, tapering near full to
- * the 4.23 V CV clamp).  Separate curve, selected while on grid — see the
- * poll loop.  offset-decay re-anchoring makes the charge↔discharge handoff
- * continuous.
+ * Charge curve.  Coulomb-anchored to this pack's recharge (23→100% on the same
+ * energy axis as the discharge curve).  Terminal voltage runs only ~45 mV above
+ * the rested OCV at this ~0.2C charge rate (confirmed: the 4.207 V charge top
+ * relaxes to the 4.16 V rested full).  Voltage→SoC is ill-conditioned in the CV
+ * taper (>80%), so those points are regularised.  Below 23% there is no charge
+ * data, so the tail mirrors the discharge shape plus the ~45 mV overpotential.
+ * Selected only while actively charging; offset-decay re-anchoring makes the
+ * charge↔discharge handoff continuous.
  */
 static const struct x120x_ocv_point x120x_ocv_charge[] = {
-	{ 3300000,   0 * 256 },
-	{ 3820000,  30 * 256 },
-	{ 3900000,  40 * 256 },
-	{ 3950000,  50 * 256 },
-	{ 4000000,  60 * 256 },
-	{ 4030000,  65 * 256 },
-	{ 4063000,  70 * 256 },
-	{ 4096000,  75 * 256 },
-	{ 4125000,  80 * 256 },
-	{ 4153000,  85 * 256 },
-	{ 4175000,  90 * 256 },
-	{ 4210000,  95 * 256 },
-	{ 4230000, 100 * 256 },
+	{ 3245000,   0 * 256 },  /* tail: discharge shape + ~45 mV overpotential */
+	{ 3495000,  10 * 256 },
+	{ 3680000,  20 * 256 },
+	{ 3731000,  23 * 256 },  /* coulomb-anchored charge start (this pack)     */
+	{ 3824000,  30 * 256 },  /* coulomb-anchored                             */
+	{ 3889000,  40 * 256 },
+	{ 3946000,  50 * 256 },
+	{ 4016000,  60 * 256 },
+	{ 4089000,  70 * 256 },
+	{ 4130000,  80 * 256 },  /* CV taper regularised (voltage→SoC ill-cond.) */
+	{ 4160000,  90 * 256 },
+	{ 4190000,  95 * 256 },
+	{ 4207000, 100 * 256 },  /* charge terminal at full (rests to 4.16 V)    */
 };
 
 /**
@@ -487,7 +516,7 @@ static int x120x_voltage_soc256(int uv, bool charging)
  * @present:		false when consecutive I2C errors exceed threshold
  * @i2c_errors:		consecutive I2C read failure counter
  * @energy_now_uwh:	current energy in uWh (energy_full scaled by SOC)
- * @energy_full_uwh:	full-charge energy in uWh (battery_mah times 3700 mV)
+ * @energy_full_uwh:	usable full-window energy in uWh (rated × usable frac)
  * @energy_empty_uwh:	empty-energy floor in uWh (0, for UPower)
  * @rate_prev_energy_uwh: energy at the previous SOC change (for rate calc)
  * @rate_prev_time_us:	ktime (us) at the previous SOC change
@@ -545,7 +574,7 @@ struct x120x_chip {
 
 	/* Energy tracking for UPower / desktop environment integration */
 	s64			 energy_now_uwh;	 /* µWh = energy_full × soc%/100 */
-	s64			 energy_full_uwh;	 /* µWh = battery_mah × 3700 mV  */
+	s64			 energy_full_uwh;	 /* µWh usable = rated × frac    */
 	s64			 energy_empty_uwh;	 /* µWh = 0 (UPower floor)        */
 	/*
 	 * Rate estimation: event-driven, one sample per SOC register change.
@@ -930,12 +959,20 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->ac_online       = new_ac;
 
 		/*
-		 * energy_full  = battery_mah × 3700 mV (nominal)
+		 * energy_full  = battery_mah × 3600 mV × usable-fraction
 		 * energy_empty = 0  (floor — lets UPower use energy_now /
 		 *                    energy_full directly for percentage)
-		 * energy_now   = energy_full × soc% / 100
+		 * energy_now   = energy_full × soc% / 100 (usable scale)
 		 */
-		s64 e_full  = (s64)battery_mah * 3700;
+		/*
+		 * e_full here is the USABLE-window energy (rated × usable
+		 * fraction), not the rated design energy.  Using it as the
+		 * scale makes power_now = e_full × dSoC/dt read true watts and
+		 * SoC linear in energy.  ENERGY_FULL_DESIGN (rated) is reported
+		 * separately in get_property.
+		 */
+		s64 e_full  = div_s64((s64)battery_mah * X120X_NOMINAL_MV *
+				      X120X_USABLE_PERMILLE, 1000);
 		/* Use full 16-bit SOC precision (0..25600 = 0..100%) */
 		s64 e_now   = div_s64(e_full * new_256, 25600);
 		ktime_t now = ktime_get();
@@ -1357,13 +1394,19 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		 * losing the sub-1% fractional part.
 		 *   charge_now_uah = battery_mah × 1000 × capacity_256 / 25600
 		 */
+		/* usable-basis charge_now (matches CHARGE_FULL below) */
 		val->intval = (int)div_s64(
-			(s64)battery_mah * 1000 * capacity_256, 25600);
+			(s64)battery_mah * X120X_USABLE_PERMILLE * capacity_256,
+			25600);
 		break;
 
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
+		/* usable window: rated µAh × usable fraction */
+		val->intval = (int)div_s64(
+			(s64)battery_mah * 1000 * X120X_USABLE_PERMILLE, 1000);
+		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
-		val->intval = battery_mah * 1000; /* µAh */
+		val->intval = battery_mah * 1000; /* rated µAh (to 2.5 V) */
 		break;
 
 	case POWER_SUPPLY_PROP_CHARGE_EMPTY:
@@ -1385,7 +1428,9 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_ENERGY_FULL_DESIGN:
-		val->intval = (int)energy_full_uwh;
+		/* rated energy to 2.5 V (battery_mah × nominal); usable
+		 * ENERGY_FULL above is this × the usable fraction. */
+		val->intval = (int)((s64)battery_mah * X120X_NOMINAL_MV);
 		break;
 
 	case POWER_SUPPLY_PROP_ENERGY_EMPTY:
@@ -2085,10 +2130,10 @@ static int x120x_probe(struct i2c_client *client)
 	i2c_set_clientdata(client, chip);
 
 	/*
-	 * Clamp battery_mah to a sane range.  energy_full_uwh is
-	 * battery_mah * 3700 and is later cast to int for the ENERGY_FULL
-	 * property; capping at 500000 mAh keeps that product (~1.85e9)
-	 * below INT_MAX, so a bogus module-param value cannot overflow it.
+	 * Clamp battery_mah to a sane range.  ENERGY_FULL_DESIGN is
+	 * battery_mah * 3600 (nominal mV) and is cast to int; capping at
+	 * 500000 mAh keeps that product (~1.8e9) below INT_MAX, so a bogus
+	 * module-param value cannot overflow it.
 	 */
 	if (battery_mah < 1 || battery_mah > 500000) {
 		dev_warn(dev, "battery_mah=%d out of range [1, 500000]; clamping\n",

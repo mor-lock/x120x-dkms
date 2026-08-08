@@ -605,6 +605,8 @@ struct x120x_chip {
 	enum x120x_regime	 prev_regime;		/* regime last poll              */
 	bool			 power_primed;		/* power estimator seeded        */
 	int			 ir_power_uw;		/* slow-smoothed power for IR comp */
+	int			 power_report_uw;	/* slow-smoothed power for ABI    */
+	bool			 power_report_primed;	/* report EMA seeded             */
 
 	/* Energy tracking for UPower / desktop environment integration */
 	s64			 energy_now_uwh;	 /* µWh = energy_full × soc%/100 */
@@ -919,7 +921,9 @@ static void x120x_poll_work(struct work_struct *work)
 		 * true current changes slowly, but the live power_now is jumpy
 		 * (windowed dSoC/dt on quantised voltage) and feeding it here
 		 * injects SoC noise -- ~doubled the step noise in simulation.
-		 * Reported power_now (energy_rate_uw) stays live for the ABI.
+		 * The ABI POWER_NOW is served from a separate slow EMA
+		 * (power_report_uw) for the same reason; energy_rate_uw stays
+		 * the live internal state.
 		 */
 		chip->ir_power_uw += (chip->energy_rate_uw - chip->ir_power_uw) >> 9;
 		ir_uv = clamp((int)div_s64((s64)chip->ir_power_uw * X120X_R_UOHM,
@@ -1169,6 +1173,22 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->energy_now_uwh   = e_now;
 
 		/*
+		 * Smooth power_now for the ABI (τ ≈ 2 min, α = 1/256 at the
+		 * 500 ms poll).  energy_rate_uw is a staircase — it steps once
+		 * per SoC-rate window (or per gauge event) — which reads as a
+		 * jumpy POWER_NOW.  A per-poll EMA gives a smooth reading while
+		 * still following real load trends.  Works for both SoC
+		 * sources since energy_rate_uw is set by whichever ran above.
+		 */
+		if (!chip->power_report_primed) {
+			chip->power_report_uw     = chip->energy_rate_uw;
+			chip->power_report_primed = true;
+		} else {
+			chip->power_report_uw +=
+				(chip->energy_rate_uw - chip->power_report_uw) >> 8;
+		}
+
+		/*
 		 * Dead battery detection: on grid, voltage stuck below
 		 * X120X_DEAD_BAT_UV for ≥ X120X_DEAD_BAT_CONFIRM_US with
 		 * no meaningful voltage rise.  Only applies when SoC is
@@ -1389,7 +1409,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	charger_inhibited = chip->charger_inhibited;
 	energy_now_uwh  = chip->energy_now_uwh;
 	energy_full_uwh = chip->energy_full_uwh;
-	energy_rate_uw  = chip->energy_rate_uw;
+	energy_rate_uw  = chip->power_report_uw;	/* smoothed for the ABI */
 	battery_dead    = chip->battery_dead;
 	mutex_unlock(&chip->lock);
 
@@ -1997,7 +2017,7 @@ static int x120x_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 
 	mutex_lock(&chip->lock);
 	voltage_uv      = chip->voltage_uv;
-	energy_rate_uw  = chip->energy_rate_uw;
+	energy_rate_uw  = chip->power_report_uw;	/* smoothed for the ABI */
 	energy_now_uwh  = chip->energy_now_uwh;
 	mutex_unlock(&chip->lock);
 

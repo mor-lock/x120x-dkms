@@ -88,12 +88,15 @@ mode can be enabled at any time after install — see *Battery
 conservation mode*.
 
 **State of charge** defaults to a voltage-based model (`--soc-source
-voltage`): SoC is read from cell voltage via an NMC open-circuit-voltage
-curve rather than the fuel gauge's SOC register.  The gauge on these
-boards is a MAX17043-*style* clone that over-reads the discharge near
-full; the voltage model tracks a coulomb-counted reference far more
-closely.  It uses separate charge and discharge curves (charge current
-lifts terminal voltage) with a smooth, no-jump handoff between them.
+voltage`): SoC comes from an energy-true NMC open-circuit-voltage curve
+with runtime IR (load-sag) compensation, then *fused* with the on-board
+MAX17043-*style* fuel gauge for smoothness.  The curve is calibrated so
+SoC is linear in usable energy; the gauge — which craters near empty but
+rejects load transients well — lends its smooth *shape* at high SoC,
+while the calibrated voltage curve takes over at low SoC where the gauge
+is unreliable.  The gauge's own raw reading is exposed separately as
+`raw_capacity`.  See **[docs/soc-model.md](docs/soc-model.md)** for the
+full algorithm.
 Pass `--soc-source gauge` to use the raw fuel-gauge register instead.
 The curves assume 4.2 V Li-ion (NMC/NCA) cells, which is all the
 hardware can charge.
@@ -388,8 +391,9 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     voltage_now           cell voltage in µV
     voltage_max_design    4200000 µV (4.20 V — full charge)
     voltage_min_design    3200000 µV (3.20 V — safe shutdown floor)
-    capacity              0-100 %
+    capacity              0-100 %  (fused voltage+gauge SoC)
     capacity_level        Critical (<5%) | Low (<10%) | Normal | Full (≥95%) | Unknown
+    raw_capacity          0-100 %  (raw MAX17043 gauge SoC; non-standard, for diagnostics)
     charge_now            current charge in µAh
     charge_full           total pack capacity in µAh (from battery_mah)
     charge_full_design    same as charge_full

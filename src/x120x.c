@@ -367,7 +367,7 @@ struct x120x_ocv_point {
  * quantised voltage are pure noise (10 s dSoC carries no signal at a few W).
  * The gauge path keeps its own event-driven estimator.
  */
-#define X120X_POWER_WINDOW_US  (240LL * USEC_PER_SEC) /* SoC-rate window, 4 min */
+#define X120X_POWER_WINDOW_US  (120LL * USEC_PER_SEC) /* SoC-rate window, 2 min */
 #define X120X_OCV_SLOW_SHIFT     6       /* a=1/64 dither-smoothing EMA (power) */
 #define X120X_SEED_CHARGE_UW  11000000   /* +11 W: CC-bulk charge into pack     */
 #define X120X_SEED_DRAIN_UW   (-5000000) /* -5 W: typical Pi load on battery    */
@@ -413,22 +413,25 @@ struct x120x_ocv_point {
 #define X120X_IR_NOM_DRAIN_UV    48000  /* ~5 W drain  @3.7 V → +48 mV to OCV  */
 #define X120X_IR_NOM_CHARGE_UV  100000  /* ~11 W charge @4.0 V → -100 mV to OCV */
 /*
- * Reported-SoC slew.  The displayed SoC follows the model ASYMMETRICALLY:
+ * SoC sensor fusion.  The reported SoC blends two voltage-derived estimates:
  *
- *   - In the physical direction (falling while draining, rising while
- *     charging) it tracks with a τ ≈ 32 s EMA (X120X_SOC_SLEW_SHIFT).
- *   - Against the physical direction it may still move, but only as a slow
- *     correction rate-capped to X120X_SOC_CORR_PPH (%/hour).
+ *   - our OCV curve + IR correction (v_soc): calibrated absolute, but
+ *     load-sensitive where the curve is shallow (high SoC), so it bounces on
+ *     load transients;
+ *   - the MAX17043 ModelGauge (g_soc, the raw SOC register): a smooth,
+ *     load-immune SHAPE, but a wrong absolute that craters near empty.
  *
- * A pure non-increasing clamp (running-min) suppressed drain-time rises but
- * locked in transient UNDER-reads: a load spike sags the voltage, the slow IR
- * term under-shoots for a minute, and the clamp then froze that too-low value
- * even after the model recovered.  The rate-capped correction lets the gauge
- * heal such an under-read gradually (it is correcting its own estimate, not
- * claiming the pack gained charge) while a fast bounce still cannot form.
+ * We take the gauge's shape at high SoC (where our curve is load-loose) and
+ * our voltage at low SoC (where the curve is tight and the gauge craters),
+ * with a linear weight over [W_LO, W_HI]% of v_soc.  The gauge's wrong
+ * absolute is corrected by a slow EMA of (v_soc - g_soc): at high SoC we
+ * report g_soc + that offset, so the reading keeps the gauge's smooth shape
+ * but our calibrated absolute.  No output slew is needed -- the gauge already
+ * supplies the smoothness the slew used to force.
  */
-#define X120X_SOC_SLEW_SHIFT         6      /* physical-direction EMA, τ ≈ 32 s */
-#define X120X_SOC_CORR_PPH           2      /* against-direction correction %/h */
+#define X120X_FUSE_W_LO             40   /* below this %, report pure voltage   */
+#define X120X_FUSE_W_HI             55   /* above this %, report pure gauge-shape*/
+#define X120X_FUSE_OFF_SHIFT        10   /* (v_soc-gauge) offset EMA, τ ≈ 8.5min */
 
 /*
  * Open-circuit-voltage (OCV) curve.  SoC = remaining usable energy vs the
@@ -624,7 +627,9 @@ struct x120x_chip {
 	int			 ir_power_uw;		/* slow-smoothed power for IR comp */
 	int			 power_report_uw;	/* slow-smoothed power for ABI    */
 	bool			 power_report_primed;	/* report EMA seeded             */
-	s64			 soc_corr_acc;		/* against-direction slew budget */
+	int			 fusion_off_256;	/* slow EMA of (v_soc - gauge)   */
+	bool			 fusion_primed;		/* fusion offset seeded          */
+	int			 raw_capacity_pct;	/* raw MAX17043 ModelGauge SoC % */
 
 	/* Energy tracking for UPower / desktop environment integration */
 	s64			 energy_now_uwh;	 /* µWh = energy_full × soc%/100 */
@@ -919,7 +924,6 @@ static void x120x_poll_work(struct work_struct *work)
 		 */
 		bool charging = (new_ac != 0) && !chip->charger_inhibited;
 		bool transition;
-		bool first = !chip->model_primed;
 		int  curve_256, ir_uv, model_256;
 
 		/* Warm the voltage EMA every poll (α = 1/8), both phases. */
@@ -944,7 +948,7 @@ static void x120x_poll_work(struct work_struct *work)
 		 * (power_report_uw) for the same reason; energy_rate_uw stays
 		 * the live internal state.
 		 */
-		chip->ir_power_uw += (chip->energy_rate_uw - chip->ir_power_uw) >> 9;
+		chip->ir_power_uw += (chip->energy_rate_uw - chip->ir_power_uw) >> 8;
 		ir_uv = clamp((int)div_s64((s64)chip->ir_power_uw * X120X_R_UOHM,
 				   chip->ocv_ema_uv), -150000, 150000);
 		curve_256 = x120x_voltage_soc256(chip->ocv_ema_uv - ir_uv, charging);
@@ -971,44 +975,35 @@ static void x120x_poll_work(struct work_struct *work)
 			chip->soc_offset = 0;
 
 		/*
-		 * Asymmetric slew (see the constant comment).  Move fast (EMA)
-		 * in the physical direction, slow (rate-capped correction)
-		 * against it.  This suppresses transient bounces without the
-		 * running-min lock-in.  Seed directly on the first poll.
+		 * Sensor fusion (see the constant block): report the gauge's
+		 * smooth shape at high SoC and our voltage at low SoC, with the
+		 * gauge's wrong absolute corrected by a slow (v_soc - gauge)
+		 * offset.  v_soc is model_256 (curve + IR + transition
+		 * re-anchor); g_soc is the raw MAX17043 ModelGauge SoC.  The
+		 * gauge already supplies the smoothness the old output slew
+		 * forced, so no slew/EMA is applied here.
 		 */
-		if (first) {
-			new_256 = model_256;
-			chip->soc_corr_acc = 0;
-		} else {
-			int  delta     = model_256 - chip->capacity_256;
-			bool physical  = (delta < 0 && !new_ac) ||   /* fall+drain  */
-					 (delta > 0 && charging);    /* rise+charge */
+		{
+			int v_soc = model_256;
+			int g_soc = clamp((int)MAX17043_SOC_256(soc_raw),
+					  0, 100 * 256);
+			int wnum;
 
-			if (delta == 0) {
-				new_256 = chip->capacity_256;
-			} else if (physical) {
-				/* fast: τ ≈ 32 s EMA toward the model */
-				new_256 = chip->capacity_256 +
-					  (delta >> X120X_SOC_SLEW_SHIFT);
-				chip->soc_corr_acc = 0;
+			if (!chip->fusion_primed) {
+				chip->fusion_off_256 = v_soc - g_soc;
+				chip->fusion_primed  = true;
+				new_256 = v_soc;
 			} else {
-				/* slow: correction capped to CORR_PPH %/h */
-				int step;
-
-				chip->soc_corr_acc += (s64)X120X_SOC_CORR_PPH *
-					256 * X120X_POLL_MS * 1000;
-				step = (int)div_s64(chip->soc_corr_acc,
-						3600LL * USEC_PER_SEC);
-				if (step > abs(delta))
-					step = abs(delta);
-				if (step > 0) {
-					new_256 = chip->capacity_256 +
-						  (delta > 0 ? step : -step);
-					chip->soc_corr_acc -= (s64)step *
-						3600 * USEC_PER_SEC;
-				} else {
-					new_256 = chip->capacity_256;
-				}
+				chip->fusion_off_256 += ((v_soc - g_soc) -
+					chip->fusion_off_256)
+					>> X120X_FUSE_OFF_SHIFT;
+				/* gauge weight 0..256 over [W_LO,W_HI]% of v_soc */
+				wnum = clamp(((v_soc >> 8) - X120X_FUSE_W_LO) * 256 /
+					     (X120X_FUSE_W_HI - X120X_FUSE_W_LO),
+					     0, 256);
+				new_256 = (wnum * (g_soc + chip->fusion_off_256) +
+					   (256 - wnum) * v_soc) >> 8;
+				new_256 = clamp(new_256, 0, 100 * 256);
 			}
 		}
 
@@ -1040,6 +1035,9 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->capacity_pct    = new_pct;
 		chip->capacity_256    = new_256;
 		chip->ac_online       = new_ac;
+		/* raw MAX17043 ModelGauge SoC, exposed via the raw_capacity
+		 * sysfs attr and used as the fusion shape source */
+		chip->raw_capacity_pct = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
 
 		/*
 		 * energy_full  = battery_mah × 3600 mV × usable-fraction
@@ -1931,6 +1929,34 @@ static int x120x_charger_property_is_writeable(struct power_supply *psy,
 static const char * const x120x_ac_supplied_to[] = { "x120x-battery" };
 static const char * const x120x_charger_supplied_to[] = { "x120x-battery" };
 
+/*
+ * raw_capacity - non-standard sysfs attribute exposing the MAX17043's own
+ * ModelGauge SoC (%), separate from the fused CAPACITY property.  It is the
+ * gauge input to the SoC fusion and is logged alongside the fused SoC for
+ * validation.  Added via power_supply_config.attr_grp so its lifetime is
+ * managed by the power_supply core -- it does not touch the standard
+ * property set or the hwmon interface.
+ */
+static ssize_t raw_capacity_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct x120x_chip *chip = power_supply_get_drvdata(to_power_supply(dev));
+	int pct;
+
+	mutex_lock(&chip->lock);
+	pct = chip->raw_capacity_pct;
+	mutex_unlock(&chip->lock);
+
+	return sysfs_emit(buf, "%d\n", pct);
+}
+static DEVICE_ATTR_RO(raw_capacity);
+
+static struct attribute *x120x_battery_extra_attrs[] = {
+	&dev_attr_raw_capacity.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(x120x_battery_extra);
+
 static const struct power_supply_desc x120x_battery_desc = {
 	.name                   = "x120x-battery",
 	.type                   = POWER_SUPPLY_TYPE_BATTERY,
@@ -2548,6 +2574,7 @@ static int x120x_probe(struct i2c_client *client)
 	}
 
 	bat_cfg.drv_data = chip;
+	bat_cfg.attr_grp = x120x_battery_extra_groups;
 
 	chip->battery = devm_power_supply_register(dev, &x120x_battery_desc,
 						   &bat_cfg);

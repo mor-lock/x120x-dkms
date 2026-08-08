@@ -413,13 +413,22 @@ struct x120x_ocv_point {
 #define X120X_IR_NOM_DRAIN_UV    48000  /* ~5 W drain  @3.7 V → +48 mV to OCV  */
 #define X120X_IR_NOM_CHARGE_UV  100000  /* ~11 W charge @4.0 V → -100 mV to OCV */
 /*
- * Reported-SoC slew (α = 1/64 → τ ≈ 32 s at the 500 ms poll).  The displayed
- * SoC is slewed toward the model with this EMA, and the target is clamped to
- * the physical direction — a draining pack's SoC can only fall, a charging
- * pack's only rise.  This suppresses unphysical drain-time rises (IR-lag when
- * the load drops, quantisation wobble) and smooths the reading.
+ * Reported-SoC slew.  The displayed SoC follows the model ASYMMETRICALLY:
+ *
+ *   - In the physical direction (falling while draining, rising while
+ *     charging) it tracks with a τ ≈ 32 s EMA (X120X_SOC_SLEW_SHIFT).
+ *   - Against the physical direction it may still move, but only as a slow
+ *     correction rate-capped to X120X_SOC_CORR_PPH (%/hour).
+ *
+ * A pure non-increasing clamp (running-min) suppressed drain-time rises but
+ * locked in transient UNDER-reads: a load spike sags the voltage, the slow IR
+ * term under-shoots for a minute, and the clamp then froze that too-low value
+ * even after the model recovered.  The rate-capped correction lets the gauge
+ * heal such an under-read gradually (it is correcting its own estimate, not
+ * claiming the pack gained charge) while a fast bounce still cannot form.
  */
-#define X120X_SOC_SLEW_SHIFT         6
+#define X120X_SOC_SLEW_SHIFT         6      /* physical-direction EMA, τ ≈ 32 s */
+#define X120X_SOC_CORR_PPH           2      /* against-direction correction %/h */
 
 /*
  * Open-circuit-voltage (OCV) curve.  SoC = remaining usable energy vs the
@@ -615,6 +624,7 @@ struct x120x_chip {
 	int			 ir_power_uw;		/* slow-smoothed power for IR comp */
 	int			 power_report_uw;	/* slow-smoothed power for ABI    */
 	bool			 power_report_primed;	/* report EMA seeded             */
+	s64			 soc_corr_acc;		/* against-direction slew budget */
 
 	/* Energy tracking for UPower / desktop environment integration */
 	s64			 energy_now_uwh;	 /* µWh = energy_full × soc%/100 */
@@ -961,25 +971,45 @@ static void x120x_poll_work(struct work_struct *work)
 			chip->soc_offset = 0;
 
 		/*
-		 * Physical monotonic constraint + smoothing.  A draining pack's
-		 * SoC can only fall, a charging pack's only rise; a drain-time
-		 * rise (IR-lag when the load drops) or a charge-time dip is
-		 * unphysical.  Clamp the slew target to the allowed direction,
-		 * then EMA the reported value toward it (X120X_SOC_SLEW_SHIFT).
-		 * Float/rest tracks both ways.  Seed directly on the first poll.
+		 * Asymmetric slew (see the constant comment).  Move fast (EMA)
+		 * in the physical direction, slow (rate-capped correction)
+		 * against it.  This suppresses transient bounces without the
+		 * running-min lock-in.  Seed directly on the first poll.
 		 */
 		if (first) {
 			new_256 = model_256;
+			chip->soc_corr_acc = 0;
 		} else {
-			int target = model_256;
+			int  delta     = model_256 - chip->capacity_256;
+			bool physical  = (delta < 0 && !new_ac) ||   /* fall+drain  */
+					 (delta > 0 && charging);    /* rise+charge */
 
-			if (!new_ac)		/* draining: non-increasing */
-				target = min_t(int, chip->capacity_256, model_256);
-			else if (charging)	/* charging: non-decreasing */
-				target = max_t(int, chip->capacity_256, model_256);
+			if (delta == 0) {
+				new_256 = chip->capacity_256;
+			} else if (physical) {
+				/* fast: τ ≈ 32 s EMA toward the model */
+				new_256 = chip->capacity_256 +
+					  (delta >> X120X_SOC_SLEW_SHIFT);
+				chip->soc_corr_acc = 0;
+			} else {
+				/* slow: correction capped to CORR_PPH %/h */
+				int step;
 
-			new_256 = chip->capacity_256 +
-				  ((target - chip->capacity_256) >> X120X_SOC_SLEW_SHIFT);
+				chip->soc_corr_acc += (s64)X120X_SOC_CORR_PPH *
+					256 * X120X_POLL_MS * 1000;
+				step = (int)div_s64(chip->soc_corr_acc,
+						3600LL * USEC_PER_SEC);
+				if (step > abs(delta))
+					step = abs(delta);
+				if (step > 0) {
+					new_256 = chip->capacity_256 +
+						  (delta > 0 ? step : -step);
+					chip->soc_corr_acc -= (s64)step *
+						3600 * USEC_PER_SEC;
+				} else {
+					new_256 = chip->capacity_256;
+				}
+			}
 		}
 
 		new_pct = clamp(new_256 >> 8, 0, 100);

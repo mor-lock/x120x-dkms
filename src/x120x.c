@@ -367,7 +367,7 @@ struct x120x_ocv_point {
  * quantised voltage are pure noise (10 s dSoC carries no signal at a few W).
  * The gauge path keeps its own event-driven estimator.
  */
-#define X120X_POWER_WINDOW_US  (120LL * USEC_PER_SEC) /* SoC-rate window, 2 min */
+#define X120X_POWER_WINDOW_US  (240LL * USEC_PER_SEC) /* SoC-rate window, 4 min */
 #define X120X_OCV_SLOW_SHIFT     6       /* a=1/64 dither-smoothing EMA (power) */
 #define X120X_SEED_CHARGE_UW  11000000   /* +11 W: CC-bulk charge into pack     */
 #define X120X_SEED_DRAIN_UW   (-5000000) /* -5 W: typical Pi load on battery    */
@@ -401,6 +401,17 @@ struct x120x_ocv_point {
 #define X120X_NOMINAL_MV          3600   /* datasheet nominal cell voltage, mV */
 #define X120X_USABLE_PERMILLE      940   /* usable (4.20→3.2 V) ÷ rated, ×1000  */
 #define X120X_R_UOHM            37000   /* pack DC resistance, uohm (IR comp) */
+/*
+ * Fixed, per-regime nominal IR offsets for the POWER-path SoC lookup.  The
+ * rate estimator must not use the live (power-derived) IR -- that closes the
+ * power->IR->rate loop.  But a bare terminal-voltage lookup over-reads dSoC/dt
+ * on the steep curve top (a constant voltage offset is a NON-constant SoC
+ * offset where the slope varies), spiking power_now and gluing the displayed
+ * SoC to 100%.  A fixed nominal offset (I_nom × R) places the lookup near true
+ * OCV so the rate is right, while staying independent of power_now.
+ */
+#define X120X_IR_NOM_DRAIN_UV    48000  /* ~5 W drain  @3.7 V → +48 mV to OCV  */
+#define X120X_IR_NOM_CHARGE_UV  100000  /* ~11 W charge @4.0 V → -100 mV to OCV */
 
 /*
  * Open-circuit-voltage (OCV) curve.  SoC = remaining usable energy vs the
@@ -1032,7 +1043,22 @@ static void x120x_poll_work(struct work_struct *work)
 			 * ~constant so it cancels in the rate anyway; keeping this
 			 * raw breaks the loop.  power_now -> IR is then one-way.
 			 */
-			soc_slow = x120x_voltage_soc256(chip->ocv_slow_uv, charging);
+			{
+				/*
+				 * Fixed nominal IR offset (see the constants):
+				 * placed at true OCV so the rate is correct on the
+				 * steep curve top; independent of power_now, so no
+				 * loop.  Sign: drain terminal < OCV (add), charge
+				 * terminal > OCV (subtract).
+				 */
+				int off = (regime == X120X_REGIME_CHARGE) ?
+						-X120X_IR_NOM_CHARGE_UV :
+					  (regime == X120X_REGIME_DRAIN) ?
+						 X120X_IR_NOM_DRAIN_UV : 0;
+
+				soc_slow = x120x_voltage_soc256(
+						chip->ocv_slow_uv + off, charging);
+			}
 
 			if (!chip->power_primed || regime != chip->prev_regime) {
 				/* Regime edge: seed instantly with the best prior. */
@@ -1071,8 +1097,8 @@ static void x120x_poll_work(struct work_struct *work)
 				live = clamp(live, X120X_POWER_MIN_UW,
 					     X120X_POWER_MAX_UW);
 
-				/* Crossfade seed -> live (~3 windows ≈ 6 min). */
-				chip->energy_rate_uw += (live - chip->energy_rate_uw) / 3;
+				/* Crossfade seed -> live (~4 windows ≈ 16 min). */
+				chip->energy_rate_uw += (live - chip->energy_rate_uw) / 4;
 				chip->rate_prev_soc256  = soc_slow;
 				chip->rate_prev_time_us = now_us;
 				if (chip->rate_windows < 100)

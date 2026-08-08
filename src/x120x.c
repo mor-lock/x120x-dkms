@@ -371,6 +371,17 @@ struct x120x_ocv_point {
 #define X120X_OCV_SLOW_SHIFT     6       /* a=1/64 dither-smoothing EMA (power) */
 #define X120X_SEED_CHARGE_UW  11000000   /* +11 W: CC-bulk charge into pack     */
 #define X120X_SEED_DRAIN_UW   (-5000000) /* -5 W: typical Pi load on battery    */
+/*
+ * Physical clamp on the live power estimate.  power_now = E_full × dSoC/dt is
+ * confounded at the pack top: right off the charger the surface charge relaxes,
+ * so the modelled SoC falls fast for a minute with little real energy leaving,
+ * yielding transient dSoC/dt spikes that read 4-5× the true load (~5 W).  Those
+ * spikes also feed the IR term and visibly distort SoC.  A drain never exceeds
+ * the Pi+HAT ceiling and a charge never exceeds the supply, so bound the live
+ * estimate to physical limits before crossfading.
+ */
+#define X120X_POWER_MIN_UW   (-12000000) /* max plausible drain, -12 W          */
+#define X120X_POWER_MAX_UW    (16000000) /* max plausible charge, +16 W         */
 #define X120X_SEED_FLOAT_UW     (-13000) /* -13 mW: standby sawtooth (seed-only)*/
 
 /*
@@ -388,7 +399,7 @@ struct x120x_ocv_point {
  * (78.5% of rated-to-2.5 V for the P50B pack); refine per pack if desired.
  */
 #define X120X_NOMINAL_MV          3600   /* datasheet nominal cell voltage, mV */
-#define X120X_USABLE_PERMILLE      785   /* usable (4.20→3.2 V) ÷ rated, ×1000  */
+#define X120X_USABLE_PERMILLE      940   /* usable (4.20→3.2 V) ÷ rated, ×1000  */
 #define X120X_R_UOHM            37000   /* pack DC resistance, uohm (IR comp) */
 
 /*
@@ -402,61 +413,55 @@ struct x120x_ocv_point {
  * discharge endpoint) and 0%=3.20 V, 100%=4.20 V.  R is X120X_R_UOHM.
  */
 static const struct x120x_ocv_point x120x_ocv[] = {
-	{ 3248000,   0 * 256 },
-	{ 3281130,   1 * 256 },
-	{ 3314259,   2 * 256 },
-	{ 3347388,   3 * 256 },
-	{ 3380518,   4 * 256 },
-	{ 3413648,   5 * 256 },
-	{ 3446777,   6 * 256 },
-	{ 3479906,   7 * 256 },
-	{ 3513036,   8 * 256 },
-	{ 3546166,   9 * 256 },
-	{ 3579295,  10 * 256 },
-	{ 3601294,  12 * 256 },
-	{ 3615152,  14 * 256 },
-	{ 3630655,  16 * 256 },
-	{ 3650267,  18 * 256 },
-	{ 3672314,  20 * 256 },
-	{ 3696744,  22 * 256 },
-	{ 3716496,  24 * 256 },
-	{ 3735455,  26 * 256 },
-	{ 3749841,  28 * 256 },
-	{ 3772310,  30 * 256 },
-	{ 3791371,  32 * 256 },
-	{ 3810750,  34 * 256 },
-	{ 3823565,  36 * 256 },
-	{ 3838071,  38 * 256 },
-	{ 3851661,  40 * 256 },
-	{ 3863081,  42 * 256 },
-	{ 3868728,  44 * 256 },
-	{ 3882883,  46 * 256 },
-	{ 3890088,  48 * 256 },
-	{ 3893173,  50 * 256 },
-	{ 3893673,  52 * 256 },
-	{ 3915295,  54 * 256 },
-	{ 3943193,  56 * 256 },
-	{ 3964360,  58 * 256 },
-	{ 3984561,  60 * 256 },
-	{ 4005150,  62 * 256 },
-	{ 4022359,  64 * 256 },
-	{ 4037040,  66 * 256 },
-	{ 4048663,  68 * 256 },
-	{ 4060017,  70 * 256 },
-	{ 4072630,  72 * 256 },
-	{ 4081045,  74 * 256 },
-	{ 4085461,  76 * 256 },
-	{ 4092462,  78 * 256 },
-	{ 4096606,  80 * 256 },
-	{ 4099852,  82 * 256 },
-	{ 4100352,  84 * 256 },
-	{ 4106939,  86 * 256 },
-	{ 4113434,  88 * 256 },
-	{ 4118096,  90 * 256 },
-	{ 4128018,  92 * 256 },
-	{ 4141313,  94 * 256 },
-	{ 4158470,  96 * 256 },
-	{ 4183100,  98 * 256 },
+	{ 3248100,   0 * 256 },
+	{ 3283100,   2 * 256 },
+	{ 3313100,   4 * 256 },
+	{ 3338100,   6 * 256 },
+	{ 3388100,   8 * 256 },
+	{ 3413100,  10 * 256 },
+	{ 3433100,  12 * 256 },
+	{ 3473100,  14 * 256 },
+	{ 3493100,  16 * 256 },
+	{ 3513100,  18 * 256 },
+	{ 3533100,  20 * 256 },
+	{ 3568100,  22 * 256 },
+	{ 3578100,  24 * 256 },
+	{ 3588100,  26 * 256 },
+	{ 3613100,  28 * 256 },
+	{ 3633100,  30 * 256 },
+	{ 3653100,  32 * 256 },
+	{ 3678100,  34 * 256 },
+	{ 3708100,  36 * 256 },
+	{ 3733100,  38 * 256 },
+	{ 3753100,  40 * 256 },
+	{ 3778100,  42 * 256 },
+	{ 3798100,  44 * 256 },
+	{ 3818100,  46 * 256 },
+	{ 3838100,  48 * 256 },
+	{ 3853100,  50 * 256 },
+	{ 3863100,  52 * 256 },
+	{ 3878100,  54 * 256 },
+	{ 3888100,  56 * 256 },
+	{ 3893100,  58 * 256 },
+	{ 3898100,  60 * 256 },
+	{ 3918100,  62 * 256 },
+	{ 3953100,  64 * 256 },
+	{ 3973100,  66 * 256 },
+	{ 3998100,  68 * 256 },
+	{ 4023100,  70 * 256 },
+	{ 4038100,  72 * 256 },
+	{ 4053100,  74 * 256 },
+	{ 4068100,  76 * 256 },
+	{ 4078100,  78 * 256 },
+	{ 4088100,  80 * 256 },
+	{ 4093100,  82 * 256 },
+	{ 4098100,  84 * 256 },
+	{ 4103100,  88 * 256 },
+	{ 4113100,  90 * 256 },
+	{ 4123100,  92 * 256 },
+	{ 4128100,  94 * 256 },
+	{ 4153100,  96 * 256 },
+	{ 4178100,  98 * 256 },
 	{ 4200000, 100 * 256 },
 };
 
@@ -1059,6 +1064,12 @@ static void x120x_poll_work(struct work_struct *work)
 				s64 de   = div_s64(e_full *
 					(soc_slow - chip->rate_prev_soc256), 25600);
 				int live = (int)div_s64(de * 3600LL * USEC_PER_SEC, dt);
+
+				/* Bound to physical limits: reject top-of-charge
+				 * surface-relaxation spikes before they crossfade
+				 * in and bleed into the IR term / SoC. */
+				live = clamp(live, X120X_POWER_MIN_UW,
+					     X120X_POWER_MAX_UW);
 
 				/* Crossfade seed -> live (~3 windows ≈ 6 min). */
 				chip->energy_rate_uw += (live - chip->energy_rate_uw) / 3;

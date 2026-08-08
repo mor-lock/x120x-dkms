@@ -1173,19 +1173,21 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->energy_now_uwh   = e_now;
 
 		/*
-		 * Smooth power_now for the ABI (τ ≈ 2 min, α = 1/256 at the
+		 * Smooth power_now for the ABI (τ ≈ 8.5 min, α = 1/1024 at the
 		 * 500 ms poll).  energy_rate_uw is a staircase — it steps once
-		 * per SoC-rate window (or per gauge event) — which reads as a
-		 * jumpy POWER_NOW.  A per-poll EMA gives a smooth reading while
-		 * still following real load trends.  Works for both SoC
-		 * sources since energy_rate_uw is set by whichever ran above.
+		 * per SoC-rate window (or per gauge event) — and the true Pi
+		 * load itself swings 2-10 W sample-to-sample (measured), so a
+		 * lightly-smoothed POWER_NOW reads jumpy.  A heavy per-poll EMA
+		 * reports the sustained draw while still following real load
+		 * trends (the minute-scale dips remain visible).  Works for
+		 * both SoC sources since energy_rate_uw is set by whichever ran.
 		 */
 		if (!chip->power_report_primed) {
 			chip->power_report_uw     = chip->energy_rate_uw;
 			chip->power_report_primed = true;
 		} else {
 			chip->power_report_uw +=
-				(chip->energy_rate_uw - chip->power_report_uw) >> 8;
+				(chip->energy_rate_uw - chip->power_report_uw) >> 10;
 		}
 
 		/*

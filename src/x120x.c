@@ -412,6 +412,14 @@ struct x120x_ocv_point {
  */
 #define X120X_IR_NOM_DRAIN_UV    48000  /* ~5 W drain  @3.7 V → +48 mV to OCV  */
 #define X120X_IR_NOM_CHARGE_UV  100000  /* ~11 W charge @4.0 V → -100 mV to OCV */
+/*
+ * Reported-SoC slew (α = 1/64 → τ ≈ 32 s at the 500 ms poll).  The displayed
+ * SoC is slewed toward the model with this EMA, and the target is clamped to
+ * the physical direction — a draining pack's SoC can only fall, a charging
+ * pack's only rise.  This suppresses unphysical drain-time rises (IR-lag when
+ * the load drops, quantisation wobble) and smooths the reading.
+ */
+#define X120X_SOC_SLEW_SHIFT         6
 
 /*
  * Open-circuit-voltage (OCV) curve.  SoC = remaining usable energy vs the
@@ -901,7 +909,8 @@ static void x120x_poll_work(struct work_struct *work)
 		 */
 		bool charging = (new_ac != 0) && !chip->charger_inhibited;
 		bool transition;
-		int  curve_256, ir_uv;
+		bool first = !chip->model_primed;
+		int  curve_256, ir_uv, model_256;
 
 		/* Warm the voltage EMA every poll (α = 1/8), both phases. */
 		if (chip->ocv_ema_uv == 0)
@@ -944,12 +953,34 @@ static void x120x_poll_work(struct work_struct *work)
 			chip->prev_charging = charging;
 		}
 
-		new_256 = clamp(curve_256 + chip->soc_offset, 0, 100 * 256);
+		model_256 = clamp(curve_256 + chip->soc_offset, 0, 100 * 256);
 
 		/* Decay the re-anchor offset toward 0 (τ ≈ 30 s at 500 ms poll). */
 		chip->soc_offset -= chip->soc_offset >> 6;
 		if (chip->soc_offset < 64 && chip->soc_offset > -64)
 			chip->soc_offset = 0;
+
+		/*
+		 * Physical monotonic constraint + smoothing.  A draining pack's
+		 * SoC can only fall, a charging pack's only rise; a drain-time
+		 * rise (IR-lag when the load drops) or a charge-time dip is
+		 * unphysical.  Clamp the slew target to the allowed direction,
+		 * then EMA the reported value toward it (X120X_SOC_SLEW_SHIFT).
+		 * Float/rest tracks both ways.  Seed directly on the first poll.
+		 */
+		if (first) {
+			new_256 = model_256;
+		} else {
+			int target = model_256;
+
+			if (!new_ac)		/* draining: non-increasing */
+				target = min_t(int, chip->capacity_256, model_256);
+			else if (charging)	/* charging: non-decreasing */
+				target = max_t(int, chip->capacity_256, model_256);
+
+			new_256 = chip->capacity_256 +
+				  ((target - chip->capacity_256) >> X120X_SOC_SLEW_SHIFT);
+		}
 
 		new_pct = clamp(new_256 >> 8, 0, 100);
 	} else {

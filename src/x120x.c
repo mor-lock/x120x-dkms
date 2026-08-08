@@ -402,11 +402,16 @@ struct x120x_ocv_point {
  * discharge endpoint) and 0%=3.20 V, 100%=4.20 V.  R is X120X_R_UOHM.
  */
 static const struct x120x_ocv_point x120x_ocv[] = {
-	{ 3198100,   0 * 256 },
-	{ 3328100,   2 * 256 },
-	{ 3409350,   4 * 256 },
-	{ 3484350,   6 * 256 },
-	{ 3545600,   8 * 256 },
+	{ 3248000,   0 * 256 },
+	{ 3281130,   1 * 256 },
+	{ 3314259,   2 * 256 },
+	{ 3347388,   3 * 256 },
+	{ 3380518,   4 * 256 },
+	{ 3413648,   5 * 256 },
+	{ 3446777,   6 * 256 },
+	{ 3479906,   7 * 256 },
+	{ 3513036,   8 * 256 },
+	{ 3546166,   9 * 256 },
 	{ 3579295,  10 * 256 },
 	{ 3601294,  12 * 256 },
 	{ 3615152,  14 * 256 },
@@ -884,7 +889,7 @@ static void x120x_poll_work(struct work_struct *work)
 		if (chip->ocv_ema_uv == 0)
 			chip->ocv_ema_uv = new_uv;
 		else
-			chip->ocv_ema_uv += (new_uv - chip->ocv_ema_uv) >> 3;
+			chip->ocv_ema_uv += (new_uv - chip->ocv_ema_uv) >> 5;
 
 		transition = chip->model_primed && (charging != chip->prev_charging);
 

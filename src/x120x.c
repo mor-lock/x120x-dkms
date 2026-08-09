@@ -1750,7 +1750,9 @@ static int x120x_charger_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STATUS:
 		if (!ac_online)
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-		else if (conservation_mode && charger_inhibited)
+		else if (charger_inhibited)
+			/* AC present but the charger is held off (Fast float-protect
+			 * or Long-Life band) — not delivering charge in either mode. */
 			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		else
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;

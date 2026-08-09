@@ -99,6 +99,7 @@
 #include <linux/hwmon.h>
 #include <linux/i2c.h>
 #include <linux/init.h>
+#include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -288,6 +289,7 @@ MODULE_PARM_DESC(soc_source,
 #define X120X_SOC_LOW_PCT	10	/* LOW below this % → desktop warning      */
 #define X120X_SOC_FULL_PCT	95	/* FULL above this %                        */
 #define X120X_FAST_RESUME_PCT	95	/* Fast mode: resume charging at/below this % */
+#define X120X_CHG_FULL_DEBOUNCE_MS 45000 /* Fast: gauge must read full this long before inhibit */
 
 /* Manufacturer and model name strings */
 #define X120X_MANUFACTURER		"SupTronics"
@@ -559,6 +561,7 @@ static int x120x_voltage_soc256(int uv, bool charging)
  * @ac_online:		1 if mains present, 0 if on battery
  * @conservation_mode:	true when Long life mode is active (charge_type=LONGLIFE)
  * @charger_inhibited:	cached GPIO16 state (true = charging stopped)
+ * @charge_full_since:	jiffies the gauge first read full (Fast-mode stop debounce); 0 = not full
  * @present:		false when consecutive I2C errors exceed threshold
  * @i2c_errors:		consecutive I2C read failure counter
  * @energy_now_uwh:	current energy in uWh (energy_full scaled by SOC)
@@ -594,6 +597,7 @@ struct x120x_chip {
 	int			 ac_online;
 	bool			 conservation_mode;	/* true = Long life, threshold hysteresis active */
 	bool			 charger_inhibited;	/* cached GPIO16 state: true = high (stopped) */
+	unsigned long		 charge_full_since;	/* jiffies the gauge first read full (Fast debounce); 0 = not full */
 	bool			 present;
 	int			 i2c_errors;
 
@@ -865,6 +869,7 @@ static void x120x_poll_work(struct work_struct *work)
 	 */
 	bool conservation_mode_snap = false;
 	int  capacity_pct_snap = 0;
+	int  raw_soc_snap      = 0;
 
 	/* ----------------------------------------------------------------
 	 * Read fuel gauge.  On failure, increment the error counter and
@@ -1303,6 +1308,7 @@ static void x120x_poll_work(struct work_struct *work)
 
 	conservation_mode_snap = chip->conservation_mode;
 	capacity_pct_snap      = chip->capacity_pct;
+	raw_soc_snap           = chip->raw_capacity_pct;
 
 	/*
 	 * Charge hysteresis.
@@ -1335,17 +1341,26 @@ static void x120x_poll_work(struct work_struct *work)
 	 * gpiod_set_value_cansleep is safe to call under a mutex.
 	 */
 	if (chip->gpio_chrg) {
-		int start_thr, end_thr;
+		int start_thr, end_thr, soc_band;
 		bool want_inhibit;
 
 		if (conservation_mode_snap) {
-			/* Long Life: user-configured band */
+			/* Long Life: user-configured band, on the reported SoC */
 			end_thr   = conservation_end;
 			start_thr = conservation_start;
+			soc_band  = capacity_pct_snap;
 		} else {
-			/* Fast: float-protection band at the top */
+			/*
+			 * Fast: float-protection band at the top, driven by the
+			 * RAW MAX17043 gauge rather than the fused SoC.  The fused
+			 * value plateaus a few % short of 100 at float (the nominal
+			 * IR offset over-corrects with no load), so keying the stop
+			 * on it never fires and the charger floats at CV forever;
+			 * the raw gauge reliably reaches 100 at a full pack.
+			 */
 			end_thr   = 100;
 			start_thr = X120X_FAST_RESUME_PCT;
+			soc_band  = raw_soc_snap;
 		}
 
 		/* Defensive: never let a misconfigured band invert */
@@ -1353,28 +1368,36 @@ static void x120x_poll_work(struct work_struct *work)
 			start_thr = end_thr - 1;
 
 		/*
-		 * Two-threshold hysteresis.  Stop at end_thr, resume at
-		 * start_thr, hold the current state in between.  Defaulting
-		 * to the held state in-band — combined with charger_inhibited
-		 * starting false and the explicit resume at/below start_thr —
-		 * keeps the charger on at boot, after a deep discharge, and in
-		 * any low-SoC state.
+		 * Two-threshold hysteresis with a debounce on the stop edge:
+		 * stop at end_thr — but only once the gauge has held full for
+		 * X120X_CHG_FULL_DEBOUNCE_MS, so a single transient 100% reading
+		 * can't cut charge — resume at start_thr, hold in between.
+		 * Defaulting to the held state in-band (plus resume at/below
+		 * start_thr) keeps the charger on at boot and after a deep
+		 * discharge.
 		 */
-		if (capacity_pct_snap >= end_thr)
-			want_inhibit = true;
-		else if (capacity_pct_snap <= start_thr)
-			want_inhibit = false;
-		else
-			want_inhibit = chip->charger_inhibited;
+		if (soc_band >= end_thr) {
+			if (!chip->charge_full_since)
+				chip->charge_full_since = jiffies;
+			want_inhibit = chip->charger_inhibited ||
+				time_after_eq(jiffies, chip->charge_full_since +
+					msecs_to_jiffies(X120X_CHG_FULL_DEBOUNCE_MS));
+		} else {
+			chip->charge_full_since = 0;
+			if (soc_band <= start_thr)
+				want_inhibit = false;
+			else
+				want_inhibit = chip->charger_inhibited;
+		}
 
 		if (want_inhibit != chip->charger_inhibited) {
 			x120x_gpio_set(chip->gpio_chrg, want_inhibit ? 1 : 0);
 			chip->charger_inhibited = want_inhibit;
 			dev_dbg(&chip->client->dev,
-				"%s mode: %s charging at %d%%\n",
+				"%s mode: %s charging at %d%% (band SoC)\n",
 				conservation_mode_snap ? "conservation" : "float",
 				want_inhibit ? "stopped" : "resumed",
-				capacity_pct_snap);
+				soc_band);
 			chrg_changed = true;
 			bat_changed  = true;
 		}

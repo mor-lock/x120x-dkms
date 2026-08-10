@@ -289,7 +289,7 @@ MODULE_PARM_DESC(soc_source,
 #define X120X_SOC_LOW_PCT	10	/* LOW below this % → desktop warning      */
 #define X120X_SOC_FULL_PCT	95	/* FULL above this %                        */
 #define X120X_FAST_RESUME_PCT	95	/* Fast mode: resume charging at/below this % */
-#define X120X_CHG_FULL_DEBOUNCE_MS 45000 /* Fast: gauge must read full this long before inhibit */
+#define X120X_CHG_FULL_DEBOUNCE_MS 600000 /* gauge must read full this long (10 min) before charge-off AND observer 100% pin */
 
 /* Manufacturer and model name strings */
 #define X120X_MANUFACTURER		"SupTronics"
@@ -395,14 +395,23 @@ struct x120x_ocv_point {
  *   ENERGY_FULL_DESIGN = battery_mah × X120X_NOMINAL_MV        (rated, to 2.5 V)
  *   ENERGY_FULL        = design × X120X_USABLE_PERMILLE / 1000 (usable window)
  *
- * ENERGY_FULL (usable) is also the scale for energy_now and the dSoC/dt power
+ * ENERGY_FULL (usable) is also the scale for energy_now and the observer power
  * estimate, so power reads true watts and SoC is linear in energy.  The usable
- * fraction was measured by integrating a full discharge to the 3.2 V cutoff
- * (78.5% of rated-to-2.5 V for the P50B pack); refine per pack if desired.
+ * fraction is coulomb-measured: a full-range discharge + GITT recharge closed
+ * the round trip at 63.0 Wh usable for this 4×P50B (20 Ah) pack, i.e. 63.0/72.0
+ * = 0.875 of rated-to-2.5 V.  Refine per pack if desired.
  */
 #define X120X_NOMINAL_MV          3600   /* datasheet nominal cell voltage, mV */
-#define X120X_USABLE_PERMILLE      940   /* usable (4.20→3.2 V) ÷ rated, ×1000  */
-#define X120X_R_UOHM            37000   /* pack DC resistance, uohm (IR comp) */
+#define X120X_USABLE_PERMILLE      875   /* usable (4.20→3.2 V) ÷ rated, ×1000 (coulomb-measured: 63.0/72.0 Wh) */
+#define X120X_R_UOHM            30000   /* pack DC resistance, uohm (R_cell 19 + R1 11, GITT-measured) */
+/*
+ * Cold-boot seed: nominal load used to IR-correct the first OCV lookup so a
+ * boot mid-cycle starts near truth, not the load-biased terminal voltage.
+ * Drain sags V below OCV (add IR); charge lifts it above (subtract IR).  Only
+ * the *seed* uses these — the steady observer is IR-free and self-anchoring.
+ */
+#define X120X_SEED_DIS_UW      5000000   /* nominal drain for boot IR seed, +5 W  */
+#define X120X_SEED_CHG_UW     10000000   /* nominal charge for boot IR seed, 10 W */
 /*
  * Fixed, per-regime nominal IR offsets for the POWER-path SoC lookup.  The
  * rate estimator must not use the live (power-derived) IR -- that closes the
@@ -437,64 +446,71 @@ struct x120x_ocv_point {
 
 /*
  * Open-circuit-voltage (OCV) curve.  SoC = remaining usable energy vs the
- * cell rest voltage.  ONE curve for both directions: the poll loop IR-
- * compensates the measured terminal to OCV (OCV = V - I*R, I = power_now/V,
- * signed) before the lookup, so charge rise and drain sag are removed and the
- * reading is load/charger-independent and continuous across transitions.
- * Built by splitting the measured charge/discharge hysteresis by the current
- * ratio (OCV ~1/3 up from discharge); anchored to the coulomb tie-point (9%
- * discharge endpoint) and 0%=3.20 V, 100%=4.20 V.  R is X120X_R_UOHM.
+ * cell rest (open-circuit) voltage.  Used by the recursive voltage observer:
+ * I = (OCV(SoC) - V)/R, P = I*V, energy integrates (see the poll loop).  The
+ * observer self-anchors to this curve, so the curve must be the ENERGY-TRUE
+ * rest OCV, not a load-biased one.  R is X120X_R_UOHM.
+ *
+ * Aggregate energy-true curve (Molicel INR21700-P50B ×4, 1S4P): the 5-100%
+ * range is coulomb-referenced from the Aug full-range discharges (validated by
+ * round-trip closure to ~100%); the 0-5% bottom knee is the mar5 deep-discharge
+ * shape, anchored to the usable window (0% = 3.20 V, the usable floor; 100% =
+ * 4.20 V).  54 points, 1% steps through the knee then 2%.
  */
 static const struct x120x_ocv_point x120x_ocv[] = {
-	{ 3248100,   0 * 256 },
-	{ 3283100,   2 * 256 },
-	{ 3313100,   4 * 256 },
-	{ 3338100,   6 * 256 },
-	{ 3388100,   8 * 256 },
-	{ 3413100,  10 * 256 },
-	{ 3433100,  12 * 256 },
-	{ 3473100,  14 * 256 },
-	{ 3493100,  16 * 256 },
-	{ 3513100,  18 * 256 },
-	{ 3533100,  20 * 256 },
-	{ 3568100,  22 * 256 },
-	{ 3578100,  24 * 256 },
-	{ 3588100,  26 * 256 },
-	{ 3613100,  28 * 256 },
-	{ 3633100,  30 * 256 },
-	{ 3653100,  32 * 256 },
-	{ 3678100,  34 * 256 },
-	{ 3708100,  36 * 256 },
-	{ 3733100,  38 * 256 },
-	{ 3753100,  40 * 256 },
-	{ 3778100,  42 * 256 },
-	{ 3798100,  44 * 256 },
-	{ 3818100,  46 * 256 },
-	{ 3838100,  48 * 256 },
-	{ 3853100,  50 * 256 },
-	{ 3863100,  52 * 256 },
-	{ 3878100,  54 * 256 },
-	{ 3888100,  56 * 256 },
-	{ 3893100,  58 * 256 },
-	{ 3898100,  60 * 256 },
-	{ 3918100,  62 * 256 },
-	{ 3953100,  64 * 256 },
-	{ 3973100,  66 * 256 },
-	{ 3998100,  68 * 256 },
-	{ 4023100,  70 * 256 },
-	{ 4038100,  72 * 256 },
-	{ 4053100,  74 * 256 },
-	{ 4068100,  76 * 256 },
-	{ 4078100,  78 * 256 },
-	{ 4088100,  80 * 256 },
-	{ 4093100,  82 * 256 },
-	{ 4098100,  84 * 256 },
-	{ 4103100,  88 * 256 },
-	{ 4113100,  90 * 256 },
-	{ 4123100,  92 * 256 },
-	{ 4128100,  94 * 256 },
-	{ 4153100,  96 * 256 },
-	{ 4178100,  98 * 256 },
+	{ 3200000,   0 * 256 },
+	{ 3227468,   1 * 256 },
+	{ 3255017,   2 * 256 },
+	{ 3282652,   3 * 256 },
+	{ 3311280,   4 * 256 },
+	{ 3334522,   5 * 256 },
+	{ 3357635,   6 * 256 },
+	{ 3384524,   8 * 256 },
+	{ 3411383,  10 * 256 },
+	{ 3435961,  12 * 256 },
+	{ 3463235,  14 * 256 },
+	{ 3492645,  16 * 256 },
+	{ 3512620,  18 * 256 },
+	{ 3538444,  20 * 256 },
+	{ 3562944,  22 * 256 },
+	{ 3581636,  24 * 256 },
+	{ 3590316,  26 * 256 },
+	{ 3611422,  28 * 256 },
+	{ 3636039,  30 * 256 },
+	{ 3656649,  32 * 256 },
+	{ 3675742,  34 * 256 },
+	{ 3703260,  36 * 256 },
+	{ 3732171,  38 * 256 },
+	{ 3757985,  40 * 256 },
+	{ 3778922,  42 * 256 },
+	{ 3798417,  44 * 256 },
+	{ 3813694,  46 * 256 },
+	{ 3833951,  48 * 256 },
+	{ 3851381,  50 * 256 },
+	{ 3864647,  52 * 256 },
+	{ 3874751,  54 * 256 },
+	{ 3886575,  56 * 256 },
+	{ 3893510,  58 * 256 },
+	{ 3898258,  60 * 256 },
+	{ 3922157,  62 * 256 },
+	{ 3950381,  64 * 256 },
+	{ 3978614,  66 * 256 },
+	{ 3999404,  68 * 256 },
+	{ 4022655,  70 * 256 },
+	{ 4039531,  72 * 256 },
+	{ 4054149,  74 * 256 },
+	{ 4067404,  76 * 256 },
+	{ 4077821,  78 * 256 },
+	{ 4087033,  80 * 256 },
+	{ 4093003,  82 * 256 },
+	{ 4097356,  84 * 256 },
+	{ 4100452,  86 * 256 },
+	{ 4103765,  88 * 256 },
+	{ 4112385,  90 * 256 },
+	{ 4120164,  92 * 256 },
+	{ 4131177,  94 * 256 },
+	{ 4151000,  96 * 256 },
+	{ 4177707,  98 * 256 },
 	{ 4200000, 100 * 256 },
 };
 
@@ -536,6 +552,36 @@ static int x120x_voltage_soc256(int uv, bool charging)
 {
 	(void)charging;
 	return x120x_ocv_to_soc256(x120x_ocv, ARRAY_SIZE(x120x_ocv), uv);
+}
+
+/**
+ * x120x_soc256_to_ocv() - inverse lookup: rest OCV (uV) from SoC x256.
+ * @soc256: state of charge x256 (0 .. 25600).
+ *
+ * Linear interpolation over the same OCV table (ascending in both fields).
+ * Used by the recursive observer to compute I = (OCV(SoC) - V)/R.
+ */
+static int x120x_soc256_to_ocv(int soc256)
+{
+	const struct x120x_ocv_point *t = x120x_ocv;
+	int n = ARRAY_SIZE(x120x_ocv);
+	int i;
+
+	if (soc256 <= t[0].soc256)
+		return t[0].uv;
+	if (soc256 >= t[n - 1].soc256)
+		return t[n - 1].uv;
+
+	for (i = 1; i < n; i++) {
+		if (soc256 <= t[i].soc256) {
+			s64 ds = t[i].soc256 - t[i - 1].soc256;
+			s64 dv = t[i].uv - t[i - 1].uv;
+
+			return t[i - 1].uv +
+			       (int)div_s64(dv * (soc256 - t[i - 1].soc256), ds);
+		}
+	}
+	return t[n - 1].uv;
 }
 
 
@@ -598,6 +644,7 @@ struct x120x_chip {
 	bool			 conservation_mode;	/* true = Long life, threshold hysteresis active */
 	bool			 charger_inhibited;	/* cached GPIO16 state: true = high (stopped) */
 	unsigned long		 charge_full_since;	/* jiffies the gauge first read full (Fast debounce); 0 = not full */
+	unsigned long		 gauge_full_since;	/* jiffies gauge first read >=100 (observer 100% pin); 0 = not full */
 	bool			 present;
 	int			 i2c_errors;
 
@@ -620,6 +667,15 @@ struct x120x_chip {
 	int			 soc_offset;
 	bool			 prev_charging;
 	bool			 model_primed;
+	/*
+	 * Recursive voltage observer (soc_source=voltage): SoC is the running
+	 * energy_now_uwh integral of P = I*V, I = (OCV(SoC) - V)/R.  It self-
+	 * anchors to the OCV curve (drift-free) and yields power for free.
+	 * @obs_primed: false until energy_now_uwh is seeded from the OCV lookup.
+	 * @obs_prev_us: ktime (us) of the previous observer step, for dt.
+	 */
+	bool			 obs_primed;
+	s64			 obs_prev_us;
 	/* power_now (voltage model): GPIO-regime state machine + slow rate */
 	int			 ocv_slow_uv;	 /* heavily-smoothed V for power  */
 	int			 rate_prev_soc256;	/* SoC×256 at power-window start */
@@ -629,8 +685,7 @@ struct x120x_chip {
 	enum x120x_regime	 prev_regime;		/* regime last poll              */
 	bool			 power_primed;		/* power estimator seeded        */
 	int			 ir_power_uw;		/* slow-smoothed power for IR comp */
-	int			 power_report_uw;	/* slow-smoothed power for ABI    */
-	bool			 power_report_primed;	/* report EMA seeded             */
+	int			 power_report_uw;	/* power reported to the ABI      */
 	int			 fusion_off_256;	/* slow EMA of (v_soc - gauge)   */
 	bool			 fusion_primed;		/* fusion offset seeded          */
 	int			 raw_capacity_pct;	/* raw MAX17043 ModelGauge SoC % */
@@ -920,99 +975,133 @@ static void x120x_poll_work(struct work_struct *work)
 
 	if (chip->soc_src == X120X_SOC_SRC_VOLTAGE) {
 		/*
-		 * Charge curve only while actively charging (grid present AND
-		 * charger not inhibited).  A full pack floating on grid, or one
-		 * held at a Long-Life threshold, has no charge current, so its
-		 * voltage has relaxed toward OCV → use the discharge/rest curve.
-		 * charger_inhibited here is the previous poll's value (the
-		 * hysteresis block updates it later); a one-poll lag is fine.
+		 * Recursive voltage observer (see the OCV table comment).  The
+		 * running energy_now_uwh integral IS the SoC state:
+		 *   SoC = energy_now / energy_full
+		 *   I   = (OCV(SoC) - V) / R      (discharge +, charge -)
+		 *   P   = I * V ;  energy_now -= P * dt
+		 * The OCV feedback self-anchors it (drift-free) and compensates
+		 * load implicitly, so the steady discharge needs no IR term or
+		 * gauge fusion; P is the true battery power for free.  (A nominal-
+		 * IR seed handles cold-boot and a gauge=100 pin re-anchors the
+		 * top — neither touches steady discharge tracking.)
+		 * V is the EMA-smoothed terminal (raw MAX17043 V is quantised).
 		 */
-		bool charging = (new_ac != 0) && !chip->charger_inhibited;
-		bool transition;
-		int  curve_256, ir_uv, model_256;
+		s64 e_full = div_s64((s64)battery_mah * X120X_NOMINAL_MV *
+				     X120X_USABLE_PERMILLE, 1000);
+		s64 obs_now_us = ktime_to_us(ktime_get());
+		s64 i_ua, p_uw, de_uwh, dt_us;
+		int soc256, ocv_uv;
 
-		/* Warm the voltage EMA every poll (α = 1/8), both phases. */
+		/* Warm the voltage EMA every poll (τ ≈ 16 s, α = 1/32). */
 		if (chip->ocv_ema_uv == 0)
 			chip->ocv_ema_uv = new_uv;
 		else
 			chip->ocv_ema_uv += (new_uv - chip->ocv_ema_uv) >> 5;
 
-		transition = chip->model_primed && (charging != chip->prev_charging);
-
 		/*
-		 * IR-compensate terminal -> OCV before lookup: OCV = V - I*R,
-		 * I = power_now/V (signed: charge +, drain -).  Uses last poll's
-		 * power_now; clamped so a bad sample cannot skew SoC.
+		 * Seed the energy state from the OCV lookup on the first
+		 * sample, IR-corrected by a nominal load so a cold boot
+		 * mid-cycle starts near truth instead of the load-depressed
+		 * (drain) or charge-lifted terminal voltage.  The seed only
+		 * sets the starting point: the observer self-anchors (< ~2 h
+		 * even from a maximally wrong drain seed, in the safe under-
+		 * read direction) and the full-charge rail erases any residual
+		 * exactly, so no precise seed or charger-cut rest read is
+		 * needed.  new_ac unreadable falls through as drain (safe).
 		 */
-		/*
-		 * Slow-smooth the power used for IR (τ ≈ 4 min, α = 1/512): the
-		 * true current changes slowly, but the live power_now is jumpy
-		 * (windowed dSoC/dt on quantised voltage) and feeding it here
-		 * injects SoC noise -- ~doubled the step noise in simulation.
-		 * The ABI POWER_NOW is served from a separate slow EMA
-		 * (power_report_uw) for the same reason; energy_rate_uw stays
-		 * the live internal state.
-		 */
-		chip->ir_power_uw += (chip->energy_rate_uw - chip->ir_power_uw) >> 8;
-		ir_uv = clamp((int)div_s64((s64)chip->ir_power_uw * X120X_R_UOHM,
-				   chip->ocv_ema_uv), -150000, 150000);
-		curve_256 = x120x_voltage_soc256(chip->ocv_ema_uv - ir_uv, charging);
-
-		if (!chip->model_primed) {
-			chip->soc_offset    = 0;
-			chip->prev_charging = charging;
-			chip->model_primed  = true;
-		} else if (transition) {
-			/*
-			 * Re-anchor: the new curve plus this offset equals the
-			 * last reported SoC, so the reading is continuous (no
-			 * jump).  capacity_256 still holds the previous value.
-			 */
-			chip->soc_offset    = chip->capacity_256 - curve_256;
-			chip->prev_charging = charging;
-		}
-
-		model_256 = clamp(curve_256 + chip->soc_offset, 0, 100 * 256);
-
-		/* Decay the re-anchor offset toward 0 (τ ≈ 30 s at 500 ms poll). */
-		chip->soc_offset -= chip->soc_offset >> 6;
-		if (chip->soc_offset < 64 && chip->soc_offset > -64)
-			chip->soc_offset = 0;
-
-		/*
-		 * Sensor fusion (see the constant block): report the gauge's
-		 * smooth shape at high SoC and our voltage at low SoC, with the
-		 * gauge's wrong absolute corrected by a slow (v_soc - gauge)
-		 * offset.  v_soc is model_256 (curve + IR + transition
-		 * re-anchor); g_soc is the raw MAX17043 ModelGauge SoC.  The
-		 * gauge already supplies the smoothness the old output slew
-		 * forced, so no slew/EMA is applied here.
-		 */
-		{
-			int v_soc = model_256;
-			int g_soc = clamp((int)MAX17043_SOC_256(soc_raw),
-					  0, 100 * 256);
-			int wnum;
-
-			if (!chip->fusion_primed) {
-				chip->fusion_off_256 = v_soc - g_soc;
-				chip->fusion_primed  = true;
-				new_256 = v_soc;
+		if (!chip->obs_primed) {
+			if (MAX17043_SOC_INT(soc_raw) >= 100) {
+				/*
+				 * Restart with the gauge already full → pin 100%.
+				 * The gauge is reliable at the top (it only craters
+				 * low), and a boot-100 reading means the pack has
+				 * been floating full — so skip the conservative IR
+				 * seed + top-up climb and start exactly at full.
+				 */
+				chip->energy_now_uwh = e_full;
 			} else {
-				chip->fusion_off_256 += ((v_soc - g_soc) -
-					chip->fusion_off_256)
-					>> X120X_FUSE_OFF_SHIFT;
-				/* gauge weight 0..256 over [W_LO,W_HI]% of v_soc */
-				wnum = clamp(((v_soc >> 8) - X120X_FUSE_W_LO) * 256 /
-					     (X120X_FUSE_W_HI - X120X_FUSE_W_LO),
-					     0, 256);
-				new_256 = (wnum * (g_soc + chip->fusion_off_256) +
-					   (256 - wnum) * v_soc) >> 8;
-				new_256 = clamp(new_256, 0, 100 * 256);
+				s64 nom_uw  = new_ac ? X120X_SEED_CHG_UW
+						     : X120X_SEED_DIS_UW;
+				s64 ir_uv   = div_s64(nom_uw * X120X_R_UOHM,
+						      max(chip->ocv_ema_uv, 1));
+				int seed_uv = new_ac
+					    ? chip->ocv_ema_uv - (int)ir_uv
+					    : chip->ocv_ema_uv + (int)ir_uv;
+				int seed = x120x_voltage_soc256(seed_uv, false);
+
+				chip->energy_now_uwh = div_s64(e_full * seed, 25600);
 			}
+			chip->obs_prev_us    = obs_now_us;
+			chip->obs_primed     = true;
+			chip->model_primed   = true;
 		}
 
+		/* dt since last step; guard gaps (resume, missed polls). */
+		dt_us = obs_now_us - chip->obs_prev_us;
+		chip->obs_prev_us = obs_now_us;
+		if (dt_us <= 0 || dt_us > 5LL * USEC_PER_SEC)
+			dt_us = (s64)X120X_POLL_MS * 1000;
+
+		soc256 = clamp((int)div_s64(chip->energy_now_uwh * 25600, e_full),
+			       0, 100 * 256);
+		ocv_uv = x120x_soc256_to_ocv(soc256);
+
+		/* I (µA) = (OCV - V)/R : (µV / µΩ) = A, ×1e6 = µA. */
+		i_ua = div_s64((s64)(ocv_uv - chip->ocv_ema_uv) * 1000000LL,
+			       X120X_R_UOHM);
+		/* P (µW) = I(µA) × V(µV) / 1e6 ; bound to physical limits. */
+		p_uw = div_s64(i_ua * chip->ocv_ema_uv, 1000000LL);
+		p_uw = clamp_t(s64, p_uw, -(s64)X120X_POWER_MAX_UW,
+			       -(s64)X120X_POWER_MIN_UW);
+		/* dE (µWh) = P(µW) × dt(µs) / 3.6e9 ; discharge (P>0) lowers E.
+		 * div64_s64: the divisor 3.6e9 exceeds s32, so div_s64 (32-bit
+		 * divisor) would wrap it — use the 64-bit-divisor variant. */
+		de_uwh = div64_s64(p_uw * dt_us, 3600LL * USEC_PER_SEC);
+		{
+			s64 prev_e = chip->energy_now_uwh;
+			s64 new_e  = clamp_t(s64, prev_e - de_uwh, 0, e_full);
+
+			/*
+			 * If the state railed (full/empty), the excess dE did
+			 * not actually flow — report only the power delivered so
+			 * a full pack floating on grid reads ~0 W, not a phantom
+			 * charge from V sitting just above the 100% OCV.
+			 */
+			if (new_e != prev_e - de_uwh && dt_us > 0)
+				p_uw = div_s64((prev_e - new_e) * 3600LL *
+					       USEC_PER_SEC, dt_us);
+			chip->energy_now_uwh = new_e;
+		}
+
+		/*
+		 * Gauge=100 pin.  The raw MAX17043 is reliable at the top (it
+		 * only craters low), so once it has held 100% for
+		 * X120X_CHG_FULL_DEBOUNCE_MS (10 min — genuinely full, the same
+		 * window that gates charge-off) WHILE ON GRID, hard-anchor the
+		 * observer energy to full.  Kills slow integrator drift over long
+		 * floats.  Gated on AC: the instant the grid drops (discharge)
+		 * the pin releases so the observer tracks the drain — otherwise
+		 * the laggy gauge, which keeps reading 100 for minutes after a
+		 * cut, would freeze SoC at full through the start of an outage.
+		 */
+		if (new_ac && MAX17043_SOC_INT(soc_raw) >= 100) {
+			if (!chip->gauge_full_since)
+				chip->gauge_full_since = jiffies;
+			if (time_after_eq(jiffies, chip->gauge_full_since +
+					  msecs_to_jiffies(X120X_CHG_FULL_DEBOUNCE_MS)))
+				chip->energy_now_uwh = e_full;
+		} else {
+			chip->gauge_full_since = 0;
+		}
+
+		new_256 = clamp((int)div_s64(chip->energy_now_uwh * 25600, e_full),
+				0, 100 * 256);
 		new_pct = clamp(new_256 >> 8, 0, 100);
+
+		/* Battery power for the rate/ABI (negative = discharging). */
+		chip->energy_rate_uw = clamp((int)-p_uw, X120X_POWER_MIN_UW,
+					     X120X_POWER_MAX_UW);
 	} else {
 		new_pct = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
 		new_256 = MAX17043_SOC_256(soc_raw); /* raw, unclamped for rate */
@@ -1080,107 +1169,10 @@ static void x120x_poll_work(struct work_struct *work)
 		 */
 		if (chip->soc_src == X120X_SOC_SRC_VOLTAGE) {
 			/*
-			 * GPIO-regime power estimator (see the header comment on
-			 * the seed constants).  Regime comes from grid + charger,
-			 * not from SoC; the magnitude is seeded on the edge then
-			 * crossfaded to a slow, dither-smoothed dSoC/dt.  FLOAT is
-			 * seed-only (its ~0.4%/day drift is unmeasurable live).
+			 * The recursive observer above already updated
+			 * energy_now_uwh and set energy_rate_uw (P = I*V);
+			 * nothing to do here for the voltage source.
 			 */
-			bool charging = (new_ac != 0) && !chip->charger_inhibited;
-			enum x120x_regime regime;
-			int soc_slow;
-
-			if (!new_ac)
-				regime = X120X_REGIME_DRAIN;
-			else if (charging)
-				regime = X120X_REGIME_CHARGE;
-			else
-				regime = X120X_REGIME_FLOAT;
-
-			/* Heavily-smoothed voltage recovers sub-LSB via dither. */
-			if (chip->ocv_slow_uv == 0)
-				chip->ocv_slow_uv = new_uv;
-			else
-				chip->ocv_slow_uv += (new_uv - chip->ocv_slow_uv)
-						     >> X120X_OCV_SLOW_SHIFT;
-			/*
-			 * Power rate uses the RAW (un-IR-corrected) SoC on
-			 * purpose: feeding the IR-corrected SoC back here made a
-			 * loop (power->IR->SoC->rate->power) with gain >1 that
-			 * oscillated (verified in simulation).  The IR offset is
-			 * ~constant so it cancels in the rate anyway; keeping this
-			 * raw breaks the loop.  power_now -> IR is then one-way.
-			 */
-			{
-				/*
-				 * Fixed nominal IR offset (see the constants):
-				 * placed at true OCV so the rate is correct on the
-				 * steep curve top; independent of power_now, so no
-				 * loop.  Sign: drain terminal < OCV (add), charge
-				 * terminal > OCV (subtract).
-				 */
-				int off = (regime == X120X_REGIME_CHARGE) ?
-						-X120X_IR_NOM_CHARGE_UV :
-					  (regime == X120X_REGIME_DRAIN) ?
-						 X120X_IR_NOM_DRAIN_UV : 0;
-
-				soc_slow = x120x_voltage_soc256(
-						chip->ocv_slow_uv + off, charging);
-			}
-
-			if (!chip->power_primed || regime != chip->prev_regime) {
-				/* Regime edge: seed instantly with the best prior. */
-				int seed;
-
-				if (regime == X120X_REGIME_CHARGE)
-					seed = chip->learned_charge_uw ?
-					       chip->learned_charge_uw :
-					       X120X_SEED_CHARGE_UW;
-				else if (regime == X120X_REGIME_DRAIN)
-					seed = chip->learned_drain_uw ?
-					       chip->learned_drain_uw :
-					       X120X_SEED_DRAIN_UW;
-				else
-					seed = X120X_SEED_FLOAT_UW;
-
-				chip->energy_rate_uw    = seed;
-				chip->rate_prev_soc256  = soc_slow;
-				chip->rate_prev_time_us = now_us;
-				chip->rate_windows      = 0;
-				chip->prev_regime       = regime;
-				chip->power_primed      = true;
-			} else if (regime == X120X_REGIME_FLOAT) {
-				chip->energy_rate_uw = X120X_SEED_FLOAT_UW;
-			} else if (now_us - chip->rate_prev_time_us >=
-				   X120X_POWER_WINDOW_US) {
-				/* Live magnitude: E_full × ΔSoC(slow) / Δt. */
-				s64 dt   = now_us - chip->rate_prev_time_us;
-				s64 de   = div_s64(e_full *
-					(soc_slow - chip->rate_prev_soc256), 25600);
-				int live = (int)div_s64(de * 3600LL * USEC_PER_SEC, dt);
-
-				/* Bound to physical limits: reject top-of-charge
-				 * surface-relaxation spikes before they crossfade
-				 * in and bleed into the IR term / SoC. */
-				live = clamp(live, X120X_POWER_MIN_UW,
-					     X120X_POWER_MAX_UW);
-
-				/* Crossfade seed -> live (~4 windows ≈ 16 min). */
-				chip->energy_rate_uw += (live - chip->energy_rate_uw) / 4;
-				chip->rate_prev_soc256  = soc_slow;
-				chip->rate_prev_time_us = now_us;
-				if (chip->rate_windows < 100)
-					chip->rate_windows++;
-				/* Once settled, learn this regime's typical power. */
-				if (chip->rate_windows >= 3) {
-					if (regime == X120X_REGIME_CHARGE)
-						chip->learned_charge_uw =
-							chip->energy_rate_uw;
-					else
-						chip->learned_drain_uw =
-							chip->energy_rate_uw;
-				}
-			}
 		} else if (new_256 != old_256) {
 			s64 dt = now_us - chip->rate_prev_time_us;
 
@@ -1234,25 +1226,20 @@ static void x120x_poll_work(struct work_struct *work)
 
 		chip->energy_full_uwh  = e_full;
 		chip->energy_empty_uwh = 0;
-		chip->energy_now_uwh   = e_now;
+		/* voltage observer owns energy_now_uwh; only the gauge derives it */
+		if (chip->soc_src != X120X_SOC_SRC_VOLTAGE)
+			chip->energy_now_uwh = e_now;
 
 		/*
-		 * Smooth power_now for the ABI (τ ≈ 8.5 min, α = 1/1024 at the
-		 * 500 ms poll).  energy_rate_uw is a staircase — it steps once
-		 * per SoC-rate window (or per gauge event) — and the true Pi
-		 * load itself swings 2-10 W sample-to-sample (measured), so a
-		 * lightly-smoothed POWER_NOW reads jumpy.  A heavy per-poll EMA
-		 * reports the sustained draw while still following real load
-		 * trends (the minute-scale dips remain visible).  Works for
-		 * both SoC sources since energy_rate_uw is set by whichever ran.
+		 * POWER_NOW = the freshly-computed rate, no ABI-side smoothing.
+		 * The voltage observer's energy_rate_uw is already V-EMA-smoothed
+		 * (τ ≈ 16 s, recomputed every poll) and the gauge supplies its own
+		 * smoothness (see the fusion note above), so neither path needs an
+		 * output filter.  v0.4.8 served energy_rate_uw directly; the later
+		 * per-poll EMA (commit 9239c60, 2-min → 8.5-min) only added slew
+		 * lag that grossly under-reported real load steps — dropped.
 		 */
-		if (!chip->power_report_primed) {
-			chip->power_report_uw     = chip->energy_rate_uw;
-			chip->power_report_primed = true;
-		} else {
-			chip->power_report_uw +=
-				(chip->energy_rate_uw - chip->power_report_uw) >> 10;
-		}
+		chip->power_report_uw = chip->energy_rate_uw;
 
 		/*
 		 * Dead battery detection: on grid, voltage stuck below
@@ -1493,7 +1480,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	charger_inhibited = chip->charger_inhibited;
 	energy_now_uwh  = chip->energy_now_uwh;
 	energy_full_uwh = chip->energy_full_uwh;
-	energy_rate_uw  = chip->power_report_uw;	/* smoothed for the ABI */
+	energy_rate_uw  = chip->power_report_uw;	/* power for the ABI */
 	battery_dead    = chip->battery_dead;
 	mutex_unlock(&chip->lock);
 
@@ -2131,7 +2118,7 @@ static int x120x_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 
 	mutex_lock(&chip->lock);
 	voltage_uv      = chip->voltage_uv;
-	energy_rate_uw  = chip->power_report_uw;	/* smoothed for the ABI */
+	energy_rate_uw  = chip->power_report_uw;	/* power for the ABI */
 	energy_now_uwh  = chip->energy_now_uwh;
 	mutex_unlock(&chip->lock);
 
@@ -2405,8 +2392,8 @@ static int x120x_probe(struct i2c_client *client)
 	dev_info(dev, "SoC source: %s\n",
 		 chip->soc_src == X120X_SOC_SRC_GAUGE ?
 		 "gauge (raw MAX17043 register)" :
-		 "voltage (NMC OCV model: charge curve on grid, discharge curve "
-		 "on battery, offset-decay re-anchoring)");
+		 "voltage (recursive OCV observer: I=(OCV(SoC)-V)/R, "
+		 "energy-integrating, self-anchoring; power = I*V)");
 
 	/* -- GPIO6: AC present -------------------------------------------- */
 	chip->gpio_ac = devm_gpiod_get_optional(dev, "ac-present", GPIOD_IN);
@@ -2795,7 +2782,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.4.10");
+MODULE_VERSION("0.5.2");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

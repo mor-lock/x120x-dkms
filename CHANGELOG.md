@@ -46,6 +46,30 @@ Release history of [x120x-dkms](README.md), newest first.
 ### v0.4.9 — Ubuntu install support
 
 **Fuel gauge / state of charge**
+- Gauge=100 observer pin: when the raw MAX17043 gauge has read 100% for
+  10 min (genuinely full — the same window that gates charge-off), or reads
+  100% at driver start, the voltage observer's energy is hard-anchored to
+  full.  Handles the common float-restart (no conservative under-read +
+  top-up climb) and prevents slow integrator drift over long floats.  The
+  gauge is trusted only for this `==100` full-assertion (it craters low);
+  the discharge/steady path stays voltage-only.
+- Charge-off debounce raised 45 s → 10 min: Fast mode keeps charging for
+  10 min after the gauge first reads 100% (CV top-off) before cutting the
+  charger, so "full" is genuine before the pin and termination fire.
+- POWER_NOW is no longer output-smoothed for the voltage observer: it was
+  passed through an α=1/1024 EMA (τ≈8.5 min) that lagged real load steps by
+  ~29 min.  The observer's rate is already V-EMA-smoothed (τ≈16 s) and the
+  gauge supplies its own smoothness, so POWER_NOW is served directly again
+  (the v0.4.8 behavior; the later EMA is dropped).
+- Cold-boot SoC seed is now IR-corrected by a nominal load (5 W drain,
+  10 W charge) instead of the raw terminal voltage, so a boot mid-cycle
+  starts near truth rather than the load-depressed (or charge-lifted)
+  reading.  The observer self-anchors from there — under ~2 h even from a
+  worst-case drain seed, and always in the safe under-read direction — and
+  the full-charge energy rail erases any residual exactly.  No gauge
+  dependency, range clamp, or charger-cut "rest" read is involved; only the
+  seed changes, the steady observer and `soc_source=gauge` path are
+  untouched.
 - New `soc_source` module param (default `voltage`) derives SoC from cell
   voltage via an NMC open-circuit-voltage model instead of the fuel gauge's
   SOC register.  The fuel gauge on these boards is a MAX17043-style clone

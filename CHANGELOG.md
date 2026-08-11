@@ -46,6 +46,13 @@ Release history of [x120x-dkms](README.md), newest first.
 ### v0.4.9 — Ubuntu install support
 
 **Fuel gauge / state of charge**
+- Hard terminal-voltage floor (SoC-independent safety backstop): on battery,
+  a raw cell voltage ≤ 3.00 V held for 20 s forces `CAPACITY_LEVEL=CRITICAL`
+  regardless of the SoC estimate, driving the OS (UPower/logind) shutdown
+  chain.  This is the last-ditch defence if the observer ever reads high
+  while the pack is genuinely empty — voltage is ground truth.  The 20 s
+  confirm rejects transient load-spike sags; gated on battery (never fires
+  while charging).
 - Gauge=100 observer pin: when the raw MAX17043 gauge has read 100% for
   10 min (genuinely full — the same window that gates charge-off), or reads
   100% at driver start, the voltage observer's energy is hard-anchored to

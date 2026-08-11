@@ -285,6 +285,15 @@ MODULE_PARM_DESC(soc_source,
 #define X120X_DEAD_BAT_MAX_RISE_UV_H	10000	/* 10 mV/h max rise — still dead           */
 #define X120X_DEAD_BAT_SOC_MAX		2	/* only below this SoC %                   */
 
+/*
+ * Hard terminal-voltage floor: on battery, a raw cell voltage at/below this,
+ * held for the confirm window, forces CAPACITY_LEVEL=CRITICAL regardless of the
+ * SoC estimate — the last-ditch backstop against an over-reading SoC.  The
+ * confirm window rejects transient load-spike sags (raw V, not EMA).
+ */
+#define X120X_VMIN_CRITICAL_UV		3000000	/* 3.00 V absolute on-battery floor        */
+#define X120X_VMIN_CONFIRM_US		(20LL * USEC_PER_SEC) /* 20 s sustained before firing */
+
 #define X120X_SOC_CRITICAL_PCT	 5	/* CRITICAL below this % → logind poweroff */
 #define X120X_SOC_LOW_PCT	10	/* LOW below this % → desktop warning      */
 #define X120X_SOC_FULL_PCT	95	/* FULL above this %                        */
@@ -723,6 +732,8 @@ struct x120x_chip {
 	s64			 dead_cand_start_us;	/* ktime when below threshold   */
 	int			 dead_cand_uv;		/* voltage when cand. started   */
 	bool			 battery_dead;		/* confirmed dead battery       */
+	s64			 vfloor_start_us;	/* ktime V first <= VMIN on battery; 0 = above */
+	bool			 vfloor_critical;	/* VMIN held → SoC-independent CRITICAL */
 
 	struct delayed_work	 work;
 	int			 heartbeat_ticks;	/* counts down to forced notify */
@@ -1291,6 +1302,35 @@ static void x120x_poll_work(struct work_struct *work)
 				}
 			}
 		}
+
+		/*
+		 * Hard voltage floor (SoC-independent safety backstop): on
+		 * battery, a raw terminal voltage at/below X120X_VMIN_CRITICAL_UV
+		 * held for X120X_VMIN_CONFIRM_US forces CRITICAL regardless of the
+		 * SoC estimate — the last line of defence if the observer ever
+		 * reads high while the pack is genuinely empty.  The confirm
+		 * window rejects transient load-spike sags.
+		 */
+		if (!new_ac && new_uv > 0 && new_uv <= X120X_VMIN_CRITICAL_UV) {
+			if (chip->vfloor_start_us == 0) {
+				chip->vfloor_start_us = now_us;
+			} else if (now_us - chip->vfloor_start_us >=
+					X120X_VMIN_CONFIRM_US &&
+				   !chip->vfloor_critical) {
+				chip->vfloor_critical = true;
+				dev_warn(&chip->client->dev,
+					 "terminal %d mV <= %d mV on battery for %lld s — CRITICAL (SoC-independent floor)\n",
+					 new_uv / 1000,
+					 X120X_VMIN_CRITICAL_UV / 1000,
+					 div_s64(now_us - chip->vfloor_start_us,
+						 USEC_PER_SEC));
+				bat_changed = true;
+			}
+		} else if (chip->vfloor_start_us || chip->vfloor_critical) {
+			chip->vfloor_start_us = 0;
+			chip->vfloor_critical = false;
+			bat_changed = true;
+		}
 	} /* end chip state update and rate estimation */
 
 	conservation_mode_snap = chip->conservation_mode;
@@ -1468,7 +1508,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	struct x120x_chip *chip = power_supply_get_drvdata(psy);
 	int ac_online, capacity_pct, capacity_256, voltage_uv, energy_rate_uw;
 	s64 energy_now_uwh, energy_full_uwh;
-	bool present, conservation_mode, battery_dead, charger_inhibited;
+	bool present, conservation_mode, battery_dead, charger_inhibited, vfloor_critical;
 
 	mutex_lock(&chip->lock);
 	ac_online        = chip->ac_online;
@@ -1482,6 +1522,7 @@ static int x120x_battery_get_property(struct power_supply *psy,
 	energy_full_uwh = chip->energy_full_uwh;
 	energy_rate_uw  = chip->power_report_uw;	/* power for the ABI */
 	battery_dead    = chip->battery_dead;
+	vfloor_critical = chip->vfloor_critical;
 	mutex_unlock(&chip->lock);
 
 	/*
@@ -1547,10 +1588,12 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		 */
 		if (!present) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN;
-		} else if (!ac_online && capacity_pct < X120X_SOC_CRITICAL_PCT) {
+		} else if (!ac_online && (capacity_pct < X120X_SOC_CRITICAL_PCT ||
+					  vfloor_critical)) {
 			/* Only report CRITICAL on battery — on AC the battery is
 			 * charging and shutting down would cause a livelock after
-			 * a deep discharge event. */
+			 * a deep discharge event.  vfloor_critical is the hard
+			 * voltage backstop for when the SoC estimate reads high. */
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
 		} else if (capacity_pct < X120X_SOC_LOW_PCT) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_LOW;
@@ -2782,7 +2825,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.2");
+MODULE_VERSION("0.5.3");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

@@ -19,6 +19,18 @@ clean undervoltage shutdown, and selectable Long Life battery
 preservation mode.  No custom scripts, no daemons, no polling
 loops.
 
+> **New in v0.5.0 — longer, smarter battery runtime.**
+> State of charge now comes from a **voltage-observer model** that
+> reconstructs SoC (and battery power) from the cell voltage itself,
+> instead of the crater-prone fuel-gauge chip.  The raw gauge flatlines
+> near empty while roughly a third of the pack is still usable; the
+> observer recovers that headroom to **safely extend battery runtime by
+> ~35%** — anchored by an absolute cell-voltage safety floor, so a bad
+> estimate can never over-discharge a cell.
+> → [**How the SoC model works**](docs/soc-model.md)
+
+![Gauge-trusting shutdown vs the voltage observer: both stop at the same safe 2% cutoff, but the observer reaches it about 35% later — recovering the runtime the raw gauge leaves on the table.](docs/images/observer-runtime.png)
+
 ![The X120x pack as a battery icon in the Raspberry Pi OS panel tray, green and on mains — indistinguishable from a laptop battery.](docs/images/battery-tray.png)
 
 ## Getting started

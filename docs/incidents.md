@@ -43,6 +43,24 @@ a characteristic oscillation signature — rapid ±20 mV swings at the
 fuel gauge output, a known pattern when the MAX17043 is alternating
 reads across cell groups that can no longer hold voltage.
 
+![The 2026-03-05 deep-discharge run to cell destruction: the fuel gauge floors
+at 0 % while the true SoC continues into negative](images/destruction-run.png)
+
+*The incident, reconstructed from the power database. **Top** — the raw fuel
+gauge (orange) craters to ~2 % while the cell is still at 3.55 V (~29 % really
+remaining) and then flatlines, giving no further information for the remaining
+~4 hours; the voltage-observer model (blue, replayed on the recorded voltage)
+instead tracks the true SoC straight through 0 % and into **negative** — the
+pack was drained **far past empty**. **Middle** — cell voltage falling to
+2.54 V, well past the 3.0 V damage threshold. **Bottom** — battery power
+(`P = I·V`, recovered by the observer from voltage alone) held a steady ~7 W
+until the cell could no longer sustain the load and collapsed (dashed tail,
+where the fixed-resistance model breaks down). Nothing stopped the drain — no
+undervoltage safeguard existed yet. The SoC below the 3.20 V usable floor is a
+linear extrapolation of the OCV curve — continuing the near-empty slope down to
+the ~2.5 V physical floor — so the negative value (~−13 % at the collapse) is an
+estimate; the point is that the pack went well below 0 %.*
+
 #### What the data revealed
 
 Analysis of the power database from the incident produced several

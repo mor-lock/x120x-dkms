@@ -46,6 +46,14 @@ Release history of [x120x-dkms](README.md), newest first.
 ### v0.4.9 — Ubuntu install support
 
 **Fuel gauge / state of charge**
+- Full-charge debounce lengthened 10 min → 30 min (`X120X_CHG_FULL_DEBOUNCE_MS`).
+  The gauge=100% assertion now gates both charge-off and the observer 100% pin
+  after 30 min of held-full instead of 10.  On the flat CV top the observer's
+  charge current `(OCV−V)/R → 0` as SoC → 100, so it approaches full only
+  asymptotically (τ ≈ 11 min measured); waiting ~3τ lets the pack integrate to
+  ~99.7% before the anchor, shrinking the pin snap (and the next-discharge
+  starting over-estimate) from ~1.6% to ~0.3%.  Cost is ~20 min extra CV hold
+  per top-off — negligible for a UPS that floats near full continuously.
 - Hard terminal-voltage floor (SoC-independent safety backstop): on battery,
   a raw cell voltage ≤ 3.00 V held for 20 s forces `CAPACITY_LEVEL=CRITICAL`
   regardless of the SoC estimate, driving the OS (UPower/logind) shutdown

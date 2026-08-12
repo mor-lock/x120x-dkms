@@ -298,7 +298,7 @@ MODULE_PARM_DESC(soc_source,
 #define X120X_SOC_LOW_PCT	10	/* LOW below this % → desktop warning      */
 #define X120X_SOC_FULL_PCT	95	/* FULL above this %                        */
 #define X120X_FAST_RESUME_PCT	95	/* Fast mode: resume charging at/below this % */
-#define X120X_CHG_FULL_DEBOUNCE_MS 600000 /* gauge must read full this long (10 min) before charge-off AND observer 100% pin */
+#define X120X_CHG_FULL_DEBOUNCE_MS 1800000 /* gauge must read full this long (30 min) before charge-off AND observer 100% pin */
 
 /* Manufacturer and model name strings */
 #define X120X_MANUFACTURER		"SupTronics"
@@ -1088,7 +1088,9 @@ static void x120x_poll_work(struct work_struct *work)
 		/*
 		 * Gauge=100 pin.  The raw MAX17043 is reliable at the top (it
 		 * only craters low), so once it has held 100% for
-		 * X120X_CHG_FULL_DEBOUNCE_MS (10 min — genuinely full, the same
+		 * X120X_CHG_FULL_DEBOUNCE_MS (30 min — the CV taper runs ~3
+		 * time-constants past gauge=100 so the pack integrates to ~99.7%
+		 * before the anchor, shrinking the pin snap to ~0.3%; the same
 		 * window that gates charge-off) WHILE ON GRID, hard-anchor the
 		 * observer energy to full.  Kills slow integrator drift over long
 		 * floats.  Gated on AC: the instant the grid drops (discharge)
@@ -2825,7 +2827,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.3");
+MODULE_VERSION("0.5.4");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

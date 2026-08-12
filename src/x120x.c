@@ -399,73 +399,144 @@ struct x120x_ocv_point {
 #define X120X_SEED_CHG_UW     10000000   /* nominal charge for boot IR seed, 10 W */
 
 /*
- * Open-circuit-voltage (OCV) curve.  SoC = remaining usable energy vs the
+ * Open-circuit-voltage (OCV) curves.  SoC = remaining usable energy vs the
  * cell rest (open-circuit) voltage.  Used by the recursive voltage observer:
- * I = (OCV(SoC) - V)/R, P = I*V, energy integrates (see the poll loop).  The
- * observer self-anchors to this curve, so the curve must be the ENERGY-TRUE
- * rest OCV, not a load-biased one.  R is X120X_R_UOHM.
+ * I = (OCV(SoC) - V)/R, P = I*V, energy integrates (see the poll loop).
  *
- * Aggregate energy-true curve (Molicel INR21700-P50B ×4, 1S4P): the 5-100%
- * range is coulomb-referenced from the Aug full-range discharges (validated by
- * round-trip closure to ~100%); the 0-5% bottom knee is the mar5 deep-discharge
- * shape, anchored to the usable window (0% = 3.20 V, the usable floor; 100% =
- * 4.20 V).  54 points, 1% steps through the knee then 2%.
+ * TWO branches, selected by charge direction, because NMC has a real OCV
+ * hysteresis: at a given SoC the rested voltage sits higher just after
+ * charging than just after discharging (~115 mV at low SoC, collapsing to ~0
+ * above 80%).  The observer uses the discharge table on battery / at rest and
+ * the charge table while charging, so the estimate no longer front-loads on
+ * the charge leg (a single mean curve read the charge current ~half a
+ * hysteresis too high at low SoC).
+ *
+ * Both tables are the ENERGY-TRUE rested OCV (not load-biased): the mid-range
+ * (25-77%) comes from an ECM characterization cycle with settled rest points
+ * on BOTH branches, coulomb-anchored; the discharge low-SoC knee (<9%) is a
+ * deep-discharge shape scaled to the usable floor (0% = 3.20 V); the charge
+ * branch below 23% is the discharge branch plus the measured hysteresis.
+ * Molicel INR21700-P50B ×4, 1S4P; 100% = 4.20 V terminal (discharge) /
+ * 4.213 V (charge, surface-charge top).  56 points, 1% steps through the knee
+ * then 2%.  R is X120X_R_UOHM.  NMC-calibrated; other NMC transfers within a
+ * few %, LFP is unsupported (flat plateau).
  */
-static const struct x120x_ocv_point x120x_ocv[] = {
+static const struct x120x_ocv_point x120x_ocv_discharge[] = {
 	{ 3200000,   0 * 256 },
-	{ 3227468,   1 * 256 },
-	{ 3255017,   2 * 256 },
-	{ 3282652,   3 * 256 },
-	{ 3311280,   4 * 256 },
-	{ 3334522,   5 * 256 },
-	{ 3357635,   6 * 256 },
-	{ 3384524,   8 * 256 },
-	{ 3411383,  10 * 256 },
-	{ 3435961,  12 * 256 },
-	{ 3463235,  14 * 256 },
-	{ 3492645,  16 * 256 },
-	{ 3512620,  18 * 256 },
-	{ 3538444,  20 * 256 },
-	{ 3562944,  22 * 256 },
-	{ 3581636,  24 * 256 },
-	{ 3590316,  26 * 256 },
-	{ 3611422,  28 * 256 },
-	{ 3636039,  30 * 256 },
-	{ 3656649,  32 * 256 },
-	{ 3675742,  34 * 256 },
-	{ 3703260,  36 * 256 },
-	{ 3732171,  38 * 256 },
-	{ 3757985,  40 * 256 },
-	{ 3778922,  42 * 256 },
-	{ 3798417,  44 * 256 },
-	{ 3813694,  46 * 256 },
-	{ 3833951,  48 * 256 },
-	{ 3851381,  50 * 256 },
-	{ 3864647,  52 * 256 },
-	{ 3874751,  54 * 256 },
-	{ 3886575,  56 * 256 },
-	{ 3893510,  58 * 256 },
-	{ 3898258,  60 * 256 },
-	{ 3922157,  62 * 256 },
-	{ 3950381,  64 * 256 },
-	{ 3978614,  66 * 256 },
-	{ 3999404,  68 * 256 },
-	{ 4022655,  70 * 256 },
-	{ 4039531,  72 * 256 },
-	{ 4054149,  74 * 256 },
-	{ 4067404,  76 * 256 },
-	{ 4077821,  78 * 256 },
-	{ 4087033,  80 * 256 },
-	{ 4093003,  82 * 256 },
-	{ 4097356,  84 * 256 },
-	{ 4100452,  86 * 256 },
-	{ 4103765,  88 * 256 },
-	{ 4112385,  90 * 256 },
-	{ 4120164,  92 * 256 },
-	{ 4131177,  94 * 256 },
+	{ 3222666,   1 * 256 },
+	{ 3245599,   2 * 256 },
+	{ 3269438,   3 * 256 },
+	{ 3292276,   4 * 256 },
+	{ 3313208,   5 * 256 },
+	{ 3330662,   6 * 256 },
+	{ 3342521,   7 * 256 },
+	{ 3352964,   8 * 256 },
+	{ 3364393,   9 * 256 },
+	{ 3376690,  10 * 256 },
+	{ 3402578,  12 * 256 },
+	{ 3428700,  14 * 256 },
+	{ 3455008,  16 * 256 },
+	{ 3480457,  18 * 256 },
+	{ 3502744,  20 * 256 },
+	{ 3523060,  22 * 256 },
+	{ 3542247,  24 * 256 },
+	{ 3561078,  26 * 256 },
+	{ 3580329,  28 * 256 },
+	{ 3600754,  30 * 256 },
+	{ 3621939,  32 * 256 },
+	{ 3643511,  34 * 256 },
+	{ 3665636,  36 * 256 },
+	{ 3688478,  38 * 256 },
+	{ 3712200,  40 * 256 },
+	{ 3738433,  42 * 256 },
+	{ 3765267,  44 * 256 },
+	{ 3788218,  46 * 256 },
+	{ 3808419,  48 * 256 },
+	{ 3827242,  50 * 256 },
+	{ 3845642,  52 * 256 },
+	{ 3863595,  54 * 256 },
+	{ 3880949,  56 * 256 },
+	{ 3898063,  58 * 256 },
+	{ 3915300,  60 * 256 },
+	{ 3932702,  62 * 256 },
+	{ 3950095,  64 * 256 },
+	{ 3967516,  66 * 256 },
+	{ 3984964,  68 * 256 },
+	{ 4002400,  70 * 256 },
+	{ 4019942,  72 * 256 },
+	{ 4037459,  74 * 256 },
+	{ 4054547,  76 * 256 },
+	{ 4073085,  78 * 256 },
+	{ 4087000,  80 * 256 },
+	{ 4093175,  82 * 256 },
+	{ 4097400,  84 * 256 },
+	{ 4100440,  86 * 256 },
+	{ 4103800,  88 * 256 },
+	{ 4110475,  90 * 256 },
+	{ 4120200,  92 * 256 },
+	{ 4133547,  94 * 256 },
 	{ 4151000,  96 * 256 },
-	{ 4177707,  98 * 256 },
+	{ 4172966,  98 * 256 },
 	{ 4200000, 100 * 256 },
+};
+
+static const struct x120x_ocv_point x120x_ocv_charge[] = {
+	{ 3315000,   0 * 256 },
+	{ 3337666,   1 * 256 },
+	{ 3360599,   2 * 256 },
+	{ 3384438,   3 * 256 },
+	{ 3407276,   4 * 256 },
+	{ 3428208,   5 * 256 },
+	{ 3445662,   6 * 256 },
+	{ 3457521,   7 * 256 },
+	{ 3467964,   8 * 256 },
+	{ 3479393,   9 * 256 },
+	{ 3491690,  10 * 256 },
+	{ 3517578,  12 * 256 },
+	{ 3543700,  14 * 256 },
+	{ 3570008,  16 * 256 },
+	{ 3595457,  18 * 256 },
+	{ 3617744,  20 * 256 },
+	{ 3637804,  22 * 256 },
+	{ 3656479,  24 * 256 },
+	{ 3674905,  26 * 256 },
+	{ 3693852,  28 * 256 },
+	{ 3713754,  30 * 256 },
+	{ 3731510,  32 * 256 },
+	{ 3746690,  34 * 256 },
+	{ 3762571,  36 * 256 },
+	{ 3778694,  38 * 256 },
+	{ 3795200,  40 * 256 },
+	{ 3813841,  42 * 256 },
+	{ 3832551,  44 * 256 },
+	{ 3846469,  46 * 256 },
+	{ 3856201,  48 * 256 },
+	{ 3866242,  50 * 256 },
+	{ 3878106,  52 * 256 },
+	{ 3891032,  54 * 256 },
+	{ 3906133,  56 * 256 },
+	{ 3922191,  58 * 256 },
+	{ 3938300,  60 * 256 },
+	{ 3953925,  62 * 256 },
+	{ 3969193,  64 * 256 },
+	{ 3984400,  66 * 256 },
+	{ 3999483,  68 * 256 },
+	{ 4014400,  70 * 256 },
+	{ 4028968,  72 * 256 },
+	{ 4043541,  74 * 256 },
+	{ 4058766,  76 * 256 },
+	{ 4076085,  78 * 256 },
+	{ 4088842,  80 * 256 },
+	{ 4094175,  82 * 256 },
+	{ 4097911,  84 * 256 },
+	{ 4100584,  86 * 256 },
+	{ 4103800,  88 * 256 },
+	{ 4111102,  90 * 256 },
+	{ 4122342,  92 * 256 },
+	{ 4137547,  94 * 256 },
+	{ 4157302,  96 * 256 },
+	{ 4182339,  98 * 256 },
+	{ 4213000, 100 * 256 },
 };
 
 /**
@@ -500,25 +571,31 @@ static int x120x_ocv_to_soc256(const struct x120x_ocv_point *t, int n, int uv)
 /**
  * x120x_voltage_soc256() - SoC x256 from a cell voltage via the OCV table.
  * @uv:       open-circuit cell voltage in microvolts (IR-corrected by caller).
- * @charging: unused; kept for call-site compatibility (one OCV curve now).
+ * @charging: true = use the charge-branch table, false = discharge branch.
  */
 static int x120x_voltage_soc256(int uv, bool charging)
 {
-	(void)charging;
-	return x120x_ocv_to_soc256(x120x_ocv, ARRAY_SIZE(x120x_ocv), uv);
+	return charging
+		? x120x_ocv_to_soc256(x120x_ocv_charge,
+				      ARRAY_SIZE(x120x_ocv_charge), uv)
+		: x120x_ocv_to_soc256(x120x_ocv_discharge,
+				      ARRAY_SIZE(x120x_ocv_discharge), uv);
 }
 
 /**
  * x120x_soc256_to_ocv() - inverse lookup: rest OCV (uV) from SoC x256.
- * @soc256: state of charge x256 (0 .. 25600).
+ * @soc256:   state of charge x256 (0 .. 25600).
+ * @charging: true = charge-branch OCV, false = discharge branch (hysteresis).
  *
- * Linear interpolation over the same OCV table (ascending in both fields).
+ * Linear interpolation over the selected OCV table (ascending in both fields).
  * Used by the recursive observer to compute I = (OCV(SoC) - V)/R.
  */
-static int x120x_soc256_to_ocv(int soc256)
+static int x120x_soc256_to_ocv(int soc256, bool charging)
 {
-	const struct x120x_ocv_point *t = x120x_ocv;
-	int n = ARRAY_SIZE(x120x_ocv);
+	const struct x120x_ocv_point *t = charging ? x120x_ocv_charge
+						   : x120x_ocv_discharge;
+	int n = charging ? ARRAY_SIZE(x120x_ocv_charge)
+			 : ARRAY_SIZE(x120x_ocv_discharge);
 	int i;
 
 	if (soc256 <= t[0].soc256)
@@ -913,9 +990,10 @@ static void x120x_poll_work(struct work_struct *work)
 		 *   P   = I * V ;  energy_now -= P * dt
 		 * The OCV feedback self-anchors it (drift-free) and compensates
 		 * load implicitly, so the steady discharge needs no IR term; P is
-		 * the true battery power for free.  (A nominal-IR seed handles
-		 * cold-boot and a gauge=100 pin re-anchors the top — neither
-		 * touches steady discharge tracking.)
+		 * the true battery power for free.  The charge/discharge OCV
+		 * tables are selected by charge direction (hysteresis).  (A
+		 * nominal-IR seed handles cold-boot and a gauge=100 pin re-anchors
+		 * the top — neither touches steady discharge tracking.)
 		 * V is the EMA-smoothed terminal (raw MAX17043 V is quantised).
 		 */
 		s64 e_full = div_s64((s64)battery_mah * X120X_NOMINAL_MV *
@@ -923,6 +1001,15 @@ static void x120x_poll_work(struct work_struct *work)
 		s64 obs_now_us = ktime_to_us(ktime_get());
 		s64 i_ua, p_uw, de_uwh, dt_us;
 		int soc256, ocv_uv;
+		/*
+		 * Charge branch active = on grid AND the charger is not
+		 * inhibited.  Picks the charge-hysteresis OCV table while
+		 * charging and the discharge table on battery / at float.  Only
+		 * the OCV lookup switches; energy_now_uwh (the SoC state) stays
+		 * continuous across the flip, so SoC never steps — only the
+		 * rate does, and only where it should.
+		 */
+		bool charging = new_ac && !chip->charger_inhibited;
 
 		/* Warm the voltage EMA every poll (τ ≈ 16 s, α = 1/32). */
 		if (chip->ocv_ema_uv == 0)
@@ -959,7 +1046,8 @@ static void x120x_poll_work(struct work_struct *work)
 				int seed_uv = new_ac
 					    ? chip->ocv_ema_uv - (int)ir_uv
 					    : chip->ocv_ema_uv + (int)ir_uv;
-				int seed = x120x_voltage_soc256(seed_uv, false);
+				int seed = x120x_voltage_soc256(seed_uv,
+								charging);
 
 				chip->energy_now_uwh = div_s64(e_full * seed, 25600);
 			}
@@ -975,7 +1063,7 @@ static void x120x_poll_work(struct work_struct *work)
 
 		soc256 = clamp((int)div_s64(chip->energy_now_uwh * 25600, e_full),
 			       0, 100 * 256);
-		ocv_uv = x120x_soc256_to_ocv(soc256);
+		ocv_uv = x120x_soc256_to_ocv(soc256, charging);
 
 		/* I (µA) = (OCV - V)/R : (µV / µΩ) = A, ×1e6 = µA. */
 		i_ua = div_s64((s64)(ocv_uv - chip->ocv_ema_uv) * 1000000LL,
@@ -2746,7 +2834,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.4");
+MODULE_VERSION("0.5.5");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

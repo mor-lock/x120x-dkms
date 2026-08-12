@@ -46,6 +46,20 @@ Release history of [x120x-dkms](README.md), newest first.
 ### v0.4.9 — Ubuntu install support
 
 **Fuel gauge / state of charge**
+- Two-branch (charge/discharge) OCV tables replacing the single curve. NMC has
+  a real OCV hysteresis — at a given SoC the rested voltage is higher just after
+  charging than just after discharging (~115 mV low, → ~0 above 80%). The
+  observer now selects the charge-branch table while charging (`ac_online &&
+  !charger_inhibited`) and the discharge branch on battery/at rest, so the
+  estimate no longer front-loads on the charge leg (a single mean curve read the
+  charge current ~half a hysteresis too high at low SoC). `energy_now` stays
+  continuous across a branch flip, so SoC never steps — only the rate does.
+  Both tables are energy-true rested OCV from an ECM characterization cycle
+  (settled rest points on both branches, coulomb-anchored) with the low-SoC knee
+  from a scaled deep-discharge shape; 56 points each. Validated against an
+  independent coulomb reference over 5 days of logged telemetry: RMS 3.75 % /
+  max 9.8 % vs truth, beating the previous single-curve (4.73 % / 17.2 %) and
+  the raw gauge (11.1 % / 27.4 %). NMC-calibrated; LFP unsupported.
 - Removed dead code superseded by the recursive observer: the entire unused
   v_soc↔gauge **fusion** subsystem (`fusion_off_256`, `fusion_primed`,
   `FUSE_W_LO/W_HI/OFF_SHIFT` and its doc block), the abandoned live-dSoC/dt

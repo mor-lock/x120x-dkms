@@ -99,7 +99,15 @@ is unreliable.  The gauge's own raw reading is exposed separately as
 full algorithm.
 Pass `--soc-source gauge` to use the raw fuel-gauge register instead.
 The curves assume 4.2 V Li-ion (NMC/NCA) cells, which is all the
-hardware can charge.
+hardware can charge, and are calibrated at roughly room temperature.
+The board has no ambient- or battery-temperature sensor, so there is no
+temperature compensation — but because SoC is voltage-anchored and
+shutdown is a fixed voltage floor, out-of-range temperature degrades the
+estimate *gracefully and never unsafely*: it cannot over-discharge a
+cell, and it self-reflects a cold pack's reduced capacity (SoC just
+drops faster); the SoC readout only reads a little nonlinearly and the
+runtime-hours estimate drifts. See
+**[docs/soc-model.md](docs/soc-model.md)** for the full envelope.
 
 Before rebooting, make sure the power supply is connected to the
 **UPS board's own power input**, not the Pi's USB-C port.  The Pi is

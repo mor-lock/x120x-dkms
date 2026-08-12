@@ -98,3 +98,43 @@ high-SoC region, never for the absolute near empty.
 | `X120X_FUSE_W_LO` / `_W_HI` | SoC band over which the gauge weight ramps 0→1 |
 | `X120X_FUSE_OFF_SHIFT` | time constant of the voltage↔gauge offset EMA |
 | `X120X_POWER_WINDOW_US` | window for the `dSoC/dt` power estimate |
+
+## Calibration envelope & temperature
+
+The OCV curves are calibrated for **NMC/NCA 4.2 V Li-ion** cells (a
+4×Molicel INR21700-P50B pack, 1S4P) at roughly **room temperature
+(~15–30 °C)**. The board has **no ambient- or battery-temperature
+sensor** — the MAX17043-style gauge reports voltage only, and the only
+on-board thermal reading is the Pi's CPU die, which is load-dominated
+and not ambient — so there is **no temperature compensation**.
+
+This matters far less than "uncompensated" usually implies, because the
+estimate is **voltage-anchored** and the shutdown backstop is a **fixed
+voltage floor** (3.20 V = 0 %, 3.00 V critical) that is
+temperature-independent:
+
+- **Temperature can never cause harm.** Over-discharge is prevented by
+  the absolute voltage floor, not the SoC number — a cell at any
+  temperature that reaches the floor is genuinely low. A temperature
+  error in the *estimate* has no path to damaging a cell.
+- **The estimate self-compensates in the direction that matters.** Cold
+  cells sag faster (less usable capacity, higher resistance); because SoC
+  follows the measured voltage, the observer *sees* that sag and reports
+  SoC dropping faster — reflecting the cold cell's reduced capacity and
+  reaching 0 % when the pack actually hits the floor.
+- **The residual is a bounded curve-shape offset, not a divergence.** The
+  only thing temperature truly breaks is the room-temperature
+  voltage→SoC *mapping*, so out of range the SoC% reads a little
+  nonlinearly (drains unevenly) and the nominal runtime-Wh drifts. The
+  worst case — extreme cold under load — is an *early* shutdown that
+  strands a little capacity, the safe direction (and arguably correct: a
+  cold cell shouldn't be pushed hard near empty).
+
+So outside the calibrated range the SoC readout gets less linear and the
+runtime-hours estimate drifts, but it degrades **gracefully and never
+unsafely**. Closing it properly would require a battery thermistor
+(hardware, out of scope). The model ships **room-temperature-calibrated,
+graceful outside it.** Chemistry is NMC/NCA only — another NMC cell is
+expected to transfer within a few percent (re-validate per pack for best
+accuracy); LiFePO4 (3.2 V, flat plateau) is unsupported, and unchargeable
+by this hardware anyway.

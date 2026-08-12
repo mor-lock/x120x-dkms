@@ -148,6 +148,12 @@ Release history of [x120x-dkms](README.md), newest first.
   Reported by @AbbynatorNZ on Ubuntu 26.04 LTS / Pi 5 / X1201 V1.1 (#5).
 
 **Documentation**
+- Documented the SoC-model calibration envelope: NMC/NCA at ~room
+  temperature, no temperature sensor / no temperature compensation. Framed
+  honestly — because SoC is voltage-anchored and shutdown is a fixed voltage
+  floor, out-of-range temperature degrades the estimate *gracefully and never
+  unsafely* (it self-reflects a cold pack's reduced capacity and cannot
+  over-discharge a cell). README + `docs/soc-model.md` + the OCV-table comment.
 - README now shows the driver in use: screenshots of the battery icon
   in the panel tray, `upower -i` output, and the GNOME Power Statistics
   window (`docs/images/`, captured on the maintainer's Pi 5 / X1206).

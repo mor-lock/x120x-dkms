@@ -420,8 +420,12 @@ struct x120x_ocv_point {
  * branch below 23% is the discharge branch plus the measured hysteresis.
  * Molicel INR21700-P50B ×4, 1S4P; 100% = 4.20 V terminal (discharge) /
  * 4.213 V (charge, surface-charge top).  56 points, 1% steps through the knee
- * then 2%.  R is X120X_R_UOHM.  NMC-calibrated; other NMC transfers within a
- * few %, LFP is unsupported (flat plateau).
+ * then 2%.  R is X120X_R_UOHM.  NMC-calibrated at ~room temperature; there is
+ * no ambient/battery temp sensor so no temp compensation, but SoC is
+ * voltage-anchored and shutdown is a fixed voltage floor, so out-of-range
+ * temperature degrades accuracy gracefully, never unsafely (it self-reflects a
+ * cold pack's reduced capacity and cannot over-discharge a cell).  Other NMC
+ * transfers within a few %, LFP is unsupported (flat plateau).
  */
 static const struct x120x_ocv_point x120x_ocv_discharge[] = {
 	{ 3200000,   0 * 256 },

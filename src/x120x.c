@@ -1013,11 +1013,16 @@ static void x120x_poll_work(struct work_struct *work)
 		 */
 		bool charging = new_ac && !chip->charger_inhibited;
 
-		/* Warm the voltage EMA every poll (τ ≈ 16 s, α = 1/32). */
+		/*
+		 * Warm the voltage EMA every poll (τ ≈ 16 s, α = 1/32).  The
+		 * +16 (half-LSB) rounds the truncating shift to nearest, so the
+		 * EMA settles on the true voltage instead of stalling up to
+		 * ~31 µV below it.  Equivalent to (31*V̄ + V + 16) >> 5.
+		 */
 		if (chip->ocv_ema_uv == 0)
 			chip->ocv_ema_uv = new_uv;
 		else
-			chip->ocv_ema_uv += (new_uv - chip->ocv_ema_uv) >> 5;
+			chip->ocv_ema_uv += (new_uv - chip->ocv_ema_uv + 16) >> 5;
 
 		/*
 		 * Seed the energy state from the OCV lookup on the first

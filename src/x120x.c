@@ -344,9 +344,6 @@ MODULE_PARM_DESC(soc_source,
  * ---------------------------------------------------------------------- */
 enum x120x_soc_source { X120X_SOC_SRC_VOLTAGE, X120X_SOC_SRC_GAUGE };
 
-/* Battery power regime, decided from the grid + charger GPIOs (not from SoC). */
-enum x120x_regime { X120X_REGIME_CHARGE, X120X_REGIME_FLOAT, X120X_REGIME_DRAIN };
-
 struct x120x_ocv_point {
 	int uv;		/* cell voltage in µV      */
 	int soc256;	/* SoC × 256 (0 .. 25600)  */
@@ -365,35 +362,14 @@ struct x120x_ocv_point {
 #define X120X_OCV_FULL_UV        4200000  /* full-charge terminal, µV = 100%      */
 
 /*
- * power_now (voltage model).  The sign/regime is deterministic from the GPIOs
- * (grid + charger), so we never infer it from noisy SoC:
- *   grid off              -> DRAIN   (magnitude estimated live)
- *   grid on,  charging     -> CHARGE  (magnitude estimated live)
- *   grid on,  not charging -> FLOAT   (~ -13 mW, seed-only: unmeasurable live)
- * On a regime edge we seed instantly with the best prior (last value learned
- * for that regime on this device, else the hardcoded default above), then
- * crossfade to the live estimate.  The live magnitude is E_full x dSoC/dt from
- * a HEAVILY dither-smoothed voltage (X120X_OCV_SLOW_SHIFT) differenced over a
- * multi-minute window (X120X_POWER_WINDOW_US) — short windows on 1.25 mV-
- * quantised voltage are pure noise (10 s dSoC carries no signal at a few W).
- * The gauge path keeps its own event-driven estimator.
- */
-#define X120X_POWER_WINDOW_US  (120LL * USEC_PER_SEC) /* SoC-rate window, 2 min */
-#define X120X_OCV_SLOW_SHIFT     6       /* a=1/64 dither-smoothing EMA (power) */
-#define X120X_SEED_CHARGE_UW  11000000   /* +11 W: CC-bulk charge into pack     */
-#define X120X_SEED_DRAIN_UW   (-5000000) /* -5 W: typical Pi load on battery    */
-/*
- * Physical clamp on the live power estimate.  power_now = E_full × dSoC/dt is
- * confounded at the pack top: right off the charger the surface charge relaxes,
- * so the modelled SoC falls fast for a minute with little real energy leaving,
- * yielding transient dSoC/dt spikes that read 4-5× the true load (~5 W).  Those
- * spikes also feed the IR term and visibly distort SoC.  A drain never exceeds
- * the Pi+HAT ceiling and a charge never exceeds the supply, so bound the live
- * estimate to physical limits before crossfading.
+ * Physical clamp on the observer power P = I*V.  Right off the charger the
+ * surface charge relaxes, so the modelled SoC can fall fast for a minute with
+ * little real energy leaving, yielding a transient that reads well above the
+ * true load.  A drain never exceeds the Pi+HAT ceiling and a charge never
+ * exceeds the supply, so bound P to physical limits.
  */
 #define X120X_POWER_MIN_UW   (-12000000) /* max plausible drain, -12 W          */
 #define X120X_POWER_MAX_UW    (16000000) /* max plausible charge, +16 W         */
-#define X120X_SEED_FLOAT_UW     (-13000) /* -13 mW: standby sawtooth (seed-only)*/
 
 /*
  * Energy scale.  The pack's rated capacity (battery_mah) is measured by the
@@ -421,37 +397,6 @@ struct x120x_ocv_point {
  */
 #define X120X_SEED_DIS_UW      5000000   /* nominal drain for boot IR seed, +5 W  */
 #define X120X_SEED_CHG_UW     10000000   /* nominal charge for boot IR seed, 10 W */
-/*
- * Fixed, per-regime nominal IR offsets for the POWER-path SoC lookup.  The
- * rate estimator must not use the live (power-derived) IR -- that closes the
- * power->IR->rate loop.  But a bare terminal-voltage lookup over-reads dSoC/dt
- * on the steep curve top (a constant voltage offset is a NON-constant SoC
- * offset where the slope varies), spiking power_now and gluing the displayed
- * SoC to 100%.  A fixed nominal offset (I_nom × R) places the lookup near true
- * OCV so the rate is right, while staying independent of power_now.
- */
-#define X120X_IR_NOM_DRAIN_UV    48000  /* ~5 W drain  @3.7 V → +48 mV to OCV  */
-#define X120X_IR_NOM_CHARGE_UV  100000  /* ~11 W charge @4.0 V → -100 mV to OCV */
-/*
- * SoC sensor fusion.  The reported SoC blends two voltage-derived estimates:
- *
- *   - our OCV curve + IR correction (v_soc): calibrated absolute, but
- *     load-sensitive where the curve is shallow (high SoC), so it bounces on
- *     load transients;
- *   - the MAX17043 ModelGauge (g_soc, the raw SOC register): a smooth,
- *     load-immune SHAPE, but a wrong absolute that craters near empty.
- *
- * We take the gauge's shape at high SoC (where our curve is load-loose) and
- * our voltage at low SoC (where the curve is tight and the gauge craters),
- * with a linear weight over [W_LO, W_HI]% of v_soc.  The gauge's wrong
- * absolute is corrected by a slow EMA of (v_soc - g_soc): at high SoC we
- * report g_soc + that offset, so the reading keeps the gauge's smooth shape
- * but our calibrated absolute.  No output slew is needed -- the gauge already
- * supplies the smoothness the slew used to force.
- */
-#define X120X_FUSE_W_LO             40   /* below this %, report pure voltage   */
-#define X120X_FUSE_W_HI             55   /* above this %, report pure gauge-shape*/
-#define X120X_FUSE_OFF_SHIFT        10   /* (v_soc-gauge) offset EMA, τ ≈ 8.5min */
 
 /*
  * Open-circuit-voltage (OCV) curve.  SoC = remaining usable energy vs the
@@ -658,45 +603,20 @@ struct x120x_chip {
 	int			 i2c_errors;
 
 	/*
-	 * Voltage → SoC model (soc_source=voltage; see the OCV tables).
-	 * @soc_src:     voltage OCV model vs raw fuel gauge.
-	 * @ocv_ema_uv:  EMA of cell voltage feeding the OCV lookup (0 = uninit),
-	 *               warm in both phases so it is ready at a transition and
-	 *               to damp plateau jitter.
-	 * @soc_offset:  offset-decay re-anchor (256ths): captured at each
-	 *               charge↔discharge transition so SoC does not jump, then
-	 *               decayed to 0 as the reading rejoins the active curve.
-	 * @prev_charging: last poll's active-charging state, to detect the
-	 *               curve transition (charge current lifts voltage; a full
-	 *               pack floating on grid is NOT charging → rest curve).
-	 * @model_primed: false until the first voltage-model sample is taken.
+	 * Recursive voltage observer (soc_source=voltage): SoC is the running
+	 * energy_now_uwh integral of P = I*V, I = (OCV(SoC) - V)/R over the
+	 * charge/discharge OCV tables.  It self-anchors to the curve (drift-
+	 * free) and yields power for free.
+	 * @soc_src:     voltage OCV observer vs raw fuel gauge.
+	 * @ocv_ema_uv:  EMA of cell voltage feeding the OCV lookup (0 = uninit).
+	 * @obs_primed:  false until energy_now_uwh is seeded from the OCV lookup.
+	 * @obs_prev_us: ktime (us) of the previous observer step, for dt.
 	 */
 	enum x120x_soc_source	 soc_src;
 	int			 ocv_ema_uv;
-	int			 soc_offset;
-	bool			 prev_charging;
-	bool			 model_primed;
-	/*
-	 * Recursive voltage observer (soc_source=voltage): SoC is the running
-	 * energy_now_uwh integral of P = I*V, I = (OCV(SoC) - V)/R.  It self-
-	 * anchors to the OCV curve (drift-free) and yields power for free.
-	 * @obs_primed: false until energy_now_uwh is seeded from the OCV lookup.
-	 * @obs_prev_us: ktime (us) of the previous observer step, for dt.
-	 */
 	bool			 obs_primed;
 	s64			 obs_prev_us;
-	/* power_now (voltage model): GPIO-regime state machine + slow rate */
-	int			 ocv_slow_uv;	 /* heavily-smoothed V for power  */
-	int			 rate_prev_soc256;	/* SoC×256 at power-window start */
-	int			 rate_windows;		/* windows since regime edge     */
-	int			 learned_charge_uw;	/* last stable CHARGE power (µW)  */
-	int			 learned_drain_uw;	/* last stable DRAIN power (µW)   */
-	enum x120x_regime	 prev_regime;		/* regime last poll              */
-	bool			 power_primed;		/* power estimator seeded        */
-	int			 ir_power_uw;		/* slow-smoothed power for IR comp */
 	int			 power_report_uw;	/* power reported to the ABI      */
-	int			 fusion_off_256;	/* slow EMA of (v_soc - gauge)   */
-	bool			 fusion_primed;		/* fusion offset seeded          */
 	int			 raw_capacity_pct;	/* raw MAX17043 ModelGauge SoC % */
 
 	/* Energy tracking for UPower / desktop environment integration */
@@ -992,10 +912,10 @@ static void x120x_poll_work(struct work_struct *work)
 		 *   I   = (OCV(SoC) - V) / R      (discharge +, charge -)
 		 *   P   = I * V ;  energy_now -= P * dt
 		 * The OCV feedback self-anchors it (drift-free) and compensates
-		 * load implicitly, so the steady discharge needs no IR term or
-		 * gauge fusion; P is the true battery power for free.  (A nominal-
-		 * IR seed handles cold-boot and a gauge=100 pin re-anchors the
-		 * top — neither touches steady discharge tracking.)
+		 * load implicitly, so the steady discharge needs no IR term; P is
+		 * the true battery power for free.  (A nominal-IR seed handles
+		 * cold-boot and a gauge=100 pin re-anchors the top — neither
+		 * touches steady discharge tracking.)
 		 * V is the EMA-smoothed terminal (raw MAX17043 V is quantised).
 		 */
 		s64 e_full = div_s64((s64)battery_mah * X120X_NOMINAL_MV *
@@ -1045,7 +965,6 @@ static void x120x_poll_work(struct work_struct *work)
 			}
 			chip->obs_prev_us    = obs_now_us;
 			chip->obs_primed     = true;
-			chip->model_primed   = true;
 		}
 
 		/* dt since last step; guard gaps (resume, missed polls). */
@@ -1143,7 +1062,7 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->capacity_256    = new_256;
 		chip->ac_online       = new_ac;
 		/* raw MAX17043 ModelGauge SoC, exposed via the raw_capacity
-		 * sysfs attr and used as the fusion shape source */
+		 * sysfs attr and used for the gauge=100 top anchor */
 		chip->raw_capacity_pct = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
 
 		/*
@@ -1247,8 +1166,8 @@ static void x120x_poll_work(struct work_struct *work)
 		 * POWER_NOW = the freshly-computed rate, no ABI-side smoothing.
 		 * The voltage observer's energy_rate_uw is already V-EMA-smoothed
 		 * (τ ≈ 16 s, recomputed every poll) and the gauge supplies its own
-		 * smoothness (see the fusion note above), so neither path needs an
-		 * output filter.  v0.4.8 served energy_rate_uw directly; the later
+		 * event-driven smoothness, so neither path needs an output
+		 * filter.  v0.4.8 served energy_rate_uw directly; the later
 		 * per-poll EMA (commit 9239c60, 2-min → 8.5-min) only added slew
 		 * lag that grossly under-reported real load steps — dropped.
 		 */
@@ -1988,8 +1907,8 @@ static const char * const x120x_charger_supplied_to[] = { "x120x-battery" };
 
 /*
  * raw_capacity - non-standard sysfs attribute exposing the MAX17043's own
- * ModelGauge SoC (%), separate from the fused CAPACITY property.  It is the
- * gauge input to the SoC fusion and is logged alongside the fused SoC for
+ * ModelGauge SoC (%), separate from the observer's CAPACITY property.  It
+ * feeds the gauge=100 top anchor and is logged alongside the observer SoC for
  * validation.  Added via power_supply_config.attr_grp so its lifetime is
  * managed by the power_supply core -- it does not touch the standard
  * property set or the hwmon interface.

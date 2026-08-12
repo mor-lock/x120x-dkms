@@ -46,6 +46,15 @@ Release history of [x120x-dkms](README.md), newest first.
 ### v0.4.9 — Ubuntu install support
 
 **Fuel gauge / state of charge**
+- Removed dead code superseded by the recursive observer: the entire unused
+  v_soc↔gauge **fusion** subsystem (`fusion_off_256`, `fusion_primed`,
+  `FUSE_W_LO/W_HI/OFF_SHIFT` and its doc block), the abandoned live-dSoC/dt
+  power estimator (`ocv_slow_uv`, `rate_prev_soc256`, `rate_windows`,
+  `learned_charge_uw`, `learned_drain_uw`, `prev_regime`, `power_primed`,
+  `ir_power_uw`, `enum x120x_regime`, `POWER_WINDOW_US`, `OCV_SLOW_SHIFT`,
+  `SEED_CHARGE/DRAIN/FLOAT_UW`, `IR_NOM_DRAIN/CHARGE_UV`), and the write-only
+  `soc_offset`/`prev_charging`/`model_primed` fields. No functional change —
+  none were read; the observer's `P = I·V` and gauge=100 pin are the live path.
 - Full-charge debounce lengthened 10 min → 30 min (`X120X_CHG_FULL_DEBOUNCE_MS`).
   The gauge=100% assertion now gates both charge-off and the observer 100% pin
   after 30 min of held-full instead of 10.  On the flat CV top the observer's

@@ -60,6 +60,11 @@ Release history of [x120x-dkms](README.md), newest first.
   independent coulomb reference over 5 days of logged telemetry: RMS 3.75 % /
   max 9.8 % vs truth, beating the previous single-curve (4.73 % / 17.2 %) and
   the raw gauge (11.1 % / 27.4 %). NMC-calibrated; LFP unsupported.
+- Usable-energy scale `X120X_USABLE_PERMILLE` 875 → 900 (e_full 63.0 → 64.8 Wh
+  for the 4×P50B pack). The coulomb-measured usable window came out at 63–65.4 Wh
+  across metered cycles; 0.900 is the mid-range value. Only scales the transient
+  power/rate — the OCV feedback self-anchors steady SoC — so it is not a
+  precision knob.
 - Removed dead code superseded by the recursive observer: the entire unused
   v_soc↔gauge **fusion** subsystem (`fusion_off_256`, `fusion_primed`,
   `FUSE_W_LO/W_HI/OFF_SHIFT` and its doc block), the abandoned live-dSoC/dt

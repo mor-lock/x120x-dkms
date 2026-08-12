@@ -382,12 +382,14 @@ struct x120x_ocv_point {
  *
  * ENERGY_FULL (usable) is also the scale for energy_now and the observer power
  * estimate, so power reads true watts and SoC is linear in energy.  The usable
- * fraction is coulomb-measured: a full-range discharge + GITT recharge closed
- * the round trip at 63.0 Wh usable for this 4×P50B (20 Ah) pack, i.e. 63.0/72.0
- * = 0.875 of rated-to-2.5 V.  Refine per pack if desired.
+ * fraction is coulomb-measured: full-range discharge + metered recharge cycles
+ * closed the round trip at 63-65.4 Wh usable for this 4×P50B (20 Ah) pack; the
+ * 0.900 mid-range value = 64.8/72.0 Wh.  e_full only scales the transient rate
+ * (the OCV feedback self-anchors steady SoC), so this need not be exact; refine
+ * per pack if desired.
  */
 #define X120X_NOMINAL_MV          3600   /* datasheet nominal cell voltage, mV */
-#define X120X_USABLE_PERMILLE      875   /* usable (4.20→3.2 V) ÷ rated, ×1000 (coulomb-measured: 63.0/72.0 Wh) */
+#define X120X_USABLE_PERMILLE      900   /* usable (4.20→3.2 V) ÷ rated, ×1000 (coulomb-measured: 64.8/72.0 Wh) */
 #define X120X_R_UOHM            30000   /* pack DC resistance, uohm (R_cell 19 + R1 11, GITT-measured) */
 /*
  * Cold-boot seed: nominal load used to IR-correct the first OCV lookup so a

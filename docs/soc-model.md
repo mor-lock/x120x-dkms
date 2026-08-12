@@ -9,6 +9,21 @@ remains (see [Why not just use the fuel gauge?](#why-not-just-use-the-fuel-gauge
 The observer runs its own model; the gauge is used only for a single
 top-of-charge anchor.
 
+![One clean drain and recharge cycle: cell voltage, the voltage-observer
+SoC against the cratering fuel gauge, and battery power](images/soc-cycle.png)
+
+*One clean cycle: 30 min of float at 100 %, then an outage draining the
+pack under ~9 W of load to the floor, then a recharge.
+**Middle panel** — the shipped voltage-observer SoC (blue) vs the raw fuel
+gauge (orange). The raw gauge reads **6 % while the pack is really ~29 %**;
+it doesn't actually reach 6 % until **≈ 1.5 h later**, when the grid was
+restored — that 1.5 h (≈ 15 Wh at this ~9 W load) is runtime a gauge-trusting
+system would throw away. Both 6 % crossings are in this cycle, so the gap is
+directly observed, not extrapolated.
+**Bottom** — battery power `P = I·V`, which the observer produces for free
+(green = the charger's measured power into the pack, `c3 − Pi`, for
+reference; the small gap to the cell-side observer power is DC-DC loss).*
+
 Pass `--soc-source gauge` to bypass the model and expose the raw gauge
 register directly (unchanged legacy behaviour).
 
@@ -36,11 +51,17 @@ energy_now −= P · dt                           # integrate; clamp to [0, E_fu
 SoC%   = energy_now / E_full × 100
 ```
 
-This is a **closed loop**: the OCV feedback pulls the estimate back onto
-the curve, so it is drift-free and needs no separate IR term — a load that
-sags V below OCV simply makes `(OCV − V̄)` larger, which *is* the discharge
-current that caused the sag. Because `E_full` is the *usable* window
-energy, `P = E_full × dSoC/dt` reads true watts and SoC is linear in energy
+This is a **closed loop**, and that is what makes it robust. Concretely: if
+the estimate drifts a few percent *high*, then `OCV(SoC_est)` sits above the
+true rested OCV, so `(OCV − V̄)` — and thus the inferred current — is
+*over*-estimated, which drains the estimate back down toward truth; a *low*
+estimate over-reads V relative to its OCV and corrects the same way. The
+loop has no way to run away, so it is drift-free, needs **no separate IR
+term** (a load that sags V below OCV simply makes `(OCV − V̄)` larger, which
+*is* the discharge current that caused the sag), and a rough starting seed
+converges on its own (typically within ~2 h, always from the safe
+under-read side). Because `E_full` is the *usable* window energy,
+`P = E_full × dSoC/dt` reads true watts and SoC is linear in energy
 (constant power → constant %/hour).
 
 **Energy scale.** `E_full = battery_mah × 3.6 V × X120X_USABLE_PERMILLE` —
@@ -132,14 +153,27 @@ hwmon interface. Logging both alongside each other is the intended way to
 validate the observer on hardware; the raw gauge also feeds the =100 top
 anchor.
 
-## Why not just use the fuel gauge?
+## Why not just use the fuel gauge? — recovering stranded capacity
 
-On a real deep discharge, the raw MAX17043 collapses to 0 % at ~3.45 V while
-the pack still delivers ~40 % of its usable charge, then flatlines. Driving
-shutdown off it would throw away a large fraction of runtime. The voltage
-observer tracks the true, linear discharge all the way to the 3.20 V cutoff;
-the gauge is trusted only for its one reliable assertion — *full* — as the
-top-of-charge anchor, never for the absolute near empty.
+On a real deep discharge the raw MAX17043 clone reads far too low near empty
+and then flatlines at 0 %. In the cycle above it reads **6 % while the pack is
+really ~29 %**, and does not actually reach 6 % until **~1.5 h later** (when
+the grid was restored) — so ~1.5 h of runtime is recovered simply by not
+trusting the gauge at 6 %. It bottoms out reading 0 % while ~23 % still
+remains. Both of those are directly observed in that one cycle.
+
+How far the observer stretches the pack before its *own* safety shutdown is
+load-dependent, and no everyday outage has yet taken the observer all the way
+to its 2 % cutoff (they end on grid return at ~5–6 %) — so that figure is an
+estimate, not a routine measurement. Replaying the observer over a March
+run-to-destruction (~7 W) puts a number on it: the observer's 2 % shutdown
+fires **~2.4 h after** the gauge's would (≈3.1 h to the 3.00 V hard-critical
+floor), recovering the ~28 % the gauge writes off — proportionally more at a
+lighter idle load. The gauge collapses because it is a *dynamic* model that
+mis-tracks the discharge; the rested-OCV curve does not. So the gauge is
+trusted for exactly one thing — its one reliable assertion, **full**, as the
+top-of-charge anchor — and never for the absolute near empty, where it is
+worst and where the shutdown decision is actually made.
 
 ## Tuning constants (in `src/x120x.c`)
 

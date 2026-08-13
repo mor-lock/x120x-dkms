@@ -189,6 +189,29 @@ trusted for exactly one thing — its one reliable assertion, **full**, as the
 top-of-charge anchor — and never for the absolute near empty, where it is
 worst and where the shutdown decision is actually made.
 
+### Is deeper discharge actually safe for the cells?
+
+The converse worry — that the gauge's early 0 % was *protecting* the pack —
+does not hold. The recovered runtime lives between roughly **3.5 V and 3.20 V
+rested**, where the gauge was stranding usable capacity well above any
+protective threshold, not guarding the cells; the observer just spends the
+headroom the gauge left on the table.
+
+Our 0 % is defined at **3.20 V rested**, a deliberately conservative floor. The
+cells are rated for discharge to 2.5 V, and the sustained-damage onset measured
+on *this exact hardware* is ~3.0 V (see
+[Incident 1](incidents.md#incident-1--deep-discharge-and-cell-destruction-2026-03-05))
+— so the cutoff keeps ~200 mV of margin above it, and the SoC-independent
+**3.00 V hard-critical** backstop stands between the 3.20 V cutoff and the point
+where damage actually accrues. Voltage, not the SoC estimate, is what stops the
+discharge.
+
+Deeper discharge does cost cycle life, but only on the outage cycles
+themselves — rare on a standby UPS, whose dominant wear is *calendar* aging at
+high SoC (see [Battery profiles](battery-profiles.md#two-ways-a-cell-wears-out)).
+The protection budget is spent at the *top* of the range; the bottom is visited
+too rarely for the extra depth to matter.
+
 ## Tuning constants (in `src/x120x.c`)
 
 | Constant | Meaning |

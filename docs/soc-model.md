@@ -125,6 +125,20 @@ directly (negative = discharging), already V-EMA-smoothed — there is no
 extra output filter. In `--soc-source gauge` mode the power instead comes
 from an event-driven `dSoC/dt` estimator on the gauge register.
 
+**Reported power is *net*, not gross.** `P` is the power at the battery
+terminal — the current actually entering or leaving the cell. Because the Pi
+draws from the same node the charger feeds, during a charge the terminal lifts
+only by the *net* current (charge minus the Pi's concurrent draw), and that net
+is what the observer reports. That is the right quantity — SoC integrates net
+current, so a heavy load never corrupts the state — but it does mean the charge
+reading *understates the charger's gross output* by whatever the Pi is drawing,
+and no voltage-only observer can do better: "15 W in − 11 W load" and "4 W in −
+no load" produce an identical terminal voltage. Recovering gross charge power
+would need a current sensor on the charge path, which this hardware lacks. (On
+the bench, under a hard and varying Pi load, the reported net tracked an
+independent charger-side measurement — `c3 − Pi` in the cycle figure above — to
+within 0.1 W across the whole charge, confirming the net itself is accurate.)
+
 ## Safety floors (SoC-independent)
 
 Shutdown is governed by **absolute cell voltage**, not the SoC estimate:

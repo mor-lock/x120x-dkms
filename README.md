@@ -102,29 +102,14 @@ mode can be enabled at any time after install — see *Battery
 conservation mode*.
 
 **State of charge** defaults to a current-sensorless voltage model
-(`--soc-source voltage`): a recursive observer integrates battery power
-`P = I·V`, with `I = (OCV(SoC) − V)/R` read from an energy-true NMC
-open-circuit-voltage curve — so SoC is the running energy integral (linear
-in usable energy), and battery power falls out for free.  Because that scale
-is energy, the percentage drops at an even pace under steady load — so 50 %
-really does mean about half the runtime left.  The OCV feedback
-self-anchors the estimate (no separate IR term), and *two* curves — charge
-vs discharge — handle the NMC voltage hysteresis.  The on-board
-MAX17043-*style* fuel gauge craters near empty, so it is trusted for one
-thing only: a held-100 % top-of-charge anchor.  Its raw reading is exposed
-separately as `raw_capacity`.  See **[docs/soc-model.md](docs/soc-model.md)**
-for the full algorithm.
-Pass `--soc-source gauge` to use the raw fuel-gauge register instead.
-The curves assume 4.2 V Li-ion (NMC/NCA) cells, which is all the
-hardware can charge, and are calibrated at roughly room temperature.
-The board has no ambient- or battery-temperature sensor, so there is no
-temperature compensation — but because SoC is voltage-anchored and
-shutdown is a fixed voltage floor, out-of-range temperature degrades the
-estimate *gracefully and never unsafely*: it cannot over-discharge a
-cell, and it self-reflects a cold pack's reduced capacity (SoC just
-drops faster); the SoC readout only reads a little nonlinearly and the
-runtime-hours estimate drifts. See
-**[docs/soc-model.md](docs/soc-model.md)** for the full envelope.
+(`--soc-source voltage`): a recursive observer reconstructs SoC and battery
+power from the cell voltage alone, tracking the pack more accurately than the
+on-board MAX17043-*style* gauge chip, which craters near empty.  It is safe by
+construction — the low-battery shutdown is driven by a fixed cell-voltage
+floor, so the estimate can never over-discharge a cell — and passing
+`--soc-source gauge` falls back to the raw fuel-gauge register.  See
+**[docs/soc-model.md](docs/soc-model.md)** for the full algorithm and the
+NMC / room-temperature calibration envelope.
 
 Before rebooting, make sure the power supply is connected to the
 **UPS board's own power input**, not the Pi's USB-C port.  The Pi is

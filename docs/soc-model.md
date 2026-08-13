@@ -4,7 +4,7 @@ The default SoC source (`--soc-source voltage`) is a **current-sensorless
 recursive voltage observer**: it reconstructs state of charge *and* battery
 power from the cell terminal voltage alone (plus the grid/charger GPIOs),
 because the boards ship a MAX17043-*style* ModelGauge clone whose SOC
-register craters near empty — it reads 0 % while ~40 % of usable charge
+register craters near empty — it reads 0 % while ~23 % of usable energy
 remains (see [Why not just use the fuel gauge?](#why-not-just-use-the-fuel-gauge--recovering-stranded-capacity)).
 The observer runs its own model; the gauge is used only for a single
 top-of-charge anchor.

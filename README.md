@@ -472,13 +472,18 @@ node_hwmon_energy_joules{chip="x120x",sensor="energy1"}
 ```
 
 **Notes on derived channels:** `in0_input` (voltage) is a direct hardware
-reading from the MAX17043 VCELL register.  The remaining three channels are
-derived: `power1_input` is computed from the rate of change of SoC ×
-pack capacity × nominal voltage; `curr1_input` is further derived as
-power ÷ voltage; `energy1_input` is SoC% × pack energy capacity.  The
-MAX17043 does not measure current directly.  Values are accurate during
+reading from the MAX17043 VCELL register; the other three channels are
+derived, and how depends on `soc_source`.  With the default **voltage**
+model, `power1_input` is the observer's `P = I·V` — the *net* battery power
+(charge minus the Pi's own draw; see
+[docs/soc-model.md](docs/soc-model.md)) — `curr1_input` is that power ÷
+voltage, and `energy1_input` is the observer's integrated energy.  With
+**`soc_source=gauge`**, `power1_input` is instead computed from the rate of
+change of SoC × pack capacity × nominal voltage, `curr1_input` is power ÷
+voltage, and `energy1_input` is SoC% × pack energy capacity; the MAX17043
+does not measure current directly, so these values are accurate during
 steady charge/discharge but lag during rapid transitions and at very low
-SoC before the fuel gauge model has converged.
+SoC before the gauge model has converged.
 
 ### UPower integration
 

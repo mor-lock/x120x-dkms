@@ -21,7 +21,7 @@ already carries, not a round number chosen after the fact.
 on-hardware validation reports, so each must stay resolvable to the exact
 commit that produced it.  Rewriting the tree back to a tidy `0.5.0` (or
 any round number) would break that mapping and is not done — the tree
-ships as whatever it says it ships as (currently `0.5.5`).
+ships as whatever it says it ships as.
 
 ## 0. Pre-flight snapshot (read-only)
 

@@ -71,12 +71,14 @@ sudo tee /etc/modprobe.d/x120x.conf << 'EOF'
 #
 # battery_mah     — total pack capacity in mAh
 #                   (number of cells × per-cell capacity)
+# soc_source      — state-of-charge source: voltage (default) | gauge
+#                   (see docs/soc-model.md)
 #
 # After editing, reload the driver:
 #   sudo rmmod x120x && sudo modprobe x120x
 # Or simply reboot.
 
-options x120x battery_mah=20000 conservation_mode_default=0 board=x120x
+options x120x battery_mah=20000 conservation_mode_default=0 board=x120x soc_source=voltage
 EOF
 ```
 

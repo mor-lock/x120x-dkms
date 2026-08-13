@@ -118,14 +118,25 @@ below ~23 % is the discharge branch plus the measured hysteresis.
 
 ## Cold-boot seed
 
-On the first sample the energy state is seeded from the OCV lookup at the
-measured voltage, IR-corrected by a *nominal* load (`X120X_SEED_DIS_UW` on
-battery, `X120X_SEED_CHG_UW` on grid) so a boot mid-cycle starts near truth
-rather than the load-depressed or charge-lifted terminal. The seed only
-sets the starting point — the closed loop self-anchors from there (within
-~2 h even from a worst-case wrong seed, always in the safe under-read
-direction), and the full-charge pin erases any residual exactly. If the
-gauge already reads 100 % at boot, the state starts at full directly.
+The energy state does not survive a module reload, so the first sample must
+re-seed. For `X120X_SEED_SETTLE_MS` (5 min) the observer **holds the charger
+off** and re-seeds SoC every poll from the OCV curve at the measured voltage.
+On grid the held-off pack **rests**, so the terminal relaxes to true OCV and the
+seed converges to the real SoC with no IR guesswork; off grid the Pi is draining
+the pack, so the nominal drain IR (`X120X_SEED_DIS_UW`) is added back. After the
+window the charger returns to normal band control and the integral takes over.
+
+Two shortcuts skip the settle: a **full pack on a 100 % charge target** (gauge
+reads 100 in Fast mode, or a Long Life band set to 100 %) pins straight to full,
+and a **near-empty pack** (V ≤ `X120X_SEED_EMPTY_UV`, ~3.1 V) seeds 0 % and
+charges at once — a critical pack is never held off the charger.
+
+This replaces an earlier one-shot seed that assumed *charging* whenever it was
+on grid: on a rested-but-not-full pack it under-read badly, because near the top
+the OCV curve is nearly flat (~4 mV/%), so a small nominal-IR offset mapped to a
+large SoC swing (a rested 86 % pack seeded ~72 %). Holding the charger off to
+get a genuine rest removes the guess; the closed loop still self-anchors
+afterward, always in the safe under-read direction.
 
 ## Gauge=100 pin (the only use of the gauge)
 
@@ -245,7 +256,9 @@ too rarely for the extra depth to matter.
 | `X120X_USABLE_PERMILLE` | usable-energy fraction of rated → `E_full` (SoC / energy scale) |
 | `X120X_R_UOHM` | pack DC resistance in the observer (`I = (OCV − V)/R`) |
 | `X120X_CHG_FULL_DEBOUNCE_MS` | gauge-held-100 % time before the 100 % pin / 100 % charge-off (100 % targets only) |
-| `X120X_SEED_DIS_UW` / `_CHG_UW` | nominal load for the cold-boot IR seed (battery / grid) |
+| `X120X_SEED_DIS_UW` | nominal drain added back on an off-grid boot seed |
+| `X120X_SEED_SETTLE_MS` | boot: charger held off & SoC seeded from OCV for this long |
+| `X120X_SEED_EMPTY_UV` | boot: at/below this, seed 0 % and charge at once (no settle) |
 | `X120X_POWER_MIN_UW` / `_MAX_UW` | physical clamp on the reported power |
 | `X120X_VMIN_CRITICAL_UV` | hard voltage floor → CRITICAL (SoC-independent backstop) |
 | `x120x_ocv_discharge[]` / `x120x_ocv_charge[]` | the two rested-OCV branch tables |

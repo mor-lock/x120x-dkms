@@ -392,13 +392,19 @@ struct x120x_ocv_point {
 #define X120X_USABLE_PERMILLE      900   /* usable (4.20→3.2 V) ÷ rated, ×1000 (coulomb-measured: 64.8/72.0 Wh) */
 #define X120X_R_UOHM            30000   /* pack DC resistance, uohm (R_cell 19 + R1 11, GITT-measured) */
 /*
- * Cold-boot seed: nominal load used to IR-correct the first OCV lookup so a
- * boot mid-cycle starts near truth, not the load-biased terminal voltage.
- * Drain sags V below OCV (add IR); charge lifts it above (subtract IR).  Only
- * the *seed* uses these — the steady observer is IR-free and self-anchoring.
+ * Cold-boot seed: on the first sample the observer holds the charger OFF for
+ * X120X_SEED_SETTLE_MS and seeds SoC continuously from the terminal voltage via
+ * the OCV curve.  On grid the held-off pack rests, so the terminal relaxes to
+ * true OCV and the seed converges to the real SoC (no IR needed); off grid the
+ * Pi is draining the pack, so the nominal drain IR (X120X_SEED_DIS_UW) is added
+ * back.  Two shortcuts skip the settle: a full pack on a 100% charge target
+ * (gauge=100) pins straight to full, and a near-empty pack
+ * (V <= X120X_SEED_EMPTY_UV) seeds 0% and charges at once — never held off.
+ * The steady observer is IR-free and self-anchoring.
  */
-#define X120X_SEED_DIS_UW      5000000   /* nominal drain for boot IR seed, +5 W  */
-#define X120X_SEED_CHG_UW     10000000   /* nominal charge for boot IR seed, 10 W */
+#define X120X_SEED_DIS_UW      5000000   /* nominal drain added back on an off-grid seed, +5 W */
+#define X120X_SEED_SETTLE_MS    300000   /* boot: hold charger off & seed from OCV this long (5 min) */
+#define X120X_SEED_EMPTY_UV    3100000   /* boot: at/below this, seed 0% and charge now (no settle) */
 
 /*
  * Open-circuit-voltage (OCV) curves.  SoC = remaining usable energy vs the
@@ -682,6 +688,7 @@ struct x120x_chip {
 	bool			 charger_inhibited;	/* cached GPIO16 state: true = high (stopped) */
 	unsigned long		 charge_full_since;	/* jiffies the gauge first read full (100%-target debounce); 0 = not full */
 	unsigned long		 gauge_full_since;	/* jiffies gauge first read >=100 (observer 100% pin); 0 = not full */
+	unsigned long		 seed_settle_until;	/* jiffies: hold charger off & seed from OCV until here; 0 = not settling */
 	bool			 present;
 	int			 i2c_errors;
 
@@ -931,6 +938,7 @@ static void x120x_poll_work(struct work_struct *work)
 		container_of(work, struct x120x_chip, work.work);
 	unsigned int vcell_raw, soc_raw;
 	int new_uv, new_pct, new_256, new_ac, ret;
+	bool seeding = false;	/* true during the boot seed-settle window (charger held off) */
 	bool new_present;
 	bool bat_changed = false, ac_changed = false, chrg_changed = false;
 	/* Snapshots of shared chip state taken under the lock and used
@@ -1029,42 +1037,42 @@ static void x120x_poll_work(struct work_struct *work)
 			chip->ocv_ema_uv += (new_uv - chip->ocv_ema_uv + 16) >> 5;
 
 		/*
-		 * Seed the energy state from the OCV lookup on the first
-		 * sample, IR-corrected by a nominal load so a cold boot
-		 * mid-cycle starts near truth instead of the load-depressed
-		 * (drain) or charge-lifted terminal voltage.  The seed only
-		 * sets the starting point: the observer self-anchors (< ~2 h
-		 * even from a maximally wrong drain seed, in the safe under-
-		 * read direction) and the full-charge rail erases any residual
-		 * exactly, so no precise seed or charger-cut rest read is
-		 * needed.  new_ac unreadable falls through as drain (safe).
+		 * Seed / settle (see the X120X_SEED_* block up top).  Decide the
+		 * strategy on the first sample; then across the settle window the
+		 * charger is held off (see charge hysteresis) and SoC is re-seeded
+		 * from the OCV curve each poll (just below the integral), so a
+		 * rested pack reads true SoC and a wrong seed can't trip a charge.
 		 */
 		if (!chip->obs_primed) {
-			if (MAX17043_SOC_INT(soc_raw) >= 100) {
+			if (MAX17043_SOC_INT(soc_raw) >= 100 &&
+			    (!chip->conservation_mode || conservation_end >= 100)) {
 				/*
-				 * Restart with the gauge already full → pin 100%.
-				 * The gauge is reliable at the top (it only craters
-				 * low), and a boot-100 reading means the pack has
-				 * been floating full — so skip the conservative IR
-				 * seed + top-up climb and start exactly at full.
+				 * Full pack on a 100% charge target (Fast, or Long
+				 * Life set to 100%): the gauge is reliable at the
+				 * top, so pin straight to full and skip the settle.
 				 */
-				chip->energy_now_uwh = e_full;
+				chip->energy_now_uwh    = e_full;
+				chip->seed_settle_until = 0;
+			} else if (chip->ocv_ema_uv <= X120X_SEED_EMPTY_UV) {
+				/*
+				 * Near-empty: seed 0% and let it charge at once —
+				 * never hold the charger off on a critical pack.
+				 */
+				chip->energy_now_uwh    = 0;
+				chip->seed_settle_until = 0;
 			} else {
-				s64 nom_uw  = new_ac ? X120X_SEED_CHG_UW
-						     : X120X_SEED_DIS_UW;
-				s64 ir_uv   = div_s64(nom_uw * X120X_R_UOHM,
-						      max(chip->ocv_ema_uv, 1));
-				int seed_uv = new_ac
-					    ? chip->ocv_ema_uv - (int)ir_uv
-					    : chip->ocv_ema_uv + (int)ir_uv;
-				int seed = x120x_voltage_soc256(seed_uv,
-								charging);
-
-				chip->energy_now_uwh = div_s64(e_full * seed, 25600);
+				/* Else settle: hold charger off, seed from OCV. */
+				chip->seed_settle_until = jiffies +
+					msecs_to_jiffies(X120X_SEED_SETTLE_MS);
 			}
-			chip->obs_prev_us    = obs_now_us;
-			chip->obs_primed     = true;
+			chip->obs_prev_us = obs_now_us;
+			chip->obs_primed  = true;
 		}
+
+		seeding = chip->seed_settle_until &&
+			  time_before(jiffies, chip->seed_settle_until);
+		if (!seeding)
+			chip->seed_settle_until = 0;
 
 		/* dt since last step; guard gaps (resume, missed polls). */
 		dt_us = obs_now_us - chip->obs_prev_us;
@@ -1141,6 +1149,27 @@ static void x120x_poll_work(struct work_struct *work)
 		/* Battery power for the rate/ABI (negative = discharging). */
 		chip->energy_rate_uw = clamp((int)-p_uw, X120X_POWER_MIN_UW,
 					     X120X_POWER_MAX_UW);
+
+		if (seeding) {
+			/*
+			 * Seed settle: override the integral with a fresh OCV
+			 * seed.  The charger is held off (see charge hysteresis),
+			 * so on grid the pack rests — seed from the rested
+			 * terminal on the discharge branch; off grid add the
+			 * nominal drain IR back.  Report 0 W (not integrating).
+			 */
+			int seed_uv = new_ac ? chip->ocv_ema_uv
+				: chip->ocv_ema_uv + (int)div_s64(
+					(s64)X120X_SEED_DIS_UW * X120X_R_UOHM,
+					max(chip->ocv_ema_uv, 1));
+			int seed = x120x_voltage_soc256(seed_uv, false);
+
+			chip->energy_now_uwh = div_s64(e_full * seed, 25600);
+			new_256 = clamp((int)div_s64(chip->energy_now_uwh *
+						     25600, e_full), 0, 100 * 256);
+			new_pct = clamp(new_256 >> 8, 0, 100);
+			chip->energy_rate_uw = 0;
+		}
 	} else {
 		new_pct = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
 		new_256 = MAX17043_SOC_256(soc_raw); /* raw, unclamped for rate */
@@ -1461,6 +1490,13 @@ static void x120x_poll_work(struct work_struct *work)
 			else
 				want_inhibit = chip->charger_inhibited;
 		}
+
+		/*
+		 * Seed settle overrides the band: hold the charger off so the
+		 * pack rests and the observer seeds from true OCV.
+		 */
+		if (seeding)
+			want_inhibit = true;
 
 		if (want_inhibit != chip->charger_inhibited) {
 			x120x_gpio_set(chip->gpio_chrg, want_inhibit ? 1 : 0);
@@ -2870,7 +2906,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.7");
+MODULE_VERSION("0.5.8");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

@@ -101,6 +101,18 @@ Release history of [x120x-dkms](README.md), newest first.
   changes nothing; the gate is defensive — switching a *full* pack into a sub-100
   Long Life band no longer pins the observer at full while the pack self-
   discharges toward the band (the still-100 laggy gauge would otherwise hold it).
+- Cold-boot/reload seed reworked to a **charger-off settle**: on the first sample
+  the driver holds the charger off for `X120X_SEED_SETTLE_MS` (5 min) and
+  re-seeds SoC from the OCV curve each poll.  On grid the held-off pack rests, so
+  the terminal relaxes to true OCV and the seed converges to the real SoC — no IR
+  guess, and a wrong seed can no longer trip the charger on.  The old one-shot
+  seed assumed charging whenever on grid and, on a rested-but-not-full pack,
+  under-read badly (a rested 86% pack seeded ~72%: near the top the OCV curve is
+  ~4 mV/%, so a small nominal-IR offset maps to a large SoC swing).  Two shortcuts
+  skip the settle: a full pack on a 100% target (gauge=100) pins to full; a
+  near-empty pack (V ≤ `X120X_SEED_EMPTY_UV`, ~3.1 V) seeds 0% and charges at
+  once.  Removes `X120X_SEED_CHG_UW`; off-grid boots still IR-correct with
+  `X120X_SEED_DIS_UW`.
 - Hard terminal-voltage floor (SoC-independent safety backstop): on battery,
   a raw cell voltage ≤ 3.00 V held for 20 s forces `CAPACITY_LEVEL=CRITICAL`
   regardless of the SoC estimate, driving the OS (UPower/logind) shutdown

@@ -2,74 +2,157 @@
 
 Release history of [x120x-dkms](README.md), newest first.
 
-### v0.4.10 — Ubuntu package-update survival
+### Unreleased — v0.5.x voltage-observer series
 
-**Installer**
-- Ubuntu package updates no longer break the driver.  On Ubuntu's
-  flash-kernel layout, `apt upgrade` repopulates `…/current/overlays` from
-  the kernel/firmware packages and deletes the out-of-tree `x120x.dtbo`;
-  `config.txt` keeps its `dtoverlay=x120x` line, so the reference dangled
-  and the driver silently failed to load after the next reboot (issue #5).
-  The installer now stashes the compiled overlay and registers an apt hook
-  (`/etc/apt/apt.conf.d/99-x120x-overlay`, calling
-  `/usr/local/lib/x120x-restore-overlay.sh`) that restores it at the end of
-  any transaction that removed it.  The helper always exits 0 and is a
-  no-op unless the overlay is configured but missing.  Installed **only**
-  on the `current/overlays` (Ubuntu) layout — Raspberry Pi OS installs are
-  byte-for-byte unchanged.  `uninstall.sh` removes the hook, helper, and
-  stash.
-- `install.sh` no longer aborts when the DKMS tree already contains this
-  version (e.g. a prior run that failed after `dkms add`).  It now
-  tolerates an already-registered tree and continues to build/install;
-  previously the abort happened before the overlay step, so a recovery
-  reinstall died without restoring the overlay.
-- `uninstall.sh` now detects the Ubuntu `current/overlays` layout the same
-  way `install.sh` does, so it removes the overlay from the right place on
-  Ubuntu (it previously only looked in `…/overlays`).
+A single **unreleased** development series; the last tagged release is v0.4.8.
+The v0.5.x SoC work was developed 2026-08-06…08-11 while the version string
+still read 0.4.8. **v0.5.0** and **v0.5.1** were exploratory dead ends —
+voltage-derivative (dSoC/dt) power estimation, then a voltage↔gauge fusion
+blend — neither stamped in `dkms.conf`, both superseded once the recursive
+observer emerged as the far cleaner idea at **v0.5.2** (its dead code was
+removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
+below by version bump, newest first; at tag time these reconcile into one
+release section per the versioning convention.
 
-  Confirmed end-to-end by the issue #5 reporter on Ubuntu 26.04 LTS / Pi 5 /
-  X1201: a fresh install followed by an `apt upgrade` (kernel/firmware) and a
-  reboot, with the driver still loading.
+#### v0.5.10 — Exact fractional charge band
 
-**Testing / CI**
-- The README "repository layout" tree check — every tracked file must appear
-  in the layout diagram — is now `tools/check-layout-tree.sh` (CI calls the
-  script instead of an inline step), and `make test` runs it alongside
-  `check-versions.sh` and `check-links.sh`.  The unprivileged consistency
-  checks CI enforces are now reproducible with a single local `make test`.
+**Kernel driver**
+- Charge band thresholds now compared at **1/256-% (fractional)** rather than
+  the floored integer capacity. The rising cut edge (`≥ end`) already landed on
+  the true threshold, but the falling resume (`≤ start`) fired ~1% high
+  (`floor(78.9)=78`, so a `78` resume triggered at true ~79) — a Long Life
+  78/80 band, left to the driver, actually floated 79–80. Both edges now hit
+  the true SoC, giving an exact `[start, end]` band. Applies to the Long Life
+  band (fractional observer `soc256`) and the Fast float band (fractional gauge
+  via new `raw_capacity_256`). No change to the rising cut. (Same floor
+  off-by-one that made the drain-to-5% test stop at true ~6%.)
 
 **Documentation**
-- New **Incident 4** in [docs/incidents.md](docs/incidents.md) documents the
-  Ubuntu package-update overlay wipe: the symptom, the `flash-kernel` root
-  cause, the proof that Raspberry Pi OS is unaffected, and the fix.
+- README: the "native Linux integration" summary paragraph moved from under the
+  intro to just below the v0.5.x runtime graph, directly above the battery-tray
+  screenshot (placement only, text unchanged).
 
-### v0.4.9 — Ubuntu install support
+#### v0.5.9 — Long Life default 78/80
+
+**Kernel driver**
+- Long Life default band tightened **75/80 → 78/80** (`conservation_start`
+  75 → 78; end stays 80). Under the board's ~0.43%/day standby drain both bands
+  see the same annual charge throughput (~1.6 EFC/yr), so cycle aging is
+  unchanged; 78/80 just keeps the pack a touch nearer full (mean ~79% vs
+  ~77.5%) for slightly more backup runtime, topping up ~every 5 days instead of
+  ~11 (shallower, so no extra wear). Fast mode is unchanged (95/100). Wider
+  bands (e.g. TLP's 75/80) remain one modprobe/sysfs write away. Updates the
+  `module_param` default + desc + validator fallback.
+
+**Documentation**
+- Every doc that stated 75 updated: README (band description, sysfs listings,
+  example, params table, and the TLP justification — reframed as the wider
+  alternative rather than the default), `battery-profiles.md`, `migration.md`,
+  and `install.sh --help`.
+
+#### v0.5.8 — Charger-off settle seed on boot
+
+**Kernel driver**
+- Cold-boot/reload seed reworked to a **charger-off settle** (supersedes the
+  v0.5.2 nominal-IR seed). On the first sample the driver holds the charger off
+  for `X120X_SEED_SETTLE_MS` (5 min) and re-seeds SoC from the OCV curve each
+  poll. On grid the held-off pack rests, so the terminal relaxes to true OCV
+  and the seed converges to the real SoC — no IR guess, and a wrong seed can no
+  longer trip the charger on. The old seed assumed charging whenever on grid
+  and, on a rested-but-not-full pack, under-read badly (a rested 86% pack
+  seeded ~72%: near the top the OCV curve is ~4 mV/%, so a small IR offset maps
+  to a large SoC swing). During the settle reported power is 0 (no phantom
+  re-anchor blip). Two shortcuts skip the settle: a full pack on a 100% target
+  (gauge=100) pins to full; a near-empty pack (`V ≤ X120X_SEED_EMPTY_UV`,
+  ~3.1 V) seeds 0% and charges at once. Removes the now-unused
+  `X120X_SEED_CHG_UW`; off-grid boots still IR-correct via `X120X_SEED_DIS_UW`.
+
+#### v0.5.7 — Gate the gauge=100 pin on a 100% target
+
+**Kernel driver**
+- The observer's gauge=100 pin (hard-anchor energy to `E_full`) now also
+  requires a 100% charge target — Fast mode, or a Long Life band configured to
+  100%. The gauge only reads 100 at a genuinely full pack, so in normal cycling
+  this changes nothing; the gate is defensive — switching a *full* pack into a
+  sub-100 Long Life band no longer pins the observer at full while the
+  still-100 laggy gauge holds it there as the pack self-discharges toward the
+  band. The cold-boot seed (a genuinely full pack at boot) is intentionally
+  left ungated — full is full in any mode.
+
+#### v0.5.6 — Scope the full-charge debounce to 100% targets
+
+**Kernel driver**
+- Full-charge debounce now applies **only to a 100% stop target**, and is
+  lengthened 30 min → 1 h (`X120X_CHG_FULL_DEBOUNCE_MS`). At a 100% target —
+  Fast mode, or a Long Life band configured to 100% — the gauge=100% assertion
+  gates both charge-off and the observer 100% pin after 1 h of held-full, keyed
+  on the raw gauge (the only reliable read at full, since the observer only
+  approaches full asymptotically). Cost is ~50 min extra CV hold per top-off —
+  negligible for a UPS that floats near full.
+- Sub-100 Long Life bands now **cut the charger immediately** at
+  `conservation_end`, keyed on the observer SoC, instead of waiting out the
+  debounce. The debounce is a CV top-off tool for the 100% anchor; applying it
+  to an 80% band let the charger run the full window past the target and
+  overshoot the band top by ~5% (a 75–80 band effectively topped out ~85%, then
+  had to self-discharge all the way back before the first recharge). A
+  mid-range band has nothing to top off, so it stops on the spot. The Long-Life
+  soak run surfaced this exactly.
+
+#### v0.5.5 — Two-branch OCV tables + full documentation pass
 
 **Fuel gauge / state of charge**
 - Two-branch (charge/discharge) OCV tables replacing the single curve. NMC has
   a real OCV hysteresis — at a given SoC the rested voltage is higher just after
   charging than just after discharging (~115 mV low, → ~0 above 80%). The
-  observer now selects the charge-branch table while charging (`ac_online &&
+  observer selects the charge-branch table while charging (`ac_online &&
   !charger_inhibited`) and the discharge branch on battery/at rest, so the
   estimate no longer front-loads on the charge leg (a single mean curve read the
   charge current ~half a hysteresis too high at low SoC). `energy_now` stays
   continuous across a branch flip, so SoC never steps — only the rate does.
-  Both tables are energy-true rested OCV from an ECM characterization cycle
-  (settled rest points on both branches, coulomb-anchored) with the low-SoC knee
-  from a scaled deep-discharge shape; 56 points each. Validated against an
-  independent coulomb reference over 5 days of logged telemetry: RMS 3.75 % /
-  max 9.8 % vs truth, beating the previous single-curve (4.73 % / 17.2 %) and
-  the raw gauge (11.1 % / 27.4 %). NMC-calibrated; LFP unsupported.
+  Both tables are energy-true rested OCV from an ECM characterization cycle,
+  56 points each. Validated against an independent coulomb reference over 5 days
+  of logged telemetry: RMS 3.75 % / max 9.8 % vs truth, beating the previous
+  single-curve (4.73 % / 17.2 %) and the raw gauge (11.1 % / 27.4 %).
+  NMC-calibrated; LFP unsupported.
 - Usable-energy scale `X120X_USABLE_PERMILLE` 875 → 900 (e_full 63.0 → 64.8 Wh
-  for the 4×P50B pack). The coulomb-measured usable window came out at 63–65.4 Wh
-  across metered cycles; 0.900 is the mid-range value. Only scales the transient
-  power/rate — the OCV feedback self-anchors steady SoC — so it is not a
-  precision knob.
-- SoC is *linear in energy* (`energy_now / E_full`, not remaining coulombs) — a
-  user-visible property now documented: under constant power it falls at a
-  constant %/hour, so "50% ≈ half the runtime left" holds at steady load and
-  UPower's time-to-empty stays trustworthy near empty; a coulomb-based SoC would
-  bend downward instead.
+  for the 4×P50B pack). The coulomb-measured usable window (4.20 → 3.20 V) came
+  out at 63–65.4 Wh across metered cycles; 0.900 is the mid-range value. Only
+  scales the transient power/rate — the OCV feedback self-anchors steady SoC —
+  so it is not a precision knob.
+- Voltage EMA rounds to nearest (+16 half-LSB) instead of truncating, so it
+  settles on the true voltage from below (was biasing up to ~31 µV low).
+  Sub-LSB against the ~1250 µV ADC step — a correctness tidy-up, no measurable
+  accuracy change.
+
+**Documentation**
+- SoC docs rewritten for the v0.5.x observer model (`docs/soc-model.md`); the
+  annotated recovered-capacity drain+recharge figure and the 2026-03-05
+  deep-discharge/destruction figure added (`docs/incidents.md`); README intro
+  banner announcing the voltage-observer SoC model up top with the runtime
+  graph.
+- SoC is *linear in energy* (`energy_now / E_full`, not remaining coulombs)
+  surfaced as a first-class, user-visible property: under constant power it
+  falls at a constant %/hour, so "50% ≈ half the runtime left" holds at steady
+  load and UPower's time-to-empty stays trustworthy near empty; a coulomb-based
+  SoC would bend downward instead.
+- `soc-model.md` clarifies that reported power is **net, not gross** under load
+  (the observer reports net battery power — charge minus Pi load — since the Pi
+  shares the battery node), and addresses whether deeper discharge is safe for
+  the cells.
+- Documented the SoC-model calibration envelope: NMC/NCA at ~room temperature,
+  no temperature sensor / no temperature compensation. Because SoC is
+  voltage-anchored and shutdown is a fixed voltage floor, out-of-range
+  temperature degrades the estimate *gracefully and never unsafely*.
+- README: fixed the sysfs `charge_full`/`energy_full` descriptions (usable
+  window vs `*_design` rated to 2.5 V), added the `soc_source` module-param and
+  `--soc-source` install-option rows, reworded the board-table note to "not yet
+  installable", and documented the per-change lockstep versioning convention.
+- Version lockstep reconciled to 0.5.5 across `dkms.conf`, `install.sh`,
+  `src/x120x.c`, and `docs/manual-install.md`.
+
+#### v0.5.4 — Remove dead code; lengthen the debounce
+
+**Kernel driver**
 - Removed dead code superseded by the recursive observer: the entire unused
   v_soc↔gauge **fusion** subsystem (`fusion_off_256`, `fusion_primed`,
   `FUSE_W_LO/W_HI/OFF_SHIFT` and its doc block), the abandoned live-dSoC/dt
@@ -79,129 +162,92 @@ Release history of [x120x-dkms](README.md), newest first.
   `SEED_CHARGE/DRAIN/FLOAT_UW`, `IR_NOM_DRAIN/CHARGE_UV`), and the write-only
   `soc_offset`/`prev_charging`/`model_primed` fields. No functional change —
   none were read; the observer's `P = I·V` and gauge=100 pin are the live path.
-- Full-charge debounce now applies **only to a 100% stop target** and is
-  lengthened 10 min → 1 h (`X120X_CHG_FULL_DEBOUNCE_MS`).  At a 100% target —
-  Fast mode, or a Long Life band configured to 100% — the gauge=100% assertion
-  gates both charge-off and the observer 100% pin after 1 h of held-full, keyed
-  on the raw gauge (the only reliable read at full).  On the flat CV top the
-  observer's charge current `(OCV−V)/R → 0` as SoC → 100, so it approaches full
-  only asymptotically (τ ≈ 11 min measured); holding several time-constants past
-  gauge=100 tops the pack off and makes the 100% pin snap negligible.  Cost is
-  ~50 min extra CV hold per top-off — negligible for a UPS that floats near full.
-- Sub-100 Long Life bands now **cut the charger immediately** at
-  `conservation_end`, keyed on the observer SoC, instead of waiting out the
-  full-charge debounce.  The debounce is a CV top-off tool for the 100% anchor;
-  applying it to, e.g., an 80% band let the charger run the full window past the
-  target and overshoot the band top by ~5% (a 75–80 band effectively topped out
-  ~85%, then had to self-discharge all the way back down before the first
-  recharge).  A mid-range band has nothing to top off, so it stops on the spot.
-- The observer's gauge=100 pin (hard-anchor energy to `E_full`) now also requires
-  a 100% charge target — Fast mode, or a Long Life band configured to 100%.  The
-  gauge only reads 100 at a genuinely full pack, so in normal cycling this
-  changes nothing; the gate is defensive — switching a *full* pack into a sub-100
-  Long Life band no longer pins the observer at full while the pack self-
-  discharges toward the band (the still-100 laggy gauge would otherwise hold it).
-- Cold-boot/reload seed reworked to a **charger-off settle**: on the first sample
-  the driver holds the charger off for `X120X_SEED_SETTLE_MS` (5 min) and
-  re-seeds SoC from the OCV curve each poll.  On grid the held-off pack rests, so
-  the terminal relaxes to true OCV and the seed converges to the real SoC — no IR
-  guess, and a wrong seed can no longer trip the charger on.  The old one-shot
-  seed assumed charging whenever on grid and, on a rested-but-not-full pack,
-  under-read badly (a rested 86% pack seeded ~72%: near the top the OCV curve is
-  ~4 mV/%, so a small nominal-IR offset maps to a large SoC swing).  Two shortcuts
-  skip the settle: a full pack on a 100% target (gauge=100) pins to full; a
-  near-empty pack (V ≤ `X120X_SEED_EMPTY_UV`, ~3.1 V) seeds 0% and charges at
-  once.  Removes `X120X_SEED_CHG_UW`; off-grid boots still IR-correct with
-  `X120X_SEED_DIS_UW`.
-- Long Life default band tightened **75/80 → 78/80** (`conservation_start`
-  75 → 78).  Under the board's standby drain both bands see the same annual
-  charge throughput (~1.6 EFC/yr), so cycle aging is unchanged; 78/80 just
-  keeps the pack a touch nearer full (mean ~79% vs ~77.5%) for slightly more
-  backup runtime, topping up ~every 5 days instead of ~11.  Fast mode is
-  unchanged (95/100).  Wider bands (e.g. TLP's 75/80) remain available via the
-  module params / sysfs.
-- Charge band thresholds now compared at **1/256-% (fractional)** rather than the
-  floored integer capacity.  The rising cut edge already landed on the true
-  threshold, but the falling resume fired ~1% high (`floor(78.9)=78`, so a `78`
-  resume triggered at true ~79) — a Long Life 78/80 band actually floated 79–80.
-  Both edges now hit the true SoC, giving an exact `[start, end]` band.  Applies
-  to the Long Life band (fractional observer SoC) and the Fast float band
-  (fractional gauge via new `raw_capacity_256`).
-- Hard terminal-voltage floor (SoC-independent safety backstop): on battery,
-  a raw cell voltage ≤ 3.00 V held for 20 s forces `CAPACITY_LEVEL=CRITICAL`
-  regardless of the SoC estimate, driving the OS (UPower/logind) shutdown
-  chain.  This is the last-ditch defence if the observer ever reads high
-  while the pack is genuinely empty — voltage is ground truth.  The 20 s
-  confirm rejects transient load-spike sags; gated on battery (never fires
-  while charging).
-- Gauge=100 observer pin: when the raw MAX17043 gauge has read 100% for
-  10 min (genuinely full — the same window that gates charge-off), or reads
-  100% at driver start, the voltage observer's energy is hard-anchored to
-  full.  Handles the common float-restart (no conservative under-read +
-  top-up climb) and prevents slow integrator drift over long floats.  The
-  gauge is trusted only for this `==100` full-assertion (it craters low);
-  the discharge/steady path stays voltage-only.
-- Charge-off debounce raised 45 s → 10 min: Fast mode keeps charging for
-  10 min after the gauge first reads 100% (CV top-off) before cutting the
-  charger, so "full" is genuine before the pin and termination fire.
-- POWER_NOW is no longer output-smoothed for the voltage observer: it was
-  passed through an α=1/1024 EMA (τ≈8.5 min) that lagged real load steps by
-  ~29 min.  The observer's rate is already V-EMA-smoothed (τ≈16 s) and the
-  gauge supplies its own smoothness, so POWER_NOW is served directly again
-  (the v0.4.8 behavior; the later EMA is dropped).
-- Cold-boot SoC seed is now IR-corrected by a nominal load (5 W drain,
-  10 W charge) instead of the raw terminal voltage, so a boot mid-cycle
-  starts near truth rather than the load-depressed (or charge-lifted)
-  reading.  The observer self-anchors from there — under ~2 h even from a
-  worst-case drain seed, and always in the safe under-read direction — and
-  the full-charge energy rail erases any residual exactly.  No gauge
-  dependency, range clamp, or charger-cut "rest" read is involved; only the
-  seed changes, the steady observer and `soc_source=gauge` path are
-  untouched.
+- Full-charge debounce lengthened 10 min → 30 min: on the flat CV top the
+  observer's charge current `(OCV−V)/R → 0` as SoC → 100 (τ ≈ 11 min), so
+  waiting ~3τ lets the pack integrate to ~99.7% before the anchor, shrinking the
+  100%-pin snap from ~1.6% to ~0.3%. (Later scoped to 100%-only and 1 h in
+  v0.5.6.)
+
+#### v0.5.3 — Hard terminal-voltage floor
+
+**Kernel driver**
+- Hard terminal-voltage floor (SoC-independent safety backstop): on battery, a
+  raw cell voltage ≤ 3.00 V held for 20 s forces `CAPACITY_LEVEL=CRITICAL`
+  regardless of the SoC estimate, driving the OS (UPower/logind) shutdown chain.
+  The last-ditch defence if the observer ever reads high while the pack is
+  genuinely empty — voltage is ground truth. The 20 s confirm (mirrors the
+  dead-battery detector) rejects transient load-spike sags; gated on battery
+  (never fires while charging).
+
+#### v0.5.2 — Recursive voltage-observer SoC model
+
+The current-sensorless observer the README announces as the v0.5.x model, and
+where the design finally clicked: after the v0.5.0 voltage-derivative and v0.5.1
+fusion experiments, the recursive energy-integrating observer emerged as a far
+superior idea and replaced both. This is the first version-stamped 0.5.x
+release.
+
+**Fuel gauge / state of charge**
+- Recursive energy-integrating voltage observer replaces the instantaneous
+  IR-lookup + gauge-fusion SoC path: `SoC = energy_now/energy_full`,
+  `I = (OCV(SoC)−V̄)/R`, `P = I·V̄`, `energy_now −= P·dt`. Self-anchoring,
+  load-independent, with signed battery power for free.
 - New `soc_source` module param (default `voltage`) derives SoC from cell
-  voltage via an NMC open-circuit-voltage model instead of the fuel gauge's
-  SOC register.  The fuel gauge on these boards is a MAX17043-style clone
-  (version reports `0x000`, non-datasheet register map, boots reporting an
-  impossible 102%) whose SoC register over-reads the discharge near full — a
-  *dynamic* stuck-then-catch-up artifact.  A static voltage lookup avoids it:
-  validated against a coulomb-counted (charger-metered) discharge, the model
-  read 90% where the gauge read 86.6% and truth was ~90%.
-- Two curves — charge (on grid) and discharge (on battery) — because charge
-  current lifts terminal voltage ~100–150 mV above the discharge OCV.  Both
-  are empirical, measured on a 4× Molicel INR21700-P50B pack across 216 days
-  (19 discharge / 17 charge events, consistent to 2–6 mV).  A decaying offset
-  re-anchors SoC at each charge↔discharge transition so it never jumps.
-  `soc_source=gauge` restores the raw register behaviour.  Hardware is
-  fixed-4.2 V Li-ion (terminal 4.23 V) so the NMC/NCA curve covers every
-  supported cell; LiFePO4 is not supported by the hardware.
+  voltage via an NMC open-circuit-voltage model instead of the fuel gauge's SOC
+  register. The gauge on these boards is a MAX17043-style clone (version reports
+  `0x000`, non-datasheet register map, boots reporting an impossible 102%) whose
+  SoC register over-reads the discharge near full — a *dynamic*
+  stuck-then-catch-up artifact. Validated against a coulomb-counted discharge,
+  the model read 90% where the gauge read 86.6% and truth was ~90%. Two curves
+  — charge (on grid) and discharge (on battery) — because charge current lifts
+  terminal voltage ~100–150 mV above the discharge OCV; both empirical, measured
+  on the 4×P50B pack across 216 days, with a decaying offset re-anchoring SoC at
+  each charge↔discharge transition so it never jumps. `soc_source=gauge`
+  restores the raw register behaviour. (The empirical curves were refined into
+  the energy-true ECM two-branch tables in v0.5.5.)
+- Cold-boot SoC seed IR-corrected by a nominal load (5 W drain, 10 W charge)
+  instead of the load-depressed/charge-lifted terminal, so a boot mid-cycle
+  starts near truth. (Replaced by the charger-off settle seed in v0.5.8.)
+- Gauge=100 observer pin: while on grid, once the raw MAX17043 gauge has read
+  100% for 10 min (or reads 100% at driver start), the observer's energy is
+  hard-anchored to full. Handles the common float-restart and prevents slow
+  integrator drift over long floats; gated on AC so it releases the instant the
+  grid drops (the laggy gauge keeps reading 100 for minutes after a cut). The
+  gauge is trusted only for this `==100` full-assertion; the discharge/steady
+  path stays voltage-only. (Debounce later 30 min → 1 h and 100%-gated across
+  v0.5.4/0.5.6/0.5.7.)
+- Charge-off debounce raised 45 s → 10 min: Fast mode keeps charging for 10 min
+  after the gauge first reads 100% (CV top-off) before cutting the charger, so
+  "full" is genuine before the pin and termination fire.
+- `POWER_NOW` is no longer output-smoothed for the voltage observer: it was
+  passed through an α=1/1024 EMA (τ ≈ 8.5 min) that lagged real load steps by
+  ~29 min. The observer's rate is already V-EMA-smoothed (τ ≈ 16 s) and the
+  gauge supplies its own smoothness, so `POWER_NOW` is served directly again
+  (the v0.4.8 behavior).
+- Charge status reports **Not charging** whenever the charger is inhibited (both
+  modes), and Fast-mode charge termination inhibits on the raw gauge, debounced.
 
 **Installer**
 - New `--soc-source voltage|gauge` flag (default `voltage`), resolved with the
   same flag > existing-conf > default precedence as the other options and
   written to `/etc/modprobe.d/x120x.conf`.
-- Fixed a latent `set -euo pipefail` abort: reading a config that lacks any
-  key (e.g. a pre-`board` conf on upgrade) aborted the installer because a
-  no-match `grep` in the per-key extraction propagated failure.  All four
-  extractions now tolerate a missing key.
-- Ubuntu for Raspberry Pi is now supported.  `install.sh` detected the
-  firmware partition at `/boot/firmware` but hardcoded the overlays
-  subdirectory as `overlays/`, whereas Ubuntu's flash-kernel layout keeps
-  the active kernel's overlays under `current/overlays/`.  The installer
-  now probes for `current/overlays` (a Debian/Ubuntu-only convention,
-  never present on Raspberry Pi OS) and falls back to `overlays`, so the
-  overlay lands where the bootloader reads it on both distributions.
-  Reported by @AbbynatorNZ on Ubuntu 26.04 LTS / Pi 5 / X1201 V1.1 (#5).
+- Fixed a latent `set -euo pipefail` abort: reading a config that lacks any key
+  (e.g. a pre-`board` conf on upgrade) aborted the installer because a no-match
+  `grep` in the per-key extraction propagated failure. All four extractions now
+  tolerate a missing key.
+- Ubuntu for Raspberry Pi is now supported. `install.sh` detected the firmware
+  partition at `/boot/firmware` but hardcoded the overlays subdirectory as
+  `overlays/`, whereas Ubuntu's flash-kernel layout keeps the active kernel's
+  overlays under `current/overlays/`. The installer now probes for
+  `current/overlays` (a Debian/Ubuntu-only convention, never present on
+  Raspberry Pi OS) and falls back to `overlays`, so the overlay lands where the
+  bootloader reads it on both distributions. Reported by @AbbynatorNZ on
+  Ubuntu 26.04 LTS / Pi 5 / X1201 V1.1 (#5).
 
 **Documentation**
-- Documented the SoC-model calibration envelope: NMC/NCA at ~room
-  temperature, no temperature sensor / no temperature compensation. Framed
-  honestly — because SoC is voltage-anchored and shutdown is a fixed voltage
-  floor, out-of-range temperature degrades the estimate *gracefully and never
-  unsafely* (it self-reflects a cold pack's reduced capacity and cannot
-  over-discharge a cell). README + `docs/soc-model.md` + the OCV-table comment.
-- README now shows the driver in use: screenshots of the battery icon
-  in the panel tray, `upower -i` output, and the GNOME Power Statistics
-  window (`docs/images/`, captured on the maintainer's Pi 5 / X1206).
+- README now shows the driver in use: screenshots of the battery icon in the
+  panel tray, `upower -i` output, and the GNOME Power Statistics window
+  (`docs/images/`, captured on the maintainer's Pi 5 / X1206).
 
 ### v0.4.8 — Update-safe install, uninstall --help, kernel floor, docs completion
 

@@ -416,12 +416,12 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     capacity_level        Critical (<5%) | Low (<10%) | Normal | Full (≥95%) | Unknown
     raw_capacity          0-100 %  (raw MAX17043 gauge SoC; non-standard, for diagnostics)
     charge_now            current charge in µAh
-    charge_full           total pack capacity in µAh (from battery_mah)
-    charge_full_design    same as charge_full
+    charge_full           usable window in µAh (rated × usable fraction)
+    charge_full_design    rated pack capacity in µAh (to 2.5 V, from battery_mah)
     charge_empty          0
     energy_now            current energy in µWh
-    energy_full           total pack energy in µWh
-    energy_full_design    same as energy_full
+    energy_full           usable window energy in µWh (~90% of rated; SoC/power scale)
+    energy_full_design    rated pack energy in µWh (to 2.5 V)
     energy_empty          0
     power_now             instantaneous power in µW (+ charging, − discharging)
     technology            Li-ion
@@ -895,6 +895,7 @@ Optional arguments configure the driver at install time:
 |---|---|---|
 | `--battery-mah N` | `1000` | Total pack capacity in mAh. Multiply per-cell capacity by number of cells. |
 | `--charge-mode MODE` | `fast` | Initial charge mode: `fast` or `longlife`. Persisted across reboots. See Getting started for guidance on which to choose. |
+| `--soc-source SRC` | `voltage` | State-of-charge source: `voltage` (default) or `gauge`. `voltage` runs the recursive voltage-observer model; `gauge` exposes the raw MAX17043 register (legacy). See [How the SoC model works](docs/soc-model.md). |
 | `--board VARIANT` | `x120x` | Board variant. Only `x120x` is currently installable — other variants are refused until per-board overlays ship. See [Experimental board support](#experimental-board-support). |
 | `--skip-eeprom` | _(off)_ | Do not modify Pi 5 bootloader EEPROM settings (`POWER_OFF_ON_HALT`, `PSU_MAX_CURRENT`); configure them manually — see Required bootloader settings. |
 
@@ -1059,6 +1060,7 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `gpio_ac`           | `6`                   | BCM GPIO for AC-present              |
 | `gpio_charge_ctrl`  | `16`                  | BCM GPIO for charge control          |
 | `battery_mah`       | `1000`                | Total pack capacity in mAh           |
+| `soc_source`        | `voltage`             | State-of-charge source: `voltage` = recursive voltage-observer SoC (see [How the SoC model works](docs/soc-model.md)), `gauge` = raw MAX17043 register (legacy). Set by the installer via `--soc-source`. |
 | `conservation_start`        | `75`  | SoC % at which charging resumes in Long Life mode |
 | `conservation_end`          | `80`  | SoC % at which charging stops in Long Life mode   |
 | `conservation_mode_default` | `0`   | Start in Long Life mode (`1`) or Fast mode (`0`). Updated automatically on every `charge_type` sysfs write and persisted to `modprobe.d` by a udev rule. |

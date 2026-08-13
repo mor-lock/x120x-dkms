@@ -33,7 +33,7 @@ register directly (unchanged legacy behaviour).
         ▼                                                                  │
  terminal V ─► V̄ (EMA) ─► I = (OCV(SoC) − V̄)/R ─► P = I·V̄ ─► ∫ = energy ─┴─► SoC (%)
                              ▲                                    ▲
-        OCV branch (charge/discharge) by charge dir       gauge=100 %, 30 min on grid
+        OCV branch (charge/discharge) by charge dir       gauge=100 %, 1 h on grid
                                                             └► pin energy = full
 ```
 
@@ -131,7 +131,7 @@ gauge already reads 100 % at boot, the state starts at full directly.
 
 The raw MAX17043 is reliable at exactly *one* point — **full** — because it
 only craters *low*. So when it has held 100 % for `X120X_CHG_FULL_DEBOUNCE_MS`
-(30 min) **on grid**, the observer energy is hard-anchored to `E_full`. This
+(1 h) **on grid**, the observer energy is hard-anchored to `E_full`. This
 kills slow integrator drift over long floats and gives a crisp 100 % despite
 the CV-taper asymptote (as SoC → 100 the charge current `(OCV − V)/R → 0`, so
 the integral only approaches full; the pin is the anchor). The pin **releases
@@ -240,7 +240,7 @@ too rarely for the extra depth to matter.
 |---|---|
 | `X120X_USABLE_PERMILLE` | usable-energy fraction of rated → `E_full` (SoC / energy scale) |
 | `X120X_R_UOHM` | pack DC resistance in the observer (`I = (OCV − V)/R`) |
-| `X120X_CHG_FULL_DEBOUNCE_MS` | gauge-held-100 % time before the 100 % pin / charge-off |
+| `X120X_CHG_FULL_DEBOUNCE_MS` | gauge-held-100 % time before the 100 % pin / 100 % charge-off (100 % targets only) |
 | `X120X_SEED_DIS_UW` / `_CHG_UW` | nominal load for the cold-boot IR seed (battery / grid) |
 | `X120X_POWER_MIN_UW` / `_MAX_UW` | physical clamp on the reported power |
 | `X120X_VMIN_CRITICAL_UV` | hard voltage floor → CRITICAL (SoC-independent backstop) |

@@ -79,14 +79,22 @@ Release history of [x120x-dkms](README.md), newest first.
   `SEED_CHARGE/DRAIN/FLOAT_UW`, `IR_NOM_DRAIN/CHARGE_UV`), and the write-only
   `soc_offset`/`prev_charging`/`model_primed` fields. No functional change —
   none were read; the observer's `P = I·V` and gauge=100 pin are the live path.
-- Full-charge debounce lengthened 10 min → 30 min (`X120X_CHG_FULL_DEBOUNCE_MS`).
-  The gauge=100% assertion now gates both charge-off and the observer 100% pin
-  after 30 min of held-full instead of 10.  On the flat CV top the observer's
-  charge current `(OCV−V)/R → 0` as SoC → 100, so it approaches full only
-  asymptotically (τ ≈ 11 min measured); waiting ~3τ lets the pack integrate to
-  ~99.7% before the anchor, shrinking the pin snap (and the next-discharge
-  starting over-estimate) from ~1.6% to ~0.3%.  Cost is ~20 min extra CV hold
-  per top-off — negligible for a UPS that floats near full continuously.
+- Full-charge debounce now applies **only to a 100% stop target** and is
+  lengthened 10 min → 1 h (`X120X_CHG_FULL_DEBOUNCE_MS`).  At a 100% target —
+  Fast mode, or a Long Life band configured to 100% — the gauge=100% assertion
+  gates both charge-off and the observer 100% pin after 1 h of held-full, keyed
+  on the raw gauge (the only reliable read at full).  On the flat CV top the
+  observer's charge current `(OCV−V)/R → 0` as SoC → 100, so it approaches full
+  only asymptotically (τ ≈ 11 min measured); holding several time-constants past
+  gauge=100 tops the pack off and makes the 100% pin snap negligible.  Cost is
+  ~50 min extra CV hold per top-off — negligible for a UPS that floats near full.
+- Sub-100 Long Life bands now **cut the charger immediately** at
+  `conservation_end`, keyed on the observer SoC, instead of waiting out the
+  full-charge debounce.  The debounce is a CV top-off tool for the 100% anchor;
+  applying it to, e.g., an 80% band let the charger run the full window past the
+  target and overshoot the band top by ~5% (a 75–80 band effectively topped out
+  ~85%, then had to self-discharge all the way back down before the first
+  recharge).  A mid-range band has nothing to top off, so it stops on the spot.
 - Hard terminal-voltage floor (SoC-independent safety backstop): on battery,
   a raw cell voltage ≤ 3.00 V held for 20 s forces `CAPACITY_LEVEL=CRITICAL`
   regardless of the SoC estimate, driving the OS (UPower/logind) shutdown

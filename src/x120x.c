@@ -666,6 +666,18 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
  * @work:		delayed work item driving the polling loop
  * @heartbeat_ticks:	poll ticks left until a forced power_supply_changed()
  * @hwmon_dev:		hwmon device exposing voltage/power to sensors
+ * @gauge_full_since:	jiffies the gauge first read full (observer full-pin); 0 = not full
+ * @seed_settle_until:	jiffies to hold charger off and seed SoC from OCV; 0 = not settling
+ * @soc_src:		SoC source: voltage OCV observer vs raw fuel gauge
+ * @ocv_ema_uv:		EMA of cell voltage feeding the OCV lookup (0 = uninit)
+ * @ocv_model_uv:	observer OCV(SoC) estimate in uV, exposed as hwmon in1 (0 = n/a)
+ * @obs_primed:		false until energy_now_uwh is seeded from the OCV lookup
+ * @obs_prev_us:	ktime (us) of the previous observer step, for dt
+ * @power_report_uw:	charge/discharge power reported to the ABI, in uW
+ * @raw_capacity_pct:	raw MAX17043 ModelGauge SoC, integer percent
+ * @raw_capacity_256:	raw MAX17043 SoC in 1/256 units, for the fractional band compare
+ * @vfloor_start_us:	ktime the cell first fell to/below VMIN on battery; 0 = above
+ * @vfloor_critical:	true once VMIN held long enough to force SoC-independent CRITICAL
  */
 struct x120x_chip {
 	struct i2c_client	*client;
@@ -696,14 +708,12 @@ struct x120x_chip {
 	 * Recursive voltage observer (soc_source=voltage): SoC is the running
 	 * energy_now_uwh integral of P = I*V, I = (OCV(SoC) - V)/R over the
 	 * charge/discharge OCV tables.  It self-anchors to the curve (drift-
-	 * free) and yields power for free.
-	 * @soc_src:     voltage OCV observer vs raw fuel gauge.
-	 * @ocv_ema_uv:  EMA of cell voltage feeding the OCV lookup (0 = uninit).
-	 * @obs_primed:  false until energy_now_uwh is seeded from the OCV lookup.
-	 * @obs_prev_us: ktime (us) of the previous observer step, for dt.
+	 * free) and yields power for free.  ocv_model_uv caches OCV(SoC) for
+	 * the hwmon in1 channel (0 in gauge mode).
 	 */
 	enum x120x_soc_source	 soc_src;
 	int			 ocv_ema_uv;
+	int			 ocv_model_uv;
 	bool			 obs_primed;
 	s64			 obs_prev_us;
 	int			 power_report_uw;	/* power reported to the ABI      */
@@ -950,6 +960,7 @@ static void x120x_poll_work(struct work_struct *work)
 	int  raw_soc_snap      = 0;
 	int  capacity_256_snap = 0;
 	int  raw_soc_256_snap  = 0;
+	int  ocv_model_uv      = 0;	/* observer OCV(SoC), µV; 0 in gauge mode */
 
 	/* ----------------------------------------------------------------
 	 * Read fuel gauge.  On failure, increment the error counter and
@@ -1086,6 +1097,7 @@ static void x120x_poll_work(struct work_struct *work)
 		soc256 = clamp((int)div_s64(chip->energy_now_uwh * 25600, e_full),
 			       0, 100 * 256);
 		ocv_uv = x120x_soc256_to_ocv(soc256, charging);
+		ocv_model_uv = ocv_uv;		/* cache for hwmon in1 (committed under lock) */
 
 		/* I (µA) = (OCV - V)/R : (µV / µΩ) = A, ×1e6 = µA. */
 		i_ua = div_s64((s64)(ocv_uv - chip->ocv_ema_uv) * 1000000LL,
@@ -1204,6 +1216,7 @@ static void x120x_poll_work(struct work_struct *work)
 		 * sysfs attr and used for the gauge=100 top anchor */
 		chip->raw_capacity_pct = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
 		chip->raw_capacity_256 = clamp(MAX17043_SOC_256(soc_raw), 0, 100 * 256);
+		chip->ocv_model_uv     = ocv_model_uv;	/* observer OCV → hwmon in1 */
 
 		/*
 		 * energy_full  = battery_mah × 3600 mV × usable-fraction
@@ -2147,6 +2160,19 @@ static const struct power_supply_desc x120x_charger_desc = {
  *   in0     — cell voltage in millivolts          (label: "cell_voltage")
  *             Direct hardware reading from MAX17043 VCELL register.
  *             hwmon unit: mV.  node_exporter: node_hwmon_in_volts.
+ *             Carries voltage safety limits:
+ *               in0_lcrit       — 3.00 V on-battery critical floor.
+ *               in0_min         — 3.20 V design minimum (0 % SoC / empty).
+ *               in0_lcrit_alarm — 1 once the floor has been held long
+ *                                 enough to force CRITICAL and drive the
+ *                                 OS shutdown chain.
+ *
+ *   in1     — observer OCV estimate in millivolts  (label: "cell_ocv")
+ *             The voltage model's rested open-circuit-voltage estimate at
+ *             the current SoC — what the terminal would relax to at rest.
+ *             in0 − in1 is therefore the live IR drop (I·R).  Present only
+ *             with the default voltage model; hidden under soc_source=gauge.
+ *             hwmon unit: mV.  node_exporter: node_hwmon_in_volts (in1).
  *
  *   curr1   — charge/discharge current in milliamps (label: "battery_current")
  *             Derived: I (mA) = power_rate (µW) / voltage (µV) × 1000.
@@ -2158,11 +2184,11 @@ static const struct power_supply_desc x120x_charger_desc = {
  *   power1  — charge/discharge power in microwatts (label: "battery_power")
  *             Sign convention: positive = charging, negative = discharging.
  *             hwmon unit: µW.  node_exporter: node_hwmon_power_watt.
- *             NOTE: derived from SoC slope × pack capacity × nominal
- *             voltage — not a direct measurement.  The MAX17043 does not
- *             measure current.  Accurate during steady charge/discharge;
- *             lags during rapid transitions and at very low SoC before
- *             the fuel gauge model has converged.
+ *             NOTE: not a direct measurement (the MAX17043 has no current
+ *             sense).  With the voltage model it is the observer's net
+ *             battery power P = I·V; with soc_source=gauge it is derived
+ *             from SoC slope × pack capacity × nominal voltage and lags
+ *             during rapid transitions and before the gauge has converged.
  *
  *   energy1 — cumulative energy in microjoules      (label: "battery_energy")
  *             Derived: E (µJ) = energy_now (µWh) × 3600.
@@ -2171,7 +2197,8 @@ static const struct power_supply_desc x120x_charger_desc = {
  *             hwmon unit: µJ.  node_exporter: node_hwmon_energy_joules.
  *
  * node_exporter (--collector.hwmon, enabled by default) exposes these as:
- *   node_hwmon_in_volts{chip="x120x",sensor="in0"}
+ *   node_hwmon_in_volts{chip="x120x",sensor="in0"}          (terminal)
+ *   node_hwmon_in_volts{chip="x120x",sensor="in1"}          (observer OCV)
  *   node_hwmon_curr_amps{chip="x120x",sensor="curr1"}
  *   node_hwmon_power_watt{chip="x120x",sensor="power1"}
  *   node_hwmon_energy_joules{chip="x120x",sensor="energy1"}
@@ -2179,24 +2206,40 @@ static const struct power_supply_desc x120x_charger_desc = {
 
 /**
  * x120x_hwmon_is_visible() - select which hwmon channels exist
- * @data: driver data (unused)
+ * @data: driver data (struct x120x_chip *) — used to gate in1 by soc_source
  * @type: hwmon sensor type
  * @attr: attribute within @type
  * @channel: channel index
  *
- * Return: 0444 for the supported read-only channels (in0, curr1,
- * power1, energy1 and their labels), 0 to hide everything else.
+ * Return: 0444 for the supported read-only channels (in0 with its voltage
+ * limits, in1 observer OCV under the voltage model only, curr1, power1,
+ * energy1 and their labels), 0 to hide everything else.
  */
 static umode_t x120x_hwmon_is_visible(const void *data,
 				       enum hwmon_sensor_types type,
 				       u32 attr, int channel)
 {
+	const struct x120x_chip *chip = data;
+
 	switch (type) {
 	case hwmon_in:
 		switch (attr) {
 		case hwmon_in_input:
 		case hwmon_in_label:
+			/*
+			 * in0 = terminal VCELL (always).  in1 = the observer's
+			 * OCV(SoC) estimate, which only exists with the voltage
+			 * model — hide it under soc_source=gauge.
+			 */
+			if (channel == 1 &&
+			    chip->soc_src != X120X_SOC_SRC_VOLTAGE)
+				return 0;
 			return 0444;
+		case hwmon_in_lcrit:
+		case hwmon_in_min:
+		case hwmon_in_lcrit_alarm:
+			/* voltage safety limits belong to in0 only */
+			return channel == 0 ? 0444 : 0;
 		default:
 			break;
 		}
@@ -2251,22 +2294,41 @@ static int x120x_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 			     u32 attr, int channel, long *val)
 {
 	struct x120x_chip *chip = dev_get_drvdata(dev);
-	int voltage_uv, energy_rate_uw;
+	int voltage_uv, energy_rate_uw, ocv_model_uv;
+	bool vfloor_critical;
 	s64 energy_now_uwh;
 
 	mutex_lock(&chip->lock);
 	voltage_uv      = chip->voltage_uv;
+	ocv_model_uv    = chip->ocv_model_uv;
+	vfloor_critical = chip->vfloor_critical;
 	energy_rate_uw  = chip->power_report_uw;	/* power for the ABI */
 	energy_now_uwh  = chip->energy_now_uwh;
 	mutex_unlock(&chip->lock);
 
 	switch (type) {
 	case hwmon_in:
-		/* in0_input: cell voltage in mV */
-		if (attr != hwmon_in_input)
+		switch (attr) {
+		case hwmon_in_input:
+			/* in0: terminal VCELL; in1: observer OCV(SoC), mV */
+			*val = (channel == 1 ? ocv_model_uv : voltage_uv) / 1000;
+			return 0;
+		case hwmon_in_lcrit:
+			/* on-battery critical floor (SoC-independent backstop) */
+			*val = X120X_VMIN_CRITICAL_UV / 1000;	/* 3.00 V */
+			return 0;
+		case hwmon_in_min:
+			/* design-minimum / empty (0 % SoC) operating voltage */
+			*val = X120X_VOLTAGE_MIN_DESIGN_UV / 1000;	/* 3.20 V */
+			return 0;
+		case hwmon_in_lcrit_alarm:
+			/* 1 once the floor has been held long enough to force
+			 * CAPACITY_LEVEL=CRITICAL and drive OS shutdown */
+			*val = vfloor_critical;
+			return 0;
+		default:
 			return -EOPNOTSUPP;
-		*val = voltage_uv / 1000;
-		return 0;
+		}
 
 	case hwmon_curr:
 		/*
@@ -2328,7 +2390,7 @@ static int x120x_hwmon_read_string(struct device *dev,
 	switch (type) {
 	case hwmon_in:
 		if (attr == hwmon_in_label) {
-			*str = "cell_voltage";
+			*str = channel == 1 ? "cell_ocv" : "cell_voltage";
 			return 0;
 		}
 		break;
@@ -2364,6 +2426,8 @@ static const struct hwmon_ops x120x_hwmon_ops = {
 
 static const struct hwmon_channel_info * const x120x_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(in,
+			   HWMON_I_INPUT | HWMON_I_LABEL | HWMON_I_LCRIT |
+			   HWMON_I_MIN | HWMON_I_LCRIT_ALARM,
 			   HWMON_I_INPUT | HWMON_I_LABEL),
 	HWMON_CHANNEL_INFO(curr,
 			   HWMON_C_INPUT | HWMON_C_LABEL),
@@ -2920,7 +2984,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.10");
+MODULE_VERSION("0.5.11");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

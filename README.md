@@ -432,8 +432,13 @@ A hwmon device is also registered under `/sys/class/hwmon/`:
 ```
 /sys/class/hwmon/hwmonN/        (N assigned by kernel at load time)
     name              x120x
-    in0_input         cell voltage in mV                        (read-only)
+    in0_input         cell voltage (terminal) in mV             (read-only)
     in0_label         "cell_voltage"
+    in0_lcrit         3000  — on-battery critical floor, mV     (read-only)
+    in0_min           3200  — design minimum / empty (0%), mV   (read-only)
+    in0_lcrit_alarm   1 once the floor is held → CRITICAL       (read-only)
+    in1_input         observer OCV(SoC) estimate in mV          (read-only, voltage model)
+    in1_label         "cell_ocv"
     curr1_input       charge/discharge current in mA, signed    (read-only)
     curr1_label       "battery_current"
     power1_input      charge/discharge power in µW, signed      (read-only)
@@ -441,6 +446,14 @@ A hwmon device is also registered under `/sys/class/hwmon/`:
     energy1_input     stored energy in µJ                       (read-only)
     energy1_label     "battery_energy"
 ```
+
+`in1` is the voltage model's rested open-circuit-voltage estimate — so
+`in0 − in1` is the live IR drop.  It exists only with the default
+`--soc-source voltage`; under `--soc-source gauge` the `in1_*` files
+are absent.  `in0_lcrit`/`in0_min` expose the fixed voltage
+safety floors, and `in0_lcrit_alarm` reads `1` once the pack has held at
+the 3.00 V critical floor long enough to force a `CRITICAL` shutdown —
+so `sensors` shows `ALARM` at the moment it matters.
 
 Sign convention for `curr1_input` and `power1_input`: positive = charging,
 negative = discharging.
@@ -455,7 +468,8 @@ sensors | grep -A6 x120x
 
 # Direct sysfs read — find the hwmon index first
 N=$(grep -rl x120x /sys/class/hwmon/*/name 2>/dev/null | grep -o 'hwmon[0-9]*' | head -1)
-cat /sys/class/hwmon/$N/in0_input       # voltage, mV
+cat /sys/class/hwmon/$N/in0_input       # terminal voltage, mV
+cat /sys/class/hwmon/$N/in1_input       # observer OCV estimate, mV (voltage model)
 cat /sys/class/hwmon/$N/curr1_input     # current, mA (+ charging, - discharging)
 cat /sys/class/hwmon/$N/power1_input    # power, µW
 cat /sys/class/hwmon/$N/energy1_input   # stored energy, µJ
@@ -465,7 +479,8 @@ Prometheus `node_exporter` with `--collector.hwmon` (enabled by default)
 exposes these as:
 
 ```
-node_hwmon_in_volts{chip="x120x",sensor="in0"}
+node_hwmon_in_volts{chip="x120x",sensor="in0"}      # terminal
+node_hwmon_in_volts{chip="x120x",sensor="in1"}      # observer OCV
 node_hwmon_curr_amps{chip="x120x",sensor="curr1"}
 node_hwmon_power_watt{chip="x120x",sensor="power1"}
 node_hwmon_energy_joules{chip="x120x",sensor="energy1"}

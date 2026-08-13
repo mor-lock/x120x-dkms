@@ -14,6 +14,31 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.11 — hwmon: observer OCV channel + voltage safety limits
+
+**Kernel driver**
+- New hwmon **`in1`** channel (label `cell_ocv`): the voltage model's
+  rested open-circuit-voltage estimate at the current SoC, exposed as a
+  second standard `in` channel. `in0 − in1` is therefore the live IR drop.
+  Only the observer produces this, so `in1` is present under the default
+  `--soc-source voltage` and hidden under `soc_source=gauge`. `sensors`,
+  node_exporter (`node_hwmon_in_volts{sensor="in1"}`), collectd, etc. pick
+  it up with no configuration.
+- `in0` now carries standard voltage safety limits: **`in0_lcrit`** (3.00 V,
+  the on-battery critical floor), **`in0_min`** (3.20 V, design minimum /
+  0 % SoC), and **`in0_lcrit_alarm`**, which reads `1` once the pack has
+  held at the critical floor long enough to force `CAPACITY_LEVEL=CRITICAL`
+  — so `sensors` renders `ALARM` exactly when the shutdown chain arms.
+- The observer's OCV(SoC) estimate is now cached (`ocv_model_uv`) and the
+  hwmon `power1` note corrected: under the voltage model `power1` is the
+  observer's net `P = I·V`, not the gauge-mode dSoC/dt derivation.
+- No ABI change to existing channels; `in0_input`, `curr1`, `power1`,
+  `energy1` are untouched.
+
+**Documentation**
+- README hwmon section and the `src/x120x.c` interface comment document the
+  new `in1` channel, the `in0` limits/alarm, and the node_exporter series.
+
 #### v0.5.10 — Exact fractional charge band
 
 **Kernel driver**

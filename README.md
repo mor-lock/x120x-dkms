@@ -989,7 +989,7 @@ those who prefer to run each step themselves — has moved to
 If you cannot or do not want to use the device tree overlay, the driver
 can be loaded manually.  I²C readings (capacity and voltage) will work
 but `ac_online` will always read 0 because GPIO6 cannot be claimed
-without the overlay on kernel 6.12+.
+without the overlay.
 
 ```bash
 sudo modprobe x120x

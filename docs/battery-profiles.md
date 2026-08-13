@@ -63,7 +63,7 @@ capacity the cells have retained to that point.
 >   board/gauge quiescent draw on the battery rail, measured — see
 >   [Measured: the standby sawtooth](#measured-the-standby-sawtooth)), so
 >   a full pack slowly loses charge and tops back up — a shallow
->   sawtooth: `Fast` between 100% and 95% (recharging every ~9–10 days),
+>   sawtooth: `Fast` between 100% and 95% (recharging every ~9.5 days),
 >   `Long Life` between 80% and 78% (a tighter band, so it tops up about
 >   every ~5 days; at rest, a Fast-held pack relaxes to ~4.18 V).  The
 >   table uses the top of each band; since the pack spends its time
@@ -171,7 +171,8 @@ close to irrelevant.
 
 **This does not favour either profile.**  `Long Life` cycles a narrower
 band (80% → 78%), so it tops up more often than `Fast` — every ~5 days
-rather than ~11 — but each top-up is shallower (2% vs 5%), and the same
+rather than ~11 by nominal-band arithmetic (`Fast`'s measured sawtooth is
+9.5 days) — but each top-up is shallower (2% vs 5%), and the same
 quiescent drain moves the same charge per year either way: still ~1.6
 full-equivalent cycles.  So cycle aging stays essentially equal; the
 profiles differ almost entirely in **mean state of charge** (98.7% vs
@@ -182,8 +183,9 @@ therefore *supports* the ranking above rather than changing it.
 
 > **Caveats — this is one data point, not a characterisation.**  One
 > pack, one board, two complete cycles observed.  State of charge here is
-> derived from resting voltage (3.3 V = 0%, 4.2 V = 100%), not
-> coulomb-counted, and that mapping is compressed at the top of the
+> derived from resting voltage (3.3 V = 0%, 4.2 V = 100% — the logging
+> daemon's linear map, distinct from the driver's own 3.20 V OCV scale),
+> not coulomb-counted, and that mapping is compressed at the top of the
 > curve: the pack *appears* to hold 100% for ~2.5 days after each
 > recharge and then fall at ~0.58%/day, but that shape is an artifact of
 > the voltage map, not a real pause.  The robust figure is the **9.5-day

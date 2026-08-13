@@ -23,8 +23,8 @@ release section per the versioning convention.
   (`floor(78.9)=78`, so a `78` resume triggered at true ~79) — a Long Life
   78/80 band, left to the driver, actually floated 79–80. Both edges now hit
   the true SoC, giving an exact `[start, end]` band. Applies to the Long Life
-  band (fractional observer `soc256`) and the Fast float band (fractional gauge
-  via new `raw_capacity_256`). No change to the rising cut. (Same floor
+  band (fractional observer `soc256`) and the Fast float band (the raw gauge
+  at 1/256-%, now tracked internally). No change to the rising cut. (Same floor
   off-by-one that made the drain-to-5% test stop at true ~6%.)
 
 **Documentation**

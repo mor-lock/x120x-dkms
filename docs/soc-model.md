@@ -10,7 +10,8 @@ The observer runs its own model; the gauge is used only for a single
 top-of-charge anchor.
 
 ![One clean drain and recharge cycle: cell voltage, the voltage-observer
-SoC against the cratering fuel gauge, and battery power](images/soc-cycle.png)
+SoC — near-linear under the constant ~9 W drain — against the sagging,
+cratering fuel gauge, and battery power](images/soc-cycle.png)
 
 *One clean cycle: 30 min of float at 100 %, then an outage draining the
 pack under ~9 W of load to the floor, then a recharge.
@@ -60,14 +61,35 @@ loop has no way to run away, so it is drift-free, needs **no separate IR
 term** (a load that sags V below OCV simply makes `(OCV − V̄)` larger, which
 *is* the discharge current that caused the sag), and a rough starting seed
 converges on its own (typically within ~2 h, always from the safe
-under-read side). Because `E_full` is the *usable* window energy,
-`P = E_full × dSoC/dt` reads true watts and SoC is linear in energy
-(constant power → constant %/hour).
+under-read side). And because SoC is defined on *energy* rather than
+remaining charge, the scale is linear under load and `power_now` reads true
+watts — see [Linear SoC (the energy basis)](#linear-soc-the-energy-basis).
 
 **Energy scale.** `E_full = battery_mah × 3.6 V × X120X_USABLE_PERMILLE` —
 the usable window from 100 % (4.20 V) down to 0 % (3.20 V), ~64.8 Wh for
 the 4×P50B pack. The rated design energy (to 2.5 V) is reported separately
 as `ENERGY_FULL_DESIGN`.
+
+## Linear SoC (the energy basis)
+
+SoC is defined as `energy_now / E_full` — a fraction of *energy*, not of the
+remaining coulombs (charge). That single choice is what makes the percentage
+behave the way people expect, and it has consequences worth stating plainly.
+
+**Constant power draws a straight line.** Under a steady load SoC falls at a
+constant %/hour, because energy leaves at a constant rate. A coulomb-based SoC
+does not: even when *perfectly* estimated it bends downward late in a discharge,
+because holding constant watts as the cell voltage sags means pulling *more*
+amps, so charge drains faster than energy does. The straight blue observer
+trace in the cycle figure above — against the sagging, cratering gauge — is that
+linearity made visible.
+
+**Half the number is half the runtime.** At steady load "50 % = half the runtime
+remaining" is exactly true, so a naive time-to-empty extrapolation — UPower's, or
+a human glancing at the number — is trustworthy rather than optimistic near
+empty. The same energy scale is also why `power_now = E_full × dSoC/dt` reads
+true watts: the time-derivative of an energy fraction, scaled by the energy, *is*
+power.
 
 ## Two OCV branches (hysteresis)
 

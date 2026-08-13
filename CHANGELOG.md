@@ -65,6 +65,11 @@ Release history of [x120x-dkms](README.md), newest first.
   across metered cycles; 0.900 is the mid-range value. Only scales the transient
   power/rate — the OCV feedback self-anchors steady SoC — so it is not a
   precision knob.
+- SoC is *linear in energy* (`energy_now / E_full`, not remaining coulombs) — a
+  user-visible property now documented: under constant power it falls at a
+  constant %/hour, so "50% ≈ half the runtime left" holds at steady load and
+  UPower's time-to-empty stays trustworthy near empty; a coulomb-based SoC would
+  bend downward instead.
 - Removed dead code superseded by the recursive observer: the entire unused
   v_soc↔gauge **fusion** subsystem (`fusion_off_256`, `fusion_primed`,
   `FUSE_W_LO/W_HI/OFF_SHIFT` and its doc block), the abandoned live-dSoC/dt

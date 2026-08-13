@@ -105,7 +105,9 @@ conservation mode*.
 (`--soc-source voltage`): a recursive observer integrates battery power
 `P = I·V`, with `I = (OCV(SoC) − V)/R` read from an energy-true NMC
 open-circuit-voltage curve — so SoC is the running energy integral (linear
-in usable energy), and battery power falls out for free.  The OCV feedback
+in usable energy), and battery power falls out for free.  Because that scale
+is energy, the percentage drops at an even pace under steady load — so 50 %
+really does mean about half the runtime left.  The OCV feedback
 self-anchors the estimate (no separate IR term), and *two* curves — charge
 vs discharge — handle the NMC voltage hysteresis.  The on-board
 MAX17043-*style* fuel gauge craters near empty, so it is trusted for one

@@ -19,17 +19,17 @@ clean undervoltage shutdown, and selectable Long Life battery
 preservation mode.  No custom scripts, no daemons, no polling
 loops.
 
-> **New in v0.5.0 — longer, smarter battery runtime.**
-> State of charge now comes from a **voltage-observer model** that
-> reconstructs SoC (and battery power) from the cell voltage itself,
-> instead of the crater-prone fuel-gauge chip.  The raw gauge flatlines
-> near empty while roughly a third of the pack is still usable; the
-> observer recovers that headroom to **safely extend battery runtime by
-> ~35%** — anchored by an absolute cell-voltage safety floor, so a bad
-> estimate can never over-discharge a cell.
+> **New in v0.5.x — up to ~35% more battery runtime.**
+> The fuel-gauge chip on these boards reads far too low near empty:
+> a system that trusts it shuts down while nearly a third of the
+> pack is still usable.  The driver now estimates state of charge
+> from the cell voltage itself instead, recovering that stranded
+> runtime — and an absolute cell-voltage safety floor backstops the
+> estimate, so a wrong SoC can never over-discharge a cell.  (The
+> raw gauge remains available via `--soc-source gauge`.)
 > → [**How the SoC model works**](docs/soc-model.md)
 
-![Gauge-trusting shutdown vs the voltage observer: both stop at the same safe 2% cutoff, but the observer reaches it about 35% later — recovering the runtime the raw gauge leaves on the table.](docs/images/observer-runtime.png)
+![Gauge-trusting shutdown vs the voltage observer: both stop at the same safe 2% cutoff, but the observer reaches it about 35% later in this ~7 W replay — recovering the runtime the raw gauge leaves on the table.](docs/images/observer-runtime.png)
 
 ![The X120x pack as a battery icon in the Raspberry Pi OS panel tray, green and on mains — indistinguishable from a laptop battery.](docs/images/battery-tray.png)
 

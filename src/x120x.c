@@ -1115,8 +1115,16 @@ static void x120x_poll_work(struct work_struct *work)
 		 * the pin releases so the observer tracks the drain — otherwise
 		 * the laggy gauge, which keeps reading 100 for minutes after a
 		 * cut, would freeze SoC at full through the start of an outage.
+		 * Also gated on a 100% charge target (Fast mode, or a Long Life
+		 * band configured to 100%): only then is "full" the intended
+		 * resting state, so only then should the observer hard-anchor
+		 * there.  A sub-100 Long Life band tops out below full and never
+		 * reaches gauge=100 in normal cycling, but if a full pack is
+		 * switched into such a band the still-100 laggy gauge must not
+		 * pin the observer at full while it self-discharges to the band.
 		 */
-		if (new_ac && MAX17043_SOC_INT(soc_raw) >= 100) {
+		if (new_ac && MAX17043_SOC_INT(soc_raw) >= 100 &&
+		    (!chip->conservation_mode || conservation_end >= 100)) {
 			if (!chip->gauge_full_since)
 				chip->gauge_full_since = jiffies;
 			if (time_after_eq(jiffies, chip->gauge_full_since +
@@ -2862,7 +2870,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.6");
+MODULE_VERSION("0.5.7");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

@@ -136,8 +136,12 @@ kills slow integrator drift over long floats and gives a crisp 100 % despite
 the CV-taper asymptote (as SoC → 100 the charge current `(OCV − V)/R → 0`, so
 the integral only approaches full; the pin is the anchor). The pin **releases
 the instant the grid drops**, so a real outage tracks the drain immediately
-instead of freezing at full while the laggy gauge still reads 100. The gauge
-is used for nothing else — the discharge and steady paths are voltage-only.
+instead of freezing at full while the laggy gauge still reads 100. The pin is
+also gated on a **100 % charge target** (Fast mode, or a Long Life band set to
+100 %): only there is full the intended resting state, so switching a full pack
+into a sub-100 Long Life band cannot pin the observer at full while it drifts
+down toward the band. The gauge is used for nothing else — the discharge and
+steady paths are voltage-only.
 
 ## Power for free
 

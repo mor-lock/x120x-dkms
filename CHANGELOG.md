@@ -95,6 +95,12 @@ Release history of [x120x-dkms](README.md), newest first.
   target and overshoot the band top by ~5% (a 75–80 band effectively topped out
   ~85%, then had to self-discharge all the way back down before the first
   recharge).  A mid-range band has nothing to top off, so it stops on the spot.
+- The observer's gauge=100 pin (hard-anchor energy to `E_full`) now also requires
+  a 100% charge target — Fast mode, or a Long Life band configured to 100%.  The
+  gauge only reads 100 at a genuinely full pack, so in normal cycling this
+  changes nothing; the gate is defensive — switching a *full* pack into a sub-100
+  Long Life band no longer pins the observer at full while the pack self-
+  discharges toward the band (the still-100 laggy gauge would otherwise hold it).
 - Hard terminal-voltage floor (SoC-independent safety backstop): on battery,
   a raw cell voltage ≤ 3.00 V held for 20 s forces `CAPACITY_LEVEL=CRITICAL`
   regardless of the SoC estimate, driving the OS (UPower/logind) shutdown

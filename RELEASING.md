@@ -5,6 +5,24 @@ on a real Pi + UPS.  This checklist codifies the v0.4.6 process — follow
 it verbatim.  Save all Phase 0–4 captures under
 `~/x120x-validate-$(date +%F)/`.
 
+## Versioning convention
+
+Versions bump **per change**, not per release.  `MODULE_VERSION`
+(src/x120x.c), `PACKAGE_VERSION` (dkms.conf), and `PKG_VERSION`
+(install.sh) advance in lockstep with each substantive commit — CI's
+check-versions step enforces their agreement — and every change is logged
+under the single **`Unreleased`** section of `CHANGELOG.md`.  At tag time
+that section is renamed to the release number and the three version
+strings are reconciled to it: the release is whatever version the tree
+already carries, not a round number chosen after the fact.
+
+**History is never squashed to a round version.**  The per-commit
+`MODULE_VERSION` strings surface in kernel logs, `modinfo`, and the
+on-hardware validation reports, so each must stay resolvable to the exact
+commit that produced it.  Rewriting the tree back to a tidy `0.5.0` (or
+any round number) would break that mapping and is not done — the tree
+ships as whatever it says it ships as (currently `0.5.5`).
+
 ## 0. Pre-flight snapshot (read-only)
 
 - `dkms status`; `modinfo x120x | grep -E 'version|filename'`

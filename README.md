@@ -88,8 +88,10 @@ The table assumes 3000 mAh 18650 cells and 5000 mAh 21700 cells — check
 the mAh printed on your actual cells and multiply by the cell count if
 yours differ.  For the external-pack boards (X1203, X1209, and the
 experimental X708) replace `<your_capacity>` with your pack's total
-capacity in mAh.  The X728/X708/X729 rows are **experimental and
-untested** — see [Experimental board support](#experimental-board-support) before relying on them.
+capacity in mAh.  The X728/X708/X729 rows are **not yet installable**
+via `install.sh` — see
+[Experimental board support](#experimental-board-support) for status
+and the manual development path.
 `Fast` is the default, so it is omitted above; to start in Long Life
 from the outset, add `--charge-mode longlife` (see *Battery conservation
 mode*).

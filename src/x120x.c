@@ -708,6 +708,7 @@ struct x120x_chip {
 	s64			 obs_prev_us;
 	int			 power_report_uw;	/* power reported to the ABI      */
 	int			 raw_capacity_pct;	/* raw MAX17043 ModelGauge SoC % */
+	int			 raw_capacity_256;	/* raw MAX17043 SoC, 1/256 % — for the fractional band compare */
 
 	/* Energy tracking for UPower / desktop environment integration */
 	s64			 energy_now_uwh;	 /* µWh = energy_full × soc%/100 */
@@ -947,6 +948,8 @@ static void x120x_poll_work(struct work_struct *work)
 	bool conservation_mode_snap = false;
 	int  capacity_pct_snap = 0;
 	int  raw_soc_snap      = 0;
+	int  capacity_256_snap = 0;
+	int  raw_soc_256_snap  = 0;
 
 	/* ----------------------------------------------------------------
 	 * Read fuel gauge.  On failure, increment the error counter and
@@ -1200,6 +1203,7 @@ static void x120x_poll_work(struct work_struct *work)
 		/* raw MAX17043 ModelGauge SoC, exposed via the raw_capacity
 		 * sysfs attr and used for the gauge=100 top anchor */
 		chip->raw_capacity_pct = clamp(MAX17043_SOC_INT(soc_raw), 0, 100);
+		chip->raw_capacity_256 = clamp(MAX17043_SOC_256(soc_raw), 0, 100 * 256);
 
 		/*
 		 * energy_full  = battery_mah × 3600 mV × usable-fraction
@@ -1393,6 +1397,8 @@ static void x120x_poll_work(struct work_struct *work)
 	conservation_mode_snap = chip->conservation_mode;
 	capacity_pct_snap      = chip->capacity_pct;
 	raw_soc_snap           = chip->raw_capacity_pct;
+	capacity_256_snap      = chip->capacity_256;
+	raw_soc_256_snap       = chip->raw_capacity_256;
 
 	/*
 	 * Charge hysteresis.
@@ -1425,7 +1431,7 @@ static void x120x_poll_work(struct work_struct *work)
 	 * gpiod_set_value_cansleep is safe to call under a mutex.
 	 */
 	if (chip->gpio_chrg) {
-		int start_thr, end_thr, soc_band;
+		int start_thr, end_thr, soc_band, soc_band_256;
 		bool full_target, want_inhibit;
 
 		if (conservation_mode_snap) {
@@ -1452,7 +1458,15 @@ static void x120x_poll_work(struct work_struct *work)
 		 * (observer) SoC, which is accurate mid-range.
 		 */
 		full_target = (end_thr >= 100);
-		soc_band    = full_target ? raw_soc_snap : capacity_pct_snap;
+		soc_band     = full_target ? raw_soc_snap     : capacity_pct_snap;
+		/*
+		 * Compare at 1/256-% (fractional), not the floored integer.  On the
+		 * rising cut edge floor() already lands on the true threshold, but
+		 * on the falling resume edge it fires ~1% high (floor(78.9)=78), so
+		 * the integer band would resume at true ~start+1.  The fractional
+		 * word makes both edges hit the true SoC — an exact [start, end].
+		 */
+		soc_band_256 = full_target ? raw_soc_256_snap : capacity_256_snap;
 
 		/*
 		 * Two-threshold hysteresis.  Stop edge:
@@ -1471,7 +1485,7 @@ static void x120x_poll_work(struct work_struct *work)
 		 * held state in-band (plus resume at/below start_thr) keeps the
 		 * charger on at boot and after a deep discharge.
 		 */
-		if (soc_band >= end_thr) {
+		if (soc_band_256 >= end_thr * 256) {
 			if (full_target) {
 				if (!chip->charge_full_since)
 					chip->charge_full_since = jiffies;
@@ -1485,7 +1499,7 @@ static void x120x_poll_work(struct work_struct *work)
 			}
 		} else {
 			chip->charge_full_since = 0;
-			if (soc_band <= start_thr)
+			if (soc_band_256 <= start_thr * 256)
 				want_inhibit = false;
 			else
 				want_inhibit = chip->charger_inhibited;
@@ -2906,7 +2920,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.9");
+MODULE_VERSION("0.5.10");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

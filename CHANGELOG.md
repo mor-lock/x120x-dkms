@@ -120,6 +120,13 @@ Release history of [x120x-dkms](README.md), newest first.
   backup runtime, topping up ~every 5 days instead of ~11.  Fast mode is
   unchanged (95/100).  Wider bands (e.g. TLP's 75/80) remain available via the
   module params / sysfs.
+- Charge band thresholds now compared at **1/256-% (fractional)** rather than the
+  floored integer capacity.  The rising cut edge already landed on the true
+  threshold, but the falling resume fired ~1% high (`floor(78.9)=78`, so a `78`
+  resume triggered at true ~79) — a Long Life 78/80 band actually floated 79–80.
+  Both edges now hit the true SoC, giving an exact `[start, end]` band.  Applies
+  to the Long Life band (fractional observer SoC) and the Fast float band
+  (fractional gauge via new `raw_capacity_256`).
 - Hard terminal-voltage floor (SoC-independent safety backstop): on battery,
   a raw cell voltage ≤ 3.00 V held for 20 s forces `CAPACITY_LEVEL=CRITICAL`
   regardless of the SoC estimate, driving the OS (UPower/logind) shutdown

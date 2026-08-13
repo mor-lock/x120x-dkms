@@ -438,7 +438,7 @@ After loading, three devices appear under `/sys/class/power_supply/`:
     online                          1 = mains present
     status                          Charging | Not charging | Discharging
     charge_type                     Fast | Long Life  (writeable)
-    charge_control_start_threshold  SoC % to resume charging in Long Life mode (writeable, default 75)
+    charge_control_start_threshold  SoC % to resume charging in Long Life mode (writeable, default 78)
     charge_control_end_threshold    SoC % to stop charging in Long Life mode (writeable, default 80)
 ```
 
@@ -530,7 +530,7 @@ The driver supports two charge modes, selectable via `charge_type`:
   begins.
 - **`Long Life`** — charges to `charge_control_end_threshold` (default
   80%), disables the charger, and re-enables it at
-  `charge_control_start_threshold` (default 75%).  Cells spend their
+  `charge_control_start_threshold` (default 78%).  Cells spend their
   idle life at a noticeably lower voltage, where calendar aging is
   dramatically reduced.  The trade-off is about 20% less runtime during
   an outage (~1.3 h on a full X1206); the benefit is that the cells
@@ -547,7 +547,7 @@ The driver supports two charge modes, selectable via `charge_type`:
 Enable and disable conservation mode from the command line:
 
 ```bash
-# Enable conservation mode (charges to 80%, resumes at 75%)
+# Enable conservation mode (charges to 80%, resumes at 78%)
 echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 
 # Disable conservation mode (charges to 100%)
@@ -563,21 +563,24 @@ echo 85 | sudo tee /sys/class/power_supply/x120x-charger/charge_control_end_thre
 
 > **Note:** `charge_control_start_threshold` and
 > `charge_control_end_threshold` always report the **Long Life** band
-> (default 75 / 80), regardless of the active mode — the standard sysfs
+> (default 78 / 80), regardless of the active mode — the standard sysfs
 > interface has no way to express the Fast band.  In `Fast` mode those
 > two values are inert: charging follows the fixed 100% / 95% band
-> described above.  So seeing `75` / `80` there while in `Fast` is
+> described above.  So seeing `78` / `80` there while in `Fast` is
 > expected, not a misconfiguration.
 
-The default thresholds (75% / 80%) match the recommendation of TLP, the
-widely-used Linux power management tool, and are a commonly accepted
-balance between battery longevity and available backup capacity.
+The default thresholds are **78% / 80%** — a tight top-band that keeps the
+pack near-full for backup runtime while still capping the resting charge to
+slow calendar aging; under the board's small standby drain it tops up only
+about every 5 days.  A wider band such as TLP's 75% / 80% (the recommendation
+of the widely-used Linux power tool) trades a little runtime for a slightly
+lower average charge — set it with the module parameters below if you prefer.
 
 The default thresholds can also be changed permanently via module
 parameters in `/etc/modprobe.d/x120x.conf`:
 
 ```
-options x120x battery_mah=20000 conservation_start=75 conservation_end=80
+options x120x battery_mah=20000 conservation_start=78 conservation_end=80
 ```
 
 ### Choosing a profile: runtime vs. longevity
@@ -1065,7 +1068,7 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `gpio_charge_ctrl`  | `16`                  | BCM GPIO for charge control          |
 | `battery_mah`       | `1000`                | Total pack capacity in mAh           |
 | `soc_source`        | `voltage`             | State-of-charge source: `voltage` = recursive voltage-observer SoC (see [How the SoC model works](docs/soc-model.md)), `gauge` = raw MAX17043 register (legacy). Set by the installer via `--soc-source`. |
-| `conservation_start`        | `75`  | SoC % at which charging resumes in Long Life mode |
+| `conservation_start`        | `78`  | SoC % at which charging resumes in Long Life mode |
 | `conservation_end`          | `80`  | SoC % at which charging stops in Long Life mode   |
 | `conservation_mode_default` | `0`   | Start in Long Life mode (`1`) or Fast mode (`0`). Updated automatically on every `charge_type` sysfs write and persisted to `modprobe.d` by a udev rule. |
 | `board`                     | `x120x` | Board variant: `x120x`, `x728v2`, `x728v1`, `x708`, `x729`. Set by installer. Variants other than `x120x` are experimental. |

@@ -64,8 +64,8 @@ capacity the cells have retained to that point.
 >   [Measured: the standby sawtooth](#measured-the-standby-sawtooth)), so
 >   a full pack slowly loses charge and tops back up — a shallow
 >   sawtooth: `Fast` between 100% and 95% (recharging every ~9–10 days),
->   `Long Life` between 80% and 75% (at rest, a Fast-held pack relaxes to
->   ~4.18 V).  The
+>   `Long Life` between 80% and 78% (a tighter band, so it tops up about
+>   every ~5 days; at rest, a Fast-held pack relaxes to ~4.18 V).  The
 >   table uses the top of each band; since the pack spends its time
 >   evenly across the band, a typical outage starts ~mid-band (~2.5
 >   points / ~0.15 h lower).
@@ -169,12 +169,13 @@ several-hundred-cycle rating of any reasonable NMC cell.  On a standby
 UPS, cycle aging is not merely "dominated by" calendar aging; it is
 close to irrelevant.
 
-**This does not favour either profile.**  `Long Life` cycles a band of
-the same width (80% → 75%) under the same quiescent drain, so it
-recharges about as often — every ~11–12 days, ~31 times a year, ~1.6
-full-equivalent cycles.  The profiles differ almost entirely in **mean
-state of charge** (98.7% vs ~77.5%), which is a calendar-aging term, not
-a cycle-count one.  The `Fast` sawtooth does sit in the harsher 95–100%
+**This does not favour either profile.**  `Long Life` cycles a narrower
+band (80% → 78%), so it tops up more often than `Fast` — every ~5 days
+rather than ~11 — but each top-up is shallower (2% vs 5%), and the same
+quiescent drain moves the same charge per year either way: still ~1.6
+full-equivalent cycles.  So cycle aging stays essentially equal; the
+profiles differ almost entirely in **mean state of charge** (98.7% vs
+~79%), which is a calendar-aging term, not a cycle-count one.  The `Fast` sawtooth does sit in the harsher 95–100%
 region, so each of its cycles costs a little more — but there are so few
 of them that the difference stays in the noise.  The measurement
 therefore *supports* the ranking above rather than changing it.

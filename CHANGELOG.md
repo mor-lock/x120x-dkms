@@ -113,6 +113,13 @@ Release history of [x120x-dkms](README.md), newest first.
   near-empty pack (V ≤ `X120X_SEED_EMPTY_UV`, ~3.1 V) seeds 0% and charges at
   once.  Removes `X120X_SEED_CHG_UW`; off-grid boots still IR-correct with
   `X120X_SEED_DIS_UW`.
+- Long Life default band tightened **75/80 → 78/80** (`conservation_start`
+  75 → 78).  Under the board's standby drain both bands see the same annual
+  charge throughput (~1.6 EFC/yr), so cycle aging is unchanged; 78/80 just
+  keeps the pack a touch nearer full (mean ~79% vs ~77.5%) for slightly more
+  backup runtime, topping up ~every 5 days instead of ~11.  Fast mode is
+  unchanged (95/100).  Wider bands (e.g. TLP's 75/80) remain available via the
+  module params / sysfs.
 - Hard terminal-voltage floor (SoC-independent safety backstop): on battery,
   a raw cell voltage ≤ 3.00 V held for 20 s forces `CAPACITY_LEVEL=CRITICAL`
   regardless of the SoC estimate, driving the OS (UPower/logind) shutdown

@@ -181,10 +181,10 @@ MODULE_PARM_DESC(battery_mah,
  * Life mode.  Fast mode uses a fixed 100%/95% band instead (see the
  * hysteresis block in x120x_poll_work).
  */
-static int conservation_start = 75;
+static int conservation_start = 78;
 module_param(conservation_start, int, 0444);
 MODULE_PARM_DESC(conservation_start,
-	"SoC %% at which charging resumes in Long Life mode (default 75). "
+	"SoC %% at which charging resumes in Long Life mode (default 78). "
 	"Set at load time via modprobe.d; change it at runtime through the "
 	"charge_control_start_threshold sysfs property, which validates "
 	"and locks the update.");
@@ -1406,7 +1406,7 @@ static void x120x_poll_work(struct work_struct *work)
 	 *
 	 * Fast mode:      end_thr = 100, start_thr = X120X_FAST_RESUME_PCT
 	 *                 (95).  Long Life mode: end_thr = conservation_end
-	 *                 (80), start_thr = conservation_start (75).
+	 *                 (80), start_thr = conservation_start (78).
 	 *
 	 * Safety: chip->charger_inhibited starts false (charging enabled),
 	 * and any SoC at or below start_thr forces the charger on.  So the
@@ -2480,9 +2480,9 @@ static int x120x_probe(struct i2c_client *client)
 	    conservation_end < 1 || conservation_end > 100 ||
 	    conservation_start >= conservation_end) {
 		dev_warn(dev,
-			 "invalid conservation band start=%d end=%d (need start 0-99, end 1-100, start < end); using defaults 75/80\n",
+			 "invalid conservation band start=%d end=%d (need start 0-99, end 1-100, start < end); using defaults 78/80\n",
 			 conservation_start, conservation_end);
-		conservation_start = 75;
+		conservation_start = 78;
 		conservation_end = 80;
 	}
 
@@ -2906,7 +2906,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.8");
+MODULE_VERSION("0.5.9");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

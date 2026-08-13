@@ -46,13 +46,13 @@ In practice there should be little need to control GPIO16 directly:
   and floats the battery, resuming at 95%.  No script needed to
   prevent micro-cycling.
 - **Long Life mode** — the driver manages hysteresis between the
-  configured thresholds (default 75%/80%).  Equivalent to what
+  configured thresholds (default 78%/80%).  Equivalent to what
   GPIO16 scripts were trying to achieve, but implemented correctly
   in the kernel with mutex protection.
 - **Charge mode** is selectable and persistent via sysfs:
 
 ```bash
-# Enable Long Life mode (stop at 80%, resume at 75%)
+# Enable Long Life mode (stop at 80%, resume at 78%)
 echo "Long Life" | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 
 # Adjust thresholds

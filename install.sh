@@ -13,7 +13,7 @@
 #                          voltage = NMC OCV model (avoids the fuel gauge's
 #                          near-full over-read); gauge = raw MAX17043 register.
 #   --charge-mode MODE     Initial charge mode: fast or longlife (default: fast)
-#                          longlife limits charging to 75-80% to extend battery life
+#                          longlife limits charging to 78-80% to extend battery life
 #                          Can be changed at any time via sysfs; persisted across reboots
 #   --board VARIANT        Board variant (default: x120x).
 #                          Supported: x120x, x728v2, x728v1, x708, x729
@@ -515,7 +515,7 @@ done
 # -------------------------------------------------------------------------
 
 PKG_NAME="x120x"
-PKG_VERSION="0.5.8"
+PKG_VERSION="0.5.9"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # External command and device-tree model path — overridable for testing.

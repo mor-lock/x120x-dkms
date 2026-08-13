@@ -13,12 +13,6 @@ Geekworm — though Geekworm links to it from their official wiki pages
 for these boards (e.g. the
 [X1206 page](https://wiki.geekworm.com/X1206)).
 
-Provides native Linux power supply integration equivalent to a laptop
-battery — battery icon in the taskbar, accurate state of charge (SoC),
-clean undervoltage shutdown, and selectable Long Life battery
-preservation mode.  No custom scripts, no daemons, no polling
-loops.
-
 > **New in v0.5.x — up to ~35% more battery runtime.**
 > The fuel-gauge chip on these boards reads far too low near empty:
 > a system that trusts it shuts down while nearly a third of the
@@ -30,6 +24,12 @@ loops.
 > → [**How the SoC model works**](docs/soc-model.md)
 
 ![Gauge-trusting shutdown vs the voltage observer: both stop at the same safe 2% cutoff, but the observer reaches it about 35% later in this ~7 W replay — recovering the runtime the raw gauge leaves on the table.](docs/images/observer-runtime.png)
+
+Provides native Linux power supply integration equivalent to a laptop
+battery — battery icon in the taskbar, accurate state of charge (SoC),
+clean undervoltage shutdown, and selectable Long Life battery
+preservation mode.  No custom scripts, no daemons, no polling
+loops.
 
 ![The X120x pack as a battery icon in the Raspberry Pi OS panel tray, green and on mains — indistinguishable from a laptop battery.](docs/images/battery-tray.png)
 

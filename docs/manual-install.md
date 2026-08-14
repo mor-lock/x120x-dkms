@@ -32,17 +32,17 @@ Copy exactly what DKMS needs — `dkms.conf`, the `Makefile`, and
 documentation along):
 
 ```bash
-sudo install -d /usr/src/x120x-0.5.11/src
-sudo cp dkms.conf Makefile LICENSE /usr/src/x120x-0.5.11/
-sudo cp src/x120x.c src/Kbuild /usr/src/x120x-0.5.11/src/
+sudo install -d /usr/src/x120x-0.5.12/src
+sudo cp dkms.conf Makefile LICENSE /usr/src/x120x-0.5.12/
+sudo cp src/x120x.c src/Kbuild /usr/src/x120x-0.5.12/src/
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.5.11
-sudo dkms build x120x/0.5.11
-sudo dkms install x120x/0.5.11
+sudo dkms add x120x/0.5.12
+sudo dkms build x120x/0.5.12
+sudo dkms install x120x/0.5.12
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -55,7 +55,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.5.11, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.5.12, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Write the battery configuration
 
@@ -73,6 +73,9 @@ sudo tee /etc/modprobe.d/x120x.conf << 'EOF'
 #                   (number of cells × per-cell capacity)
 # soc_source      — state-of-charge source: voltage (default) | gauge
 #                   (see docs/soc-model.md)
+# pack_resistance_mohm — (optional) pack DC resistance in mΩ for the observer,
+#                   10-100; omit for the built-in default 30.  Only affects the
+#                   transient power/rate readout, never SoC or safety.
 #
 # After editing, reload the driver:
 #   sudo rmmod x120x && sudo modprobe x120x

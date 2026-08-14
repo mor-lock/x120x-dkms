@@ -233,6 +233,15 @@ MODULE_PARM_DESC(soc_source,
 	"battery, auto-defers to the gauge while charging) or \"gauge\" "
 	"(raw MAX17043 SOC register).");
 
+static int pack_resistance_mohm;	/* 0 = use the built-in default */
+module_param(pack_resistance_mohm, int, 0444);
+MODULE_PARM_DESC(pack_resistance_mohm,
+	"Pack DC resistance in milliohms for the voltage observer (valid "
+	"10-100; 0 = built-in default 30).  The installer sets this from the "
+	"populated cell count (R_board + R_cell/parallel); it only affects "
+	"the transient power/rate estimate — the OCV feedback self-anchors "
+	"steady SoC — so a wrong value is never unsafe.");
+
 /* -------------------------------------------------------------------------
  * MAX17043 register definitions (X120x board layout)
  *
@@ -426,7 +435,8 @@ struct x120x_ocv_point {
  * branch below 23% is the discharge branch plus the measured hysteresis.
  * Molicel INR21700-P50B ×4, 1S4P; 100% = 4.20 V terminal (discharge) /
  * 4.213 V (charge, surface-charge top).  56 points, 1% steps through the knee
- * then 2%.  R is X120X_R_UOHM.  NMC-calibrated at ~room temperature; there is
+ * then 2%.  R is X120X_R_UOHM by default (overridable via
+ * pack_resistance_mohm).  NMC-calibrated at ~room temperature; there is
  * no ambient/battery temp sensor so no temp compensation, but SoC is
  * voltage-anchored and shutdown is a fixed voltage floor, so out-of-range
  * temperature degrades accuracy gracefully, never unsafely (it self-reflects a
@@ -671,6 +681,7 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
  * @soc_src:		SoC source: voltage OCV observer vs raw fuel gauge
  * @ocv_ema_uv:		EMA of cell voltage feeding the OCV lookup (0 = uninit)
  * @ocv_model_uv:	observer OCV(SoC) estimate in uV, exposed as hwmon in1 (0 = n/a)
+ * @r_uohm:		resolved pack DC resistance in uohm (param or built-in default)
  * @obs_primed:		false until energy_now_uwh is seeded from the OCV lookup
  * @obs_prev_us:	ktime (us) of the previous observer step, for dt
  * @power_report_uw:	charge/discharge power reported to the ABI, in uW
@@ -714,6 +725,7 @@ struct x120x_chip {
 	enum x120x_soc_source	 soc_src;
 	int			 ocv_ema_uv;
 	int			 ocv_model_uv;
+	int			 r_uohm;
 	bool			 obs_primed;
 	s64			 obs_prev_us;
 	int			 power_report_uw;	/* power reported to the ABI      */
@@ -1101,7 +1113,7 @@ static void x120x_poll_work(struct work_struct *work)
 
 		/* I (µA) = (OCV - V)/R : (µV / µΩ) = A, ×1e6 = µA. */
 		i_ua = div_s64((s64)(ocv_uv - chip->ocv_ema_uv) * 1000000LL,
-			       X120X_R_UOHM);
+			       chip->r_uohm);
 		/* P (µW) = I(µA) × V(µV) / 1e6 ; bound to physical limits. */
 		p_uw = div_s64(i_ua * chip->ocv_ema_uv, 1000000LL);
 		p_uw = clamp_t(s64, p_uw, -(s64)X120X_POWER_MAX_UW,
@@ -1175,7 +1187,7 @@ static void x120x_poll_work(struct work_struct *work)
 			 */
 			int seed_uv = new_ac ? chip->ocv_ema_uv
 				: chip->ocv_ema_uv + (int)div_s64(
-					(s64)X120X_SEED_DIS_UW * X120X_R_UOHM,
+					(s64)X120X_SEED_DIS_UW * chip->r_uohm,
 					max(chip->ocv_ema_uv, 1));
 			int seed = x120x_voltage_soc256(seed_uv, false);
 
@@ -2597,6 +2609,25 @@ static int x120x_probe(struct i2c_client *client)
 		 "voltage (recursive OCV observer: I=(OCV(SoC)-V)/R, "
 		 "energy-integrating, self-anchoring; power = I*V)");
 
+	/*
+	 * Resolve the observer's pack resistance: 0 uses the built-in
+	 * default; a value in [10, 100] mohm overrides it (the installer
+	 * derives it from the populated cell count); anything else warns and
+	 * falls back.  Only the transient power/rate depends on it.
+	 */
+	if (pack_resistance_mohm == 0) {
+		chip->r_uohm = X120X_R_UOHM;
+	} else if (pack_resistance_mohm >= 10 && pack_resistance_mohm <= 100) {
+		chip->r_uohm = pack_resistance_mohm * 1000;
+	} else {
+		dev_warn(dev,
+			 "pack_resistance_mohm=%d out of range [10, 100]; using built-in %d mohm\n",
+			 pack_resistance_mohm, X120X_R_UOHM / 1000);
+		chip->r_uohm = X120X_R_UOHM;
+	}
+	dev_info(dev, "pack resistance: %d mohm (%s)\n", chip->r_uohm / 1000,
+		 pack_resistance_mohm ? "module param" : "built-in default");
+
 	/* -- GPIO6: AC present -------------------------------------------- */
 	chip->gpio_ac = devm_gpiod_get_optional(dev, "ac-present", GPIOD_IN);
 	if (IS_ERR(chip->gpio_ac)) {
@@ -2984,7 +3015,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.11");
+MODULE_VERSION("0.5.12");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

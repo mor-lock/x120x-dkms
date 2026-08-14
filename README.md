@@ -905,9 +905,13 @@ Optional arguments configure the driver at install time:
 
 | Option | Default | Description |
 |---|---|---|
-| `--battery-mah N` | `1000` | Total pack capacity in mAh. Multiply per-cell capacity by number of cells. |
+| `--battery-mah N` | `1000` | Total pack capacity in mAh (authoritative). Multiply per-cell capacity by number of cells. |
+| `--cells N` | `4` | Populated cell count (parallel). Used to derive the capacity default (with `--cell-mah`) and the pack resistance. |
+| `--cell-mah M` | `5000` (21700) / `3000` (18650) | Per-cell capacity in mAh. With `--cells N`, total = N×M unless `--battery-mah` is given. Range-checked against `--cell-size`. |
+| `--cell-size SIZE` | `21700` | Cell format: `18650` (valid 1000–3600 mAh) or `21700` (valid 2500–6500 mAh). Sets the `--cell-mah` range. |
 | `--charge-mode MODE` | `fast` | Initial charge mode: `fast` or `longlife`. Persisted across reboots. See Getting started for guidance on which to choose. |
 | `--soc-source SRC` | `voltage` | State-of-charge source: `voltage` (default) or `gauge`. `voltage` runs the recursive voltage-observer model; `gauge` exposes the raw MAX17043 register (legacy). See [How the SoC model works](docs/soc-model.md). |
+| `--pack-resistance-mohm N` | _(derived)_ | Pack DC resistance for the observer, 10–100 mΩ. Omit to derive it from `--cells` (`R_board 25 + R_cell 20/N`), or fall back to the built-in 30. Only scales the transient power/rate readout — SoC self-anchors, so a wrong value is never unsafe. |
 | `--board VARIANT` | `x120x` | Board variant. Only `x120x` is currently installable — other variants are refused until per-board overlays ship. See [Experimental board support](#experimental-board-support). |
 | `--skip-eeprom` | _(off)_ | Do not modify Pi 5 bootloader EEPROM settings (`POWER_OFF_ON_HALT`, `PSU_MAX_CURRENT`); configure them manually — see Required bootloader settings. |
 
@@ -1073,6 +1077,7 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `gpio_charge_ctrl`  | `16`                  | BCM GPIO for charge control          |
 | `battery_mah`       | `1000`                | Total pack capacity in mAh           |
 | `soc_source`        | `voltage`             | State-of-charge source: `voltage` = recursive voltage-observer SoC (see [How the SoC model works](docs/soc-model.md)), `gauge` = raw MAX17043 register (legacy). Set by the installer via `--soc-source`. |
+| `pack_resistance_mohm`      | `0`   | Pack DC resistance in mΩ for the voltage observer (valid `10`–`100`; `0` = built-in default 30). Set by the installer from the cell count (`--cells`) or `--pack-resistance-mohm`. Only affects the transient power/rate estimate — SoC self-anchors — so a wrong value is never unsafe. |
 | `conservation_start`        | `78`  | SoC % at which charging resumes in Long Life mode |
 | `conservation_end`          | `80`  | SoC % at which charging stops in Long Life mode   |
 | `conservation_mode_default` | `0`   | Start in Long Life mode (`1`) or Fast mode (`0`). Updated automatically on every `charge_type` sysfs write and persisted to `modprobe.d` by a udev rule. |

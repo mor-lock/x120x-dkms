@@ -332,6 +332,42 @@ assert "14 set -e, Fast mode: caller survives"         'printf "%s" "'"$out"'" |
 out=$(run_rbs_set_e "${WORK}/no-such-conf"); rc=$?
 assert "14 set -e, defaults path: caller survives"     '[ "'"$rc"'" -eq 0 ]'
 
+# 15 — cell geometry (capacity from cells × per-cell) + derived/overridden R.
+echo "cell-geometry + pack-resistance tests"
+run_cells() {  # cells cell-mah cell-size resistance battery-mah conf
+    (
+        set -euo pipefail
+        info() { :; }; warn() { echo "warn:$*"; }
+        die()  { echo "die:$*"; exit 3; }
+        OPT_MAH="${5:-}"; OPT_CHARGE_MODE=""; OPT_BOARD=""; OPT_SOC_SOURCE=""
+        OPT_CELLS="${1:-}"; OPT_CELL_MAH="${2:-}"; OPT_CELL_SIZE="${3:-}"; OPT_RESISTANCE="${4:-}"
+        eval "${RBS_SRC}"
+        resolve_battery_settings "${6:-${WORK}/no-such-conf}"
+        echo "MAH=${INPUT_MAH}|${MAH_SRC}"
+        echo "RES=${PACK_RESISTANCE:-none}|${RES_SRC}"
+    ) 2>&1
+}
+out=$(run_cells 4 5000 21700 "" "" )
+assert "15 4×5000 21700: capacity 20000" 'printf "%s" "'"$out"'" | grep -q "MAH=20000|from 4×5000"'
+assert "15 4P: derived R = 30 (matches built-in)" 'printf "%s" "'"$out"'" | grep -q "RES=30|derived"'
+out=$(run_cells 2 3000 21700 "" "" )
+assert "15 2×3000: capacity 6000" 'printf "%s" "'"$out"'" | grep -q "MAH=6000|"'
+assert "15 2P: derived R = 35" 'printf "%s" "'"$out"'" | grep -q "RES=35|derived"'
+out=$(run_cells 1 "" 21700 "" "" )
+assert "15 1 cell, default 21700 mAh: R = 45" 'printf "%s" "'"$out"'" | grep -q "RES=45|derived"'
+out=$(run_cells 4 3000 18650 "" "" )
+assert "15 18650 default range accepts 3000" 'printf "%s" "'"$out"'" | grep -q "MAH=12000|"'
+out=$(run_cells "" 6500 18650 "" "" )
+assert "15 cell-mah 6500 invalid for 18650: dies" 'printf "%s" "'"$out"'" | grep -q "die:.*out of range for a 18650"'
+out=$(run_cells "" "" "" 50 "" )
+assert "15 --pack-resistance-mohm 50 overrides" 'printf "%s" "'"$out"'" | grep -q "RES=50|from --pack-resistance"'
+out=$(run_cells "" "" "" "" 12000 )
+assert "15 --battery-mah wins, no cells: R unset (built-in)" 'printf "%s" "'"$out"'" | grep -q "MAH=12000|from --battery-mah"'
+assert "15 no cells/override: R none => driver default" 'printf "%s" "'"$out"'" | grep -q "RES=none|driver built-in"'
+printf 'options x120x battery_mah=8000 pack_resistance_mohm=42 board=x120x\n' > "${CONF}"
+out=$(run_cells "" "" "" "" "" "${CONF}")
+assert "15 conf pack_resistance kept on bare re-run" 'printf "%s" "'"$out"'" | grep -q "RES=42|kept from existing"'
+
 echo
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [ "${FAIL}" -eq 0 ]

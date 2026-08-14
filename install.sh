@@ -207,7 +207,7 @@ DROPIN_EOF
 
 resolve_battery_settings() {
     local conf="${1:-/etc/modprobe.d/x120x.conf}"
-    local opts="" conf_mah="" conf_cons="" conf_board="" conf_soc=""
+    local opts="" conf_mah="" conf_cons="" conf_board="" conf_soc="" conf_res=""
 
     if [ -f "${conf}" ]; then
         # Last "options x120x" line wins, mirroring modprobe semantics;
@@ -222,10 +222,28 @@ resolve_battery_settings() {
         conf_cons=$(printf '%s\n' "${opts}" | grep -o 'conservation_mode_default=[^[:space:]]*' | tail -1 | cut -d= -f2) || true
         conf_board=$(printf '%s\n' "${opts}" | grep -o 'board=[^[:space:]]*' | tail -1 | cut -d= -f2) || true
         conf_soc=$(printf '%s\n' "${opts}" | grep -o 'soc_source=[^[:space:]]*' | tail -1 | cut -d= -f2) || true
+        conf_res=$(printf '%s\n' "${opts}" | grep -o 'pack_resistance_mohm=[^[:space:]]*' | tail -1 | cut -d= -f2) || true
     fi
 
-    if [ -n "${OPT_MAH}" ]; then
+    # Cell geometry (size → per-cell range/default, count) feeds both the
+    # pack-capacity default (cells × per-cell mAh) and the derived resistance.
+    CELL_SIZE="${OPT_CELL_SIZE:-21700}"
+    local cell_lo cell_hi cell_def
+    case "${CELL_SIZE}" in
+        18650) cell_lo=1000; cell_hi=3600; cell_def=3000 ;;
+        *)     cell_lo=2500; cell_hi=6500; cell_def=5000 ;;   # 21700 (default)
+    esac
+    CELL_MAH="${OPT_CELL_MAH:-${cell_def}}"
+    if [ "${CELL_MAH}" -lt "${cell_lo}" ] || [ "${CELL_MAH}" -gt "${cell_hi}" ]; then
+        die "--cell-mah ${CELL_MAH} out of range for a ${CELL_SIZE} cell (expected ${cell_lo}-${cell_hi} mAh)"
+    fi
+    CELLS="${OPT_CELLS:-4}"
+
+    if [ -n "${OPT_MAH:-}" ]; then
         INPUT_MAH="${OPT_MAH}"; MAH_SRC="from --battery-mah"
+    elif [ -n "${OPT_CELLS:-}" ] || [ -n "${OPT_CELL_MAH:-}" ] || [ -n "${OPT_CELL_SIZE:-}" ]; then
+        INPUT_MAH=$(( CELLS * CELL_MAH ))
+        MAH_SRC="from ${CELLS}×${CELL_MAH} mAh (${CELL_SIZE})"
     elif [ -n "${conf_mah}" ]; then
         case "${conf_mah}" in
             *[!0-9]*|0)
@@ -291,6 +309,34 @@ resolve_battery_settings() {
         esac
     else
         SOC_SOURCE="voltage"; SOC_SRC="default"
+    fi
+
+    # Pack DC resistance for the voltage observer (milliohms).  Precedence:
+    # explicit --pack-resistance-mohm > derived from the parallel cell count
+    # (R_board 25 + R_cell 20/N, so 4P→30 = the driver's built-in) > kept from
+    # conf > unset (empty => the driver uses its built-in default, and the
+    # modprobe.d line omits the key so a standard install stays byte-identical).
+    # It only scales the transient power/rate estimate; SoC self-anchors, so a
+    # wrong value is never unsafe.
+    local valid_res=0
+    if [ -n "${OPT_RESISTANCE:-}" ]; then
+        PACK_RESISTANCE="${OPT_RESISTANCE}"; RES_SRC="from --pack-resistance-mohm"
+    elif [ -n "${OPT_CELLS:-}" ]; then
+        PACK_RESISTANCE=$(( 25 + (20 + CELLS / 2) / CELLS ))
+        RES_SRC="derived from ${CELLS} parallel cells (25 + 20/N mΩ)"
+    elif [ -n "${conf_res}" ]; then
+        case "${conf_res}" in
+            *[!0-9]*) valid_res=0 ;;
+            *) if [ "${conf_res}" -ge 10 ] && [ "${conf_res}" -le 100 ]; then valid_res=1; else valid_res=0; fi ;;
+        esac
+        if [ "${valid_res}" = 1 ]; then
+            PACK_RESISTANCE="${conf_res}"; RES_SRC="kept from existing configuration"
+        else
+            warn "Ignoring invalid pack_resistance_mohm='${conf_res}' in ${conf} — using driver default"
+            PACK_RESISTANCE=""; RES_SRC="driver built-in default"
+        fi
+    else
+        PACK_RESISTANCE=""; RES_SRC="driver built-in default"
     fi
 
     # An if, not `[ ... ] && ...`: as the function's last command the
@@ -434,6 +480,10 @@ OPT_MAH=""
 OPT_CHARGE_MODE=""
 OPT_BOARD=""
 OPT_SOC_SOURCE=""
+OPT_CELLS=""
+OPT_CELL_MAH=""
+OPT_CELL_SIZE=""
+OPT_RESISTANCE=""
 SKIP_EEPROM=0
 
 while [ $# -gt 0 ]; do
@@ -483,17 +533,64 @@ while [ $# -gt 0 ]; do
             esac
             shift 2
             ;;
+        --cells)
+            case "${2:-}" in
+                ''|*[!0-9]*)
+                    die "--cells requires a positive integer (got: ${2:-<missing>})" ;;
+            esac
+            OPT_CELLS=$((10#$2))
+            { [ "${OPT_CELLS}" -ge 1 ] && [ "${OPT_CELLS}" -le 8 ]; } \
+                || die "--cells must be between 1 and 8 (got: ${OPT_CELLS})"
+            shift 2
+            ;;
+        --cell-mah)
+            case "${2:-}" in
+                ''|*[!0-9]*)
+                    die "--cell-mah requires a positive integer (got: ${2:-<missing>})" ;;
+            esac
+            OPT_CELL_MAH=$((10#$2))   # range checked against cell size at resolve time
+            shift 2
+            ;;
+        --cell-size)
+            case "${2:-}" in
+                '') die "--cell-size requires a value  (use 18650 or 21700)" ;;
+                18650|21700) OPT_CELL_SIZE="$2" ;;
+                *) die "Unknown cell size: $2  (use 18650 or 21700)" ;;
+            esac
+            shift 2
+            ;;
+        --pack-resistance-mohm)
+            case "${2:-}" in
+                ''|*[!0-9]*)
+                    die "--pack-resistance-mohm requires an integer 10-100 (got: ${2:-<missing>})" ;;
+            esac
+            OPT_RESISTANCE=$((10#$2))
+            { [ "${OPT_RESISTANCE}" -ge 10 ] && [ "${OPT_RESISTANCE}" -le 100 ]; } \
+                || die "--pack-resistance-mohm must be between 10 and 100 (got: ${OPT_RESISTANCE})"
+            shift 2
+            ;;
         --skip-eeprom)
             SKIP_EEPROM=1
             shift
             ;;
         --help|-h)
-            echo "Usage: sudo bash install.sh [--battery-mah N] [--charge-mode fast|longlife] [--board x120x|x728v2|x728v1|x708|x729] [--soc-source voltage|gauge] [--skip-eeprom]"
+            echo "Usage: sudo bash install.sh [--battery-mah N | --cells N --cell-mah M [--cell-size 18650|21700]]"
+            echo "                            [--charge-mode fast|longlife] [--board x120x|x728v2|x728v1|x708|x729]"
+            echo "                            [--soc-source voltage|gauge] [--pack-resistance-mohm N] [--skip-eeprom]"
+            echo
+            echo "  Capacity       Give --battery-mah N (total, authoritative), or express it as"
+            echo "                 --cells N --cell-mah M (total = N×M).  --cell-size sets the valid"
+            echo "                 per-cell range (18650: 1000-3600, 21700: 2500-6500; default 21700)."
             echo
             echo "  --soc-source   State-of-charge source: voltage (default) or gauge."
             echo "                 voltage uses an NMC open-circuit-voltage model (charge"
             echo "                 and discharge curves) that avoids the fuel gauge's"
             echo "                 near-full over-read; gauge uses the raw MAX17043 register."
+            echo
+            echo "  --pack-resistance-mohm N   Pack DC resistance (10-100 mΩ) for the observer."
+            echo "                 Omit to let the installer derive it from --cells"
+            echo "                 (R_board 25 + R_cell 20/N), or fall back to the built-in 30."
+            echo "                 Only affects the transient power readout, never SoC or safety."
             echo
             echo "  --skip-eeprom  Do not modify Raspberry Pi bootloader EEPROM settings"
             echo "                 (POWER_OFF_ON_HALT, PSU_MAX_CURRENT).  You are then"
@@ -515,7 +612,7 @@ done
 # -------------------------------------------------------------------------
 
 PKG_NAME="x120x"
-PKG_VERSION="0.5.11"
+PKG_VERSION="0.5.12"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # External command and device-tree model path — overridable for testing.
@@ -678,6 +775,11 @@ info "battery_mah=${INPUT_MAH} (${MAH_SRC})"
 info "conservation_mode_default=${CONSERVATION_DEFAULT} (${CONS_SRC})"
 info "board=${BOARD_VARIANT} (${BOARD_SRC})"
 info "soc_source=${SOC_SOURCE} (${SOC_SRC})"
+if [ -n "${PACK_RESISTANCE}" ]; then
+    info "pack_resistance_mohm=${PACK_RESISTANCE} (${RES_SRC})"
+else
+    info "pack_resistance_mohm=<driver default 30> (${RES_SRC})"
+fi
 
 # Warn if an experimental board is in effect — reachable via the
 # --board flag once per-board overlays ship, or today via a board=
@@ -698,20 +800,27 @@ if [ "${BOARD_VARIANT}" = "x728v1" ] || [ "${BOARD_VARIANT}" = "x708" ] || [ "${
 fi
 
 info "Step 5/10 — Writing battery configuration to ${MODPROBE_CONF}..."
+# Only emit pack_resistance_mohm when set (derived/overridden); otherwise the
+# line omits it and the driver uses its built-in default.
+RES_OPT=""
+[ -n "${PACK_RESISTANCE}" ] && RES_OPT=" pack_resistance_mohm=${PACK_RESISTANCE}"
 cat > "${MODPROBE_CONF}" << MODPROBE_EOF
 # x120x driver configuration
 # Generated by x120x-dkms installer — edit to change battery parameters.
 #
-# battery_mah     — total pack capacity in mAh
-#                   (number of cells × per-cell capacity)
-# soc_source      — state-of-charge source: voltage (NMC OCV model, default)
-#                   or gauge (raw MAX17043 register)
+# battery_mah          — total pack capacity in mAh
+#                        (number of cells × per-cell capacity)
+# soc_source           — state-of-charge source: voltage (NMC OCV model,
+#                        default) or gauge (raw MAX17043 register)
+# pack_resistance_mohm — pack DC resistance in mΩ for the observer (10-100;
+#                        omit to use the built-in default 30).  Only affects
+#                        the transient power/rate readout, never SoC or safety.
 #
 # After editing, reload the driver:
 #   sudo rmmod x120x && sudo modprobe x120x
 # Or simply reboot.
 
-options x120x battery_mah=${INPUT_MAH} conservation_mode_default=${CONSERVATION_DEFAULT} board=${BOARD_VARIANT} soc_source=${SOC_SOURCE}
+options x120x battery_mah=${INPUT_MAH} conservation_mode_default=${CONSERVATION_DEFAULT} board=${BOARD_VARIANT} soc_source=${SOC_SOURCE}${RES_OPT}
 MODPROBE_EOF
 ok "Battery configuration written"
 

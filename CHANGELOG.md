@@ -14,6 +14,42 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.12 — Cell-geometry install options + overridable pack resistance
+
+**Kernel driver**
+- New `pack_resistance_mohm` module param (valid 10–100; `0` = built-in
+  default 30). The voltage observer now uses the resolved `chip->r_uohm`
+  instead of the hard-coded `X120X_R_UOHM` for both `I = (OCV−V)/R` and the
+  cold-boot drain-IR seed. It only scales the transient power/rate estimate —
+  the OCV feedback self-anchors steady SoC — so an out-of-range or wrong value
+  is warned-and-ignored and is never unsafe.
+
+**Installer**
+- Capacity can now be expressed as **`--cells N --cell-mah M`** (total = N×M)
+  in addition to `--battery-mah` (which stays authoritative and wins).
+  `--cell-size 18650|21700` sets the valid per-cell range (18650: 1000–3600,
+  21700: 2500–6500; default 21700) and the per-cell default (3000/5000).
+- New **`--pack-resistance-mohm N`** (10–100). When omitted, the installer
+  derives R from the parallel cell count as `R_board 25 + R_cell 20/N` — so a
+  4-cell pack yields 30 mΩ (identical to the driver's built-in, keeping a
+  standard install byte-for-byte unchanged), and only 1P/2P/3P builds get a
+  scaled value. The key is written to `modprobe.d` only when set/derived.
+- All new values resolve with the same flag > existing-conf > default
+  precedence as the other options; a bad `--cell-mah` for the chosen size, or
+  an out-of-range resistance, aborts with a clear message.
+
+**Rationale**
+- Grounded in the R-sensitivity analysis: across the entire 21700 NMC × 1–4
+  slot space, worst-case SoC error from a mis-set R is ~5–7% (harmlessly
+  located; safety is voltage-floored), and slot-count scaling halves the worst
+  (1P) corner. So R stays a cheap optional refinement, never a required knob —
+  the driver keeps a thin, physical ABI and the installer does the arithmetic.
+
+**Tests**
+- `test-install.sh` gains 11 cases covering capacity from cells×per-cell, the
+  derived-R table (4P→30, 2P→35, 1P→45), size-range validation, the direct
+  override, and conf-preservation of `pack_resistance_mohm`.
+
 #### v0.5.11 — hwmon: observer OCV channel + voltage safety limits
 
 **Kernel driver**

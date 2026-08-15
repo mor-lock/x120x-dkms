@@ -322,6 +322,22 @@ MODULE_PARM_DESC(pack_resistance_mohm,
 #define X120X_CHG_VDROP_UV	  12000	/* >=12 mV drop off the charge peak = full     */
 
 /*
+ * Boot charge-probe.  Rather than trust the gauge to say "full" at reload, on a
+ * full-target grid boot actively probe the charger: hold it on for _CHG_MS to
+ * let the IC reveal whether it is delivering current (the terminal IR-lifts),
+ * then toggle it off for _REST_MS and measure the drop off the reveal-phase
+ * peak.  A drop >= _DROP_UV means current was flowing -> not full -> let it top
+ * up and terminate on the V-drop; no drop means the pack was already full ->
+ * inhibit without a needless top-off (which a reloaded-full pack would never
+ * terminate via the V-drop, having run no charge).  Windows are generous vs the
+ * ~16 s EMA tau so the drop settles; _DROP_UV sits below the CV surface-charge
+ * relaxation so a genuine charge is never missed (erring toward a small top-off).
+ */
+#define X120X_PROBE_CHG_MS	40000	/* hold charger on to reveal charging */
+#define X120X_PROBE_REST_MS	25000	/* then inhibit and watch for the drop */
+#define X120X_PROBE_DROP_UV	 10000	/* >=10 mV drop over the rest = was charging */
+
+/*
  * Observer overshoot cap.  The OCV tables are extended above 100 % (continuing
  * the top slope) so the observer can track the CV-charge overpotential region
  * instead of railing at the 100 % clamp (which masked the real top-off charge
@@ -719,7 +735,9 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
  * @ocv_model_uv:	observer OCV(SoC) estimate in uV, exposed as hwmon in1 (0 = n/a)
  * @r_uohm:		resolved pack DC resistance in uohm (param or built-in default)
  * @charge_peak_uv:	peak EMA terminal V while charging, for the V-drop full-detect (0 = not charging)
- * @full_at_boot:	pack seeded full at reload — inhibit rather than restart a top-off the V-drop can't end
+ * @probe_until:	boot charge-probe: end of the current phase in jiffies (0 = no probe running)
+ * @probe_resting:	boot charge-probe phase — false = reveal (charger on), true = measure (charger off)
+ * @probe_peak_uv:	peak EMA terminal V observed during the probe reveal phase
  * @obs_primed:		false until energy_now_uwh is seeded from the OCV lookup
  * @obs_prev_us:	ktime (us) of the previous observer step, for dt
  * @power_report_uw:	charge/discharge power reported to the ABI, in uW
@@ -764,7 +782,9 @@ struct x120x_chip {
 	int			 ocv_model_uv;
 	int			 r_uohm;
 	int			 charge_peak_uv;	/* V-drop full-detect: peak EMA V while charging */
-	bool			 full_at_boot;		/* seeded full at reload: inhibit, don't restart top-off */
+	unsigned long		 probe_until;		/* boot charge-probe: current phase end (0 = no probe) */
+	bool			 probe_resting;		/* probe: false = reveal (charger on), true = measure (off) */
+	int			 probe_peak_uv;		/* peak EMA V during the probe reveal phase */
 	bool			 obs_primed;
 	s64			 obs_prev_us;
 	int			 power_report_uw;	/* power reported to the ABI      */
@@ -1001,6 +1021,7 @@ static void x120x_poll_work(struct work_struct *work)
 	unsigned int vcell_raw, soc_raw;
 	int new_uv, new_pct, new_256, new_ac, ret;
 	bool seeding = false;	/* true during the boot seed-settle window (charger held off) */
+	bool probing = false;	/* true during the boot charge-probe (charger toggled to detect full) */
 	bool new_present;
 	bool bat_changed = false, ac_changed = false, chrg_changed = false;
 	/* Snapshots of shared chip state taken under the lock and used
@@ -1110,30 +1131,37 @@ static void x120x_poll_work(struct work_struct *work)
 		 * rested pack reads true SoC and a wrong seed can't trip a charge.
 		 */
 		if (!chip->obs_primed) {
-			if (MAX17043_SOC_INT(soc_raw) >= 100 &&
-			    (!chip->conservation_mode || conservation_end >= 100)) {
-				/*
-				 * Full pack on a 100% charge target (Fast, or Long
-				 * Life set to 100%): the gauge is reliable at the
-				 * top, so pin straight to full and skip the settle.
-				 * Mark full-at-boot so the charge-control inhibits
-				 * immediately instead of restarting a top-off — a pack
-				 * that reloads already full never runs a charge, so the
-				 * V-drop detector can't fire and would otherwise leave
-				 * the charger on until the 1 h gauge=100 backstop.
-				 */
-				chip->energy_now_uwh    = e_full;
-				chip->seed_settle_until = 0;
-				chip->full_at_boot      = true;
-			} else if (chip->ocv_ema_uv <= X120X_SEED_EMPTY_UV) {
+			if (chip->ocv_ema_uv <= X120X_SEED_EMPTY_UV) {
 				/*
 				 * Near-empty: seed 0% and let it charge at once —
 				 * never hold the charger off on a critical pack.
 				 */
 				chip->energy_now_uwh    = 0;
 				chip->seed_settle_until = 0;
+			} else if (new_ac &&
+				   (!chip->conservation_mode ||
+				    conservation_end >= 100)) {
+				/*
+				 * Full-target on grid: don't trust the gauge — run
+				 * the active charge-probe.  Hold the charger on to
+				 * reveal whether it's actually charging, then toggle
+				 * off and watch for the drop: no drop => already full
+				 * => inhibit; a drop => was charging => top up and let
+				 * the V-drop terminate it.  SoC is re-seeded from the
+				 * discharge-branch OCV across the probe (accurate once
+				 * the terminal rests at the end).
+				 */
+				chip->probe_until   = jiffies +
+					msecs_to_jiffies(X120X_PROBE_CHG_MS);
+				chip->probe_resting = false;
+				chip->probe_peak_uv = 0;
+				chip->seed_settle_until = 0;
 			} else {
-				/* Else settle: hold charger off, seed from OCV. */
+				/*
+				 * Off grid, or a sub-100 target: settle — hold the
+				 * charger off and seed from OCV (the probe needs the
+				 * charger, so it doesn't apply here).
+				 */
 				chip->seed_settle_until = jiffies +
 					msecs_to_jiffies(X120X_SEED_SETTLE_MS);
 			}
@@ -1145,6 +1173,14 @@ static void x120x_poll_work(struct work_struct *work)
 			  time_before(jiffies, chip->seed_settle_until);
 		if (!seeding)
 			chip->seed_settle_until = 0;
+
+		/*
+		 * The boot charge-probe also holds the observer on an OCV seed
+		 * (report 0 W, don't integrate) while it toggles the charger, so
+		 * the SoC isn't corrupted by the reveal-phase charge lift; it
+		 * lands on the rested discharge-branch OCV at the end.
+		 */
+		probing = chip->probe_until != 0;
 
 		/* dt since last step; guard gaps (resume, missed polls). */
 		dt_us = obs_now_us - chip->obs_prev_us;
@@ -1226,13 +1262,16 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->energy_rate_uw = clamp((int)-p_uw, X120X_POWER_MIN_UW,
 					     X120X_POWER_MAX_UW);
 
-		if (seeding) {
+		if (seeding || probing) {
 			/*
-			 * Seed settle: override the integral with a fresh OCV
-			 * seed.  The charger is held off (see charge hysteresis),
-			 * so on grid the pack rests — seed from the rested
-			 * terminal on the discharge branch; off grid add the
-			 * nominal drain IR back.  Report 0 W (not integrating).
+			 * Seed settle / boot probe: override the integral with a
+			 * fresh OCV seed.  The charger is held off (settle) or
+			 * toggled (probe); either way seed from the discharge-
+			 * branch OCV — on grid from the rested terminal, off grid
+			 * add the nominal drain IR back.  Report 0 W (not
+			 * integrating).  During the probe reveal phase the terminal
+			 * is briefly charge-lifted so the seed reads a touch high,
+			 * but it lands on the true rested SoC by the probe's end.
 			 */
 			int seed_uv = new_ac ? chip->ocv_ema_uv
 				: chip->ocv_ema_uv + (int)div_s64(
@@ -1553,7 +1592,7 @@ static void x120x_poll_work(struct work_struct *work)
 		 * loss (which also drops V) can never look like "full".
 		 */
 		if (chip->soc_src == X120X_SOC_SRC_VOLTAGE && full_target &&
-		    new_ac && !chip->charger_inhibited) {
+		    new_ac && !chip->charger_inhibited && !chip->probe_until) {
 			if (chip->ocv_ema_uv > chip->charge_peak_uv)
 				chip->charge_peak_uv = chip->ocv_ema_uv;
 			if (chip->charge_peak_uv >= X120X_CHG_VDROP_ARM_UV &&
@@ -1581,12 +1620,7 @@ static void x120x_poll_work(struct work_struct *work)
 		 * charger on at boot and after a deep discharge.
 		 */
 		if (soc_band_256 >= end_thr * 256) {
-			if (full_target && chip->full_at_boot) {
-				/* Reloaded already full: inhibit now, don't restart a
-				 * top-off the V-drop detector could never terminate. */
-				chip->charge_full_since = 0;
-				want_inhibit = true;
-			} else if (full_target) {
+			if (full_target) {
 				if (!chip->charge_full_since)
 					chip->charge_full_since = jiffies;
 				want_inhibit = chip->charger_inhibited ||
@@ -1598,9 +1632,6 @@ static void x120x_poll_work(struct work_struct *work)
 				want_inhibit = true;
 			}
 		} else {
-			/* Dropped below full: clear the boot-full latch so a normal
-			 * recharge (and its real V-drop) works from here on. */
-			chip->full_at_boot   = false;
 			chip->charge_full_since = 0;
 			if (soc_band_256 <= start_thr * 256)
 				want_inhibit = false;
@@ -1624,6 +1655,59 @@ static void x120x_poll_work(struct work_struct *work)
 			want_inhibit = true;
 			chip->charge_full_since = 0;
 			chip->charge_peak_uv    = 0;
+		}
+
+		/*
+		 * Boot charge-probe: overrides the band and drives the charger.
+		 * Reveal phase — hold the charger on and track the peak EMA V.
+		 * Measure phase — hold it off; at the end a drop >= _DROP_UV off
+		 * that peak means current was flowing (not full) -> enable so it
+		 * tops up and terminates on the V-drop; no drop means already
+		 * full -> inhibit.  Either outcome is carried forward by the
+		 * band's held state once the probe clears.
+		 */
+		if (chip->probe_until) {
+			if (!chip->probe_resting) {
+				if (chip->ocv_ema_uv > chip->probe_peak_uv)
+					chip->probe_peak_uv = chip->ocv_ema_uv;
+				want_inhibit = false;	/* reveal: keep charging */
+				if (time_after_eq(jiffies, chip->probe_until)) {
+					chip->probe_resting = true;
+					chip->probe_until   = jiffies +
+					   msecs_to_jiffies(X120X_PROBE_REST_MS);
+				}
+			} else if (time_after_eq(jiffies, chip->probe_until)) {
+				/* measure done: decide full vs charging */
+				int drop = chip->probe_peak_uv -
+					   chip->ocv_ema_uv;
+
+				want_inhibit = drop < X120X_PROBE_DROP_UV;
+				chip->probe_until       = 0;
+				chip->probe_peak_uv     = 0;
+				chip->charge_full_since = 0;
+				/*
+				 * Charging: the probe seeded SoC off the still-lifted
+				 * terminal (25 s doesn't fully relax the surface
+				 * charge), which reads > 100 % and would leave the
+				 * observer parked at equilibrium — masking the top-off
+				 * power.  Cap the seed just under full so it tracks the
+				 * remaining charge and reports the real power; it re-
+				 * converges to the CV terminal within a poll or two.
+				 */
+				if (!want_inhibit) {
+					s64 cap = div_s64(chip->energy_full_uwh *
+						(100 * 256 - 256), 25600);
+					if (chip->energy_now_uwh > cap)
+						chip->energy_now_uwh = cap;
+				}
+				dev_info(&chip->client->dev,
+					 "charge-probe: %s (drop %d uV)\n",
+					 want_inhibit ? "full -> inhibit"
+						      : "charging -> enable",
+					 drop);
+			} else {
+				want_inhibit = true;	/* measure: charger off */
+			}
 		}
 
 		if (want_inhibit != chip->charger_inhibited) {
@@ -3106,7 +3190,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.16");
+MODULE_VERSION("0.5.17");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

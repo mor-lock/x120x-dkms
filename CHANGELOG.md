@@ -14,6 +14,25 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.17 — Active boot charge-probe (retire the gauge=100 anchor)
+
+**Kernel driver — experimental**
+- Replaces the gauge=100 boot seed-pin *and* the v0.5.16 `full_at_boot`
+  flag with an **active charge-probe**.  On a full-target grid boot the
+  driver no longer trusts the gauge: it holds the charger on for
+  `X120X_PROBE_CHG_MS` (40 s) to let the IC reveal whether it is delivering
+  current (the terminal IR-lifts), then toggles it off for
+  `X120X_PROBE_REST_MS` (25 s) and measures the drop off the reveal-phase
+  peak.  A drop >= `X120X_PROBE_DROP_UV` (10 mV) => current was flowing =>
+  not full => enable and let the V-drop terminate it; no drop => already
+  full => inhibit without a needless top-off.  This closes the reload-full
+  gap the raw V-drop can't (a reloaded-full pack runs no charge, so there
+  is no peak to drop from) and drops the gauge from the charge/SoC path.
+- SoC is re-seeded from the discharge-branch OCV across the probe (0 W
+  reported, not integrating), landing on the true rested SoC at the end.
+- The runtime V-drop detector is gated off while the probe runs; both the
+  gauge=100 debounce and the voltage floor remain as backstops.
+
 #### v0.5.16 — Reload-full detection (inhibit without a charge cycle)
 
 **Kernel driver — experimental**

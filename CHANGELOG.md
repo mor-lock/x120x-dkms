@@ -14,6 +14,27 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.13 — Gauge=100 anchor at startup only (drop the runtime pin)
+
+**Kernel driver**
+- Removed the **runtime** gauge=100 observer pin (the per-poll hard-anchor of
+  `energy_now` to `E_full` while the gauge held 100% on grid). The gauge=100
+  anchor now survives **only at driver start** (the seed block) — a
+  freshly-booted full pack still reads 100% immediately, but during normal
+  operation the observer is left to settle to its own OCV equilibrium at the
+  top.
+- Consequence, on a full grid-on float: SoC eases from 100% to ~99.9% (where
+  `OCV(SoC)=V̄`) and the reported battery power falls to **~0**, instead of the
+  pin holding a crisp 100% at the cost of a small steady **phantom drain**
+  (~−0.17 W) from the residual `OCV−V̄` gap (the terminal parks ~1 ADC LSB below
+  4.20 V during float). Validated by a 5-day replay: pin-free tracks the pinned
+  estimate to ~0.1%, the OCV feedback bounds drift to <0.1% over a 17 h float,
+  and the settled float power is ~0.
+- **Charge termination is unaffected** — it keys on the raw gauge
+  (`charge_full_since`) in the charge-control path, not on the observer pin.
+  Removes the now-unused `gauge_full_since` field; `X120X_CHG_FULL_DEBOUNCE_MS`
+  stays (still gates the 100%-target charge-off).
+
 #### v0.5.12 — Cell-geometry install options + overridable pack resistance
 
 **Kernel driver**

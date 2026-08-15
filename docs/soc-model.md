@@ -33,8 +33,8 @@ register directly (unchanged legacy behaviour).
         ▼                                                                  │
  terminal V ─► V̄ (EMA) ─► I = (OCV(SoC) − V̄)/R ─► P = I·V̄ ─► ∫ = energy ─┴─► SoC (%)
                              ▲                                    ▲
-        OCV branch (charge/discharge) by charge dir       gauge=100 %, 1 h on grid
-                                                            └► pin energy = full
+        OCV branch (charge/discharge) by charge dir       gauge=100 % at startup
+                                                            └► seed energy = full
 ```
 
 ## The observer
@@ -138,21 +138,24 @@ large SoC swing (a rested 86 % pack seeded ~72 %). Holding the charger off to
 get a genuine rest removes the guess; the closed loop still self-anchors
 afterward, always in the safe under-read direction.
 
-## Gauge=100 pin (the only use of the gauge)
+## Gauge=100 anchor at startup (the only use of the gauge for SoC)
 
 The raw MAX17043 is reliable at exactly *one* point — **full** — because it
-only craters *low*. So when it has held 100 % for `X120X_CHG_FULL_DEBOUNCE_MS`
-(1 h) **on grid**, the observer energy is hard-anchored to `E_full`. This
-kills slow integrator drift over long floats and gives a crisp 100 % despite
-the CV-taper asymptote (as SoC → 100 the charge current `(OCV − V)/R → 0`, so
-the integral only approaches full; the pin is the anchor). The pin **releases
-the instant the grid drops**, so a real outage tracks the drain immediately
-instead of freezing at full while the laggy gauge still reads 100. The pin is
-also gated on a **100 % charge target** (Fast mode, or a Long Life band set to
-100 %): only there is full the intended resting state, so switching a full pack
-into a sub-100 Long Life band cannot pin the observer at full while it drifts
-down toward the band. The gauge is used for nothing else — the discharge and
-steady paths are voltage-only.
+only craters *low*. So at **driver start**, if the gauge reads 100 % on grid
+with a 100 % charge target (Fast mode, or a Long Life band set to 100 %), the
+observer seeds straight to `E_full` — a freshly-booted full pack reads 100 %
+immediately instead of settling over the first few minutes.
+
+There is **no runtime pin**. During normal operation the observer is left to
+find its own OCV equilibrium at the top: on a full grid-on float the energy
+clamp holds it at 100 % until the terminal relaxes just under 4.20 V, then SoC
+eases to ~99.9 % where `OCV(SoC) = V` and the reported power settles to ~0 —
+rather than a hard pin that holds a crisp 100 % at the cost of a small phantom
+drain from the residual `OCV − V` gap. The OCV feedback bounds drift on its own
+(a 17 h float drifts < 0.1 %), so a runtime pin buys nothing. The gauge is used
+for nothing else in the SoC path; charge **termination** keys on the raw gauge
+separately (see `X120X_CHG_FULL_DEBOUNCE_MS`), so removing the runtime pin does
+not affect when the charger stops.
 
 ## Power for free
 
@@ -255,7 +258,7 @@ too rarely for the extra depth to matter.
 |---|---|
 | `X120X_USABLE_PERMILLE` | usable-energy fraction of rated → `E_full` (SoC / energy scale) |
 | `X120X_R_UOHM` | pack DC resistance in the observer (`I = (OCV − V)/R`) |
-| `X120X_CHG_FULL_DEBOUNCE_MS` | gauge-held-100 % time before the 100 % pin / 100 % charge-off (100 % targets only) |
+| `X120X_CHG_FULL_DEBOUNCE_MS` | gauge-held-100 % time before the 100 % charge-off (100 % targets only) |
 | `X120X_SEED_DIS_UW` | nominal drain added back on an off-grid boot seed |
 | `X120X_SEED_SETTLE_MS` | boot: charger held off & SoC seeded from OCV for this long |
 | `X120X_SEED_EMPTY_UV` | boot: at/below this, seed 0 % and charge at once (no settle) |

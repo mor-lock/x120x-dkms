@@ -307,7 +307,7 @@ MODULE_PARM_DESC(pack_resistance_mohm,
 #define X120X_SOC_LOW_PCT	10	/* LOW below this % → desktop warning      */
 #define X120X_SOC_FULL_PCT	95	/* FULL above this %                        */
 #define X120X_FAST_RESUME_PCT	95	/* Fast mode: resume charging at/below this % */
-#define X120X_CHG_FULL_DEBOUNCE_MS 3600000 /* gauge must read full this long (1 h) before the 100% charge-off AND the observer 100% pin */
+#define X120X_CHG_FULL_DEBOUNCE_MS 3600000 /* gauge must read full this long (1 h) before the 100% charge-off */
 
 /* Manufacturer and model name strings */
 #define X120X_MANUFACTURER		"SupTronics"
@@ -676,7 +676,6 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
  * @work:		delayed work item driving the polling loop
  * @heartbeat_ticks:	poll ticks left until a forced power_supply_changed()
  * @hwmon_dev:		hwmon device exposing voltage/power to sensors
- * @gauge_full_since:	jiffies the gauge first read full (observer full-pin); 0 = not full
  * @seed_settle_until:	jiffies to hold charger off and seed SoC from OCV; 0 = not settling
  * @soc_src:		SoC source: voltage OCV observer vs raw fuel gauge
  * @ocv_ema_uv:		EMA of cell voltage feeding the OCV lookup (0 = uninit)
@@ -710,7 +709,6 @@ struct x120x_chip {
 	bool			 conservation_mode;	/* true = Long life, threshold hysteresis active */
 	bool			 charger_inhibited;	/* cached GPIO16 state: true = high (stopped) */
 	unsigned long		 charge_full_since;	/* jiffies the gauge first read full (100%-target debounce); 0 = not full */
-	unsigned long		 gauge_full_since;	/* jiffies gauge first read >=100 (observer 100% pin); 0 = not full */
 	unsigned long		 seed_settle_until;	/* jiffies: hold charger off & seed from OCV until here; 0 = not settling */
 	bool			 present;
 	int			 i2c_errors;
@@ -1032,8 +1030,9 @@ static void x120x_poll_work(struct work_struct *work)
 		 * load implicitly, so the steady discharge needs no IR term; P is
 		 * the true battery power for free.  The charge/discharge OCV
 		 * tables are selected by charge direction (hysteresis).  (A
-		 * nominal-IR seed handles cold-boot and a gauge=100 pin re-anchors
-		 * the top — neither touches steady discharge tracking.)
+		 * nominal-IR seed handles cold-boot, and a gauge=100 anchor at
+		 * driver start recognises an already-full pack; there is no
+		 * runtime pin — the OCV feedback bounds the top on its own.)
 		 * V is the EMA-smoothed terminal (raw MAX17043 V is quantised).
 		 */
 		s64 e_full = div_s64((s64)battery_mah * X120X_NOMINAL_MV *
@@ -1139,35 +1138,20 @@ static void x120x_poll_work(struct work_struct *work)
 		}
 
 		/*
-		 * Gauge=100 pin.  The raw MAX17043 is reliable at the top (it
-		 * only craters low), so once it has held 100% for
-		 * X120X_CHG_FULL_DEBOUNCE_MS (1 h — the CV taper runs several
-		 * time-constants past gauge=100 so the pack integrates essentially
-		 * to full before the anchor and the pin snap is negligible; the
-		 * same window that gates the 100% charge-off) WHILE ON GRID, hard-anchor the
-		 * observer energy to full.  Kills slow integrator drift over long
-		 * floats.  Gated on AC: the instant the grid drops (discharge)
-		 * the pin releases so the observer tracks the drain — otherwise
-		 * the laggy gauge, which keeps reading 100 for minutes after a
-		 * cut, would freeze SoC at full through the start of an outage.
-		 * Also gated on a 100% charge target (Fast mode, or a Long Life
-		 * band configured to 100%): only then is "full" the intended
-		 * resting state, so only then should the observer hard-anchor
-		 * there.  A sub-100 Long Life band tops out below full and never
-		 * reaches gauge=100 in normal cycling, but if a full pack is
-		 * switched into such a band the still-100 laggy gauge must not
-		 * pin the observer at full while it self-discharges to the band.
+		 * No runtime gauge=100 pin.  The observer is left to settle to
+		 * its own OCV equilibrium at the top: on a full grid-on float the
+		 * energy clamp holds it at 100% until the terminal relaxes just
+		 * under 4.20 V, then SoC eases to ~99.9% where OCV(SoC)=V and the
+		 * reported power falls to ~0 — instead of a hard pin that would
+		 * hold a crisp 100% at the cost of a small phantom drain from the
+		 * residual OCV−V gap.  The OCV feedback bounds drift on its own
+		 * (validated: <0.1% over a 17 h float), so a runtime pin is not
+		 * needed.  The gauge=100 anchor survives only at driver start (the
+		 * seed block above), so a freshly-booted full pack still reads
+		 * 100% immediately instead of settling over a few minutes.  Charge
+		 * termination is unaffected — it keys on the raw gauge
+		 * (charge_full_since) in the charge-control path, not on this.
 		 */
-		if (new_ac && MAX17043_SOC_INT(soc_raw) >= 100 &&
-		    (!chip->conservation_mode || conservation_end >= 100)) {
-			if (!chip->gauge_full_since)
-				chip->gauge_full_since = jiffies;
-			if (time_after_eq(jiffies, chip->gauge_full_since +
-					  msecs_to_jiffies(X120X_CHG_FULL_DEBOUNCE_MS)))
-				chip->energy_now_uwh = e_full;
-		} else {
-			chip->gauge_full_since = 0;
-		}
 
 		new_256 = clamp((int)div_s64(chip->energy_now_uwh * 25600, e_full),
 				0, 100 * 256);
@@ -1499,8 +1483,7 @@ static void x120x_poll_work(struct work_struct *work)
 		 *  - 100% target: hold the charger on for
 		 *    X120X_CHG_FULL_DEBOUNCE_MS after the gauge first reads full,
 		 *    so the CV taper tops the pack off and a single transient
-		 *    100% reading can't cut early (the same window gates the
-		 *    observer 100% pin).
+		 *    100% reading can't cut early.
 		 *  - sub-100 Long Life band: nothing to top off past the band, so
 		 *    cut the charger immediately when the observer SoC reaches
 		 *    end_thr — a debounce here would overshoot the band top by the
@@ -3015,7 +2998,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.12");
+MODULE_VERSION("0.5.13");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

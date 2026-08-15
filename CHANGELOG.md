@@ -14,6 +14,16 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.16 — Reload-full detection (inhibit without a charge cycle)
+
+**Kernel driver — experimental**
+- Handle the case a full pack is reloaded: it never runs a charge, so the
+  V-drop detector can't fire and the charger would stay on until the 1 h
+  gauge=100 backstop.  The startup seed now sets `full_at_boot` in its
+  full-pack branch, and the charge-control **inhibits immediately** in that
+  case instead of restarting a top-off.  Cleared once the pack drains below
+  full, so a normal recharge (and its real V-drop) works from there on.
+
 #### v0.5.15 — Extended-OCV trial fixes: visible overshoot + no-charge-when-off
 
 **Kernel driver — experimental (follows v0.5.14 on-hardware trial)**

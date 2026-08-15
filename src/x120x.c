@@ -719,6 +719,7 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
  * @ocv_model_uv:	observer OCV(SoC) estimate in uV, exposed as hwmon in1 (0 = n/a)
  * @r_uohm:		resolved pack DC resistance in uohm (param or built-in default)
  * @charge_peak_uv:	peak EMA terminal V while charging, for the V-drop full-detect (0 = not charging)
+ * @full_at_boot:	pack seeded full at reload — inhibit rather than restart a top-off the V-drop can't end
  * @obs_primed:		false until energy_now_uwh is seeded from the OCV lookup
  * @obs_prev_us:	ktime (us) of the previous observer step, for dt
  * @power_report_uw:	charge/discharge power reported to the ABI, in uW
@@ -763,6 +764,7 @@ struct x120x_chip {
 	int			 ocv_model_uv;
 	int			 r_uohm;
 	int			 charge_peak_uv;	/* V-drop full-detect: peak EMA V while charging */
+	bool			 full_at_boot;		/* seeded full at reload: inhibit, don't restart top-off */
 	bool			 obs_primed;
 	s64			 obs_prev_us;
 	int			 power_report_uw;	/* power reported to the ABI      */
@@ -1114,9 +1116,15 @@ static void x120x_poll_work(struct work_struct *work)
 				 * Full pack on a 100% charge target (Fast, or Long
 				 * Life set to 100%): the gauge is reliable at the
 				 * top, so pin straight to full and skip the settle.
+				 * Mark full-at-boot so the charge-control inhibits
+				 * immediately instead of restarting a top-off — a pack
+				 * that reloads already full never runs a charge, so the
+				 * V-drop detector can't fire and would otherwise leave
+				 * the charger on until the 1 h gauge=100 backstop.
 				 */
 				chip->energy_now_uwh    = e_full;
 				chip->seed_settle_until = 0;
+				chip->full_at_boot      = true;
 			} else if (chip->ocv_ema_uv <= X120X_SEED_EMPTY_UV) {
 				/*
 				 * Near-empty: seed 0% and let it charge at once —
@@ -1573,7 +1581,12 @@ static void x120x_poll_work(struct work_struct *work)
 		 * charger on at boot and after a deep discharge.
 		 */
 		if (soc_band_256 >= end_thr * 256) {
-			if (full_target) {
+			if (full_target && chip->full_at_boot) {
+				/* Reloaded already full: inhibit now, don't restart a
+				 * top-off the V-drop detector could never terminate. */
+				chip->charge_full_since = 0;
+				want_inhibit = true;
+			} else if (full_target) {
 				if (!chip->charge_full_since)
 					chip->charge_full_since = jiffies;
 				want_inhibit = chip->charger_inhibited ||
@@ -1585,6 +1598,9 @@ static void x120x_poll_work(struct work_struct *work)
 				want_inhibit = true;
 			}
 		} else {
+			/* Dropped below full: clear the boot-full latch so a normal
+			 * recharge (and its real V-drop) works from here on. */
+			chip->full_at_boot   = false;
 			chip->charge_full_since = 0;
 			if (soc_band_256 <= start_thr * 256)
 				want_inhibit = false;
@@ -3090,7 +3106,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.15");
+MODULE_VERSION("0.5.16");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

@@ -307,7 +307,29 @@ MODULE_PARM_DESC(pack_resistance_mohm,
 #define X120X_SOC_LOW_PCT	10	/* LOW below this % → desktop warning      */
 #define X120X_SOC_FULL_PCT	95	/* FULL above this %                        */
 #define X120X_FAST_RESUME_PCT	95	/* Fast mode: resume charging at/below this % */
-#define X120X_CHG_FULL_DEBOUNCE_MS 3600000 /* gauge must read full this long (1 h) before the 100% charge-off */
+#define X120X_CHG_FULL_DEBOUNCE_MS 3600000 /* gauge must read full this long (1 h) before the 100% charge-off (backstop) */
+
+/*
+ * Charge-IC self-termination detector.  GPIO16 only *enables* a Li-ion charger
+ * IC that runs its own CC/CV/terminate; at full it stops itself (current tapers
+ * below its done-threshold) while GPIO stays asserted, and the terminal drops
+ * by the vanished IR/overpotential (~15-30 mV).  So: while charging a 100%
+ * target, once V has climbed into the CV zone (>= ARM), a drop of >= VDROP off
+ * its running peak = the IC self-terminated = pack full -> inhibit at the real
+ * termination instead of trusting the laggy/optimistic gauge=100.
+ */
+#define X120X_CHG_VDROP_ARM_UV	4200000	/* V must exceed 4.20 V (near-full CV) to arm */
+#define X120X_CHG_VDROP_UV	  12000	/* >=12 mV drop off the charge peak = full     */
+
+/*
+ * Observer overshoot cap.  The OCV tables are extended above 100 % (continuing
+ * the top slope) so the observer can track the CV-charge overpotential region
+ * instead of railing at the 100 % clamp (which masked the real top-off charge
+ * power).  Internal SoC/energy may exceed 100 % up to this cap; the OCV feedback
+ * self-limits it to ~101-102 % at the CV terminal, so the cap is only a fault
+ * backstop.  The reported CAPACITY %/256 stay clamped to 100 (display).
+ */
+#define X120X_SOC_MAX_256	(110 * 256)	/* internal SoC may reach 110 % */
 
 /* Manufacturer and model name strings */
 #define X120X_MANUFACTURER		"SupTronics"
@@ -567,7 +589,10 @@ static const struct x120x_ocv_point x120x_ocv_charge[] = {
  * @n:  number of table entries.
  * @uv: cell voltage in microvolts.
  *
- * Linear interpolation, clamped to [0, 25600].
+ * Linear interpolation, clamped low at 0 but *extrapolated* above the top
+ * point along the top segment's slope up to X120X_SOC_MAX_256, so the observer
+ * can represent the CV-charge overpotential region as SoC > 100 % rather than
+ * railing at 100 %.
  */
 static int x120x_ocv_to_soc256(const struct x120x_ocv_point *t, int n, int uv)
 {
@@ -575,8 +600,14 @@ static int x120x_ocv_to_soc256(const struct x120x_ocv_point *t, int n, int uv)
 
 	if (uv <= t[0].uv)
 		return 0;
-	if (uv >= t[n - 1].uv)
-		return 100 * 256;
+	if (uv >= t[n - 1].uv) {
+		/* extrapolate above 100 % along the last segment's slope */
+		s64 dv = t[n - 1].uv - t[n - 2].uv;
+		s64 ds = t[n - 1].soc256 - t[n - 2].soc256;
+		int s = t[n - 1].soc256 +
+			(int)div_s64(ds * (uv - t[n - 1].uv), dv);
+		return min(s, X120X_SOC_MAX_256);
+	}
 
 	for (i = 1; i < n; i++) {
 		if (uv <= t[i].uv) {
@@ -622,8 +653,14 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
 
 	if (soc256 <= t[0].soc256)
 		return t[0].uv;
-	if (soc256 >= t[n - 1].soc256)
-		return t[n - 1].uv;
+	if (soc256 >= t[n - 1].soc256) {
+		/* extrapolate above 100 % along the last segment's slope so the
+		 * inferred current stays continuous when SoC overshoots full */
+		s64 ds = t[n - 1].soc256 - t[n - 2].soc256;
+		s64 dv = t[n - 1].uv - t[n - 2].uv;
+		return t[n - 1].uv +
+		       (int)div_s64(dv * (soc256 - t[n - 1].soc256), ds);
+	}
 
 	for (i = 1; i < n; i++) {
 		if (soc256 <= t[i].soc256) {
@@ -681,6 +718,7 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
  * @ocv_ema_uv:		EMA of cell voltage feeding the OCV lookup (0 = uninit)
  * @ocv_model_uv:	observer OCV(SoC) estimate in uV, exposed as hwmon in1 (0 = n/a)
  * @r_uohm:		resolved pack DC resistance in uohm (param or built-in default)
+ * @charge_peak_uv:	peak EMA terminal V while charging, for the V-drop full-detect (0 = not charging)
  * @obs_primed:		false until energy_now_uwh is seeded from the OCV lookup
  * @obs_prev_us:	ktime (us) of the previous observer step, for dt
  * @power_report_uw:	charge/discharge power reported to the ABI, in uW
@@ -724,6 +762,7 @@ struct x120x_chip {
 	int			 ocv_ema_uv;
 	int			 ocv_model_uv;
 	int			 r_uohm;
+	int			 charge_peak_uv;	/* V-drop full-detect: peak EMA V while charging */
 	bool			 obs_primed;
 	s64			 obs_prev_us;
 	int			 power_report_uw;	/* power reported to the ABI      */
@@ -1105,8 +1144,10 @@ static void x120x_poll_work(struct work_struct *work)
 		if (dt_us <= 0 || dt_us > 5LL * USEC_PER_SEC)
 			dt_us = (s64)X120X_POLL_MS * 1000;
 
+		/* OCV-lookup SoC may exceed 100 % (extended tables): the observer
+		 * tracks the CV overpotential region instead of railing at full. */
 		soc256 = clamp((int)div_s64(chip->energy_now_uwh * 25600, e_full),
-			       0, 100 * 256);
+			       0, X120X_SOC_MAX_256);
 		ocv_uv = x120x_soc256_to_ocv(soc256, charging);
 		ocv_model_uv = ocv_uv;		/* cache for hwmon in1 (committed under lock) */
 
@@ -1123,7 +1164,13 @@ static void x120x_poll_work(struct work_struct *work)
 		de_uwh = div64_s64(p_uw * dt_us, 3600LL * USEC_PER_SEC);
 		{
 			s64 prev_e = chip->energy_now_uwh;
-			s64 new_e  = clamp_t(s64, prev_e - de_uwh, 0, e_full);
+			/* Upper bound is the 110 % overshoot cap, not e_full: the
+			 * extended OCV self-limits the CV overshoot to ~101-102 %,
+			 * so energy only rails here on a fault.  Not railing at
+			 * e_full is what stops the top-off charge power being masked
+			 * as 0 W (the old clamp-at-100 bug). */
+			s64 e_max  = div_s64(e_full * X120X_SOC_MAX_256, 25600);
+			s64 new_e  = clamp_t(s64, prev_e - de_uwh, 0, e_max);
 
 			/*
 			 * If the state railed (full/empty), the excess dE did
@@ -1138,19 +1185,18 @@ static void x120x_poll_work(struct work_struct *work)
 		}
 
 		/*
-		 * No runtime gauge=100 pin.  The observer is left to settle to
-		 * its own OCV equilibrium at the top: on a full grid-on float the
-		 * energy clamp holds it at 100% until the terminal relaxes just
-		 * under 4.20 V, then SoC eases to ~99.9% where OCV(SoC)=V and the
-		 * reported power falls to ~0 — instead of a hard pin that would
-		 * hold a crisp 100% at the cost of a small phantom drain from the
-		 * residual OCV−V gap.  The OCV feedback bounds drift on its own
-		 * (validated: <0.1% over a 17 h float), so a runtime pin is not
-		 * needed.  The gauge=100 anchor survives only at driver start (the
-		 * seed block above), so a freshly-booted full pack still reads
-		 * 100% immediately instead of settling over a few minutes.  Charge
-		 * termination is unaffected — it keys on the raw gauge
-		 * (charge_full_since) in the charge-control path, not on this.
+		 * No runtime gauge=100 pin.  The observer settles to its own OCV
+		 * equilibrium at the top: while charging it tracks into the CV
+		 * overpotential region as SoC > 100 % (extended OCV, up to the
+		 * X120X_SOC_MAX_256 cap) instead of railing at full — so the real
+		 * top-off charge power is reported, not masked as 0 W.  When the
+		 * charger IC self-terminates the terminal drops, the observer eases
+		 * back to ~100 %/OCV equilibrium, and the V-drop detector in the
+		 * charge-control path inhibits.  Drift is OCV-bounded (validated
+		 * <0.1 % over a 17 h float); the gauge=100 anchor survives only at
+		 * driver start (seed block above) so a freshly-booted full pack
+		 * reads 100 % immediately.  Internal SoC may exceed 100 %; the
+		 * *reported* CAPACITY %/256 (new_pct/new_256) stay clamped to 100.
 		 */
 
 		new_256 = clamp((int)div_s64(chip->energy_now_uwh * 25600, e_full),
@@ -1441,7 +1487,7 @@ static void x120x_poll_work(struct work_struct *work)
 	 */
 	if (chip->gpio_chrg) {
 		int start_thr, end_thr, soc_band, soc_band_256;
-		bool full_target, want_inhibit;
+		bool full_target, want_inhibit, vdrop_full = false;
 
 		if (conservation_mode_snap) {
 			/* Long Life: user-configured band */
@@ -1476,6 +1522,28 @@ static void x120x_poll_work(struct work_struct *work)
 		 * word makes both edges hit the true SoC — an exact [start, end].
 		 */
 		soc_band_256 = full_target ? raw_soc_256_snap : capacity_256_snap;
+
+		/*
+		 * Charge-IC self-termination detector (voltage model, 100 %
+		 * target, on grid, charger currently on).  Track the peak of the
+		 * EMA terminal while charging; once it has climbed into the CV
+		 * zone (>= ARM), a drop of >= VDROP off that peak means the IC
+		 * stopped delivering current — the pack is full.  Fires at the
+		 * real termination, ahead of the gauge=100 debounce.  The EMA
+		 * (tau ~16 s) rejects load transients; gated on new_ac so a grid
+		 * loss (which also drops V) can never look like "full".
+		 */
+		if (chip->soc_src == X120X_SOC_SRC_VOLTAGE && full_target &&
+		    new_ac && !chip->charger_inhibited) {
+			if (chip->ocv_ema_uv > chip->charge_peak_uv)
+				chip->charge_peak_uv = chip->ocv_ema_uv;
+			if (chip->charge_peak_uv >= X120X_CHG_VDROP_ARM_UV &&
+			    chip->charge_peak_uv - chip->ocv_ema_uv >=
+			    X120X_CHG_VDROP_UV)
+				vdrop_full = true;
+		} else {
+			chip->charge_peak_uv = 0;	/* reset when not charging */
+		}
 
 		/*
 		 * Two-threshold hysteresis.  Stop edge:
@@ -1519,6 +1587,17 @@ static void x120x_poll_work(struct work_struct *work)
 		 */
 		if (seeding)
 			want_inhibit = true;
+
+		/*
+		 * Charge-IC self-termination: inhibit at the real full, ahead of
+		 * (and independent of) the gauge=100 band edge.  Clear the gauge
+		 * debounce so a later gauge=100 doesn't re-arm anything.
+		 */
+		if (vdrop_full) {
+			want_inhibit = true;
+			chip->charge_full_since = 0;
+			chip->charge_peak_uv    = 0;
+		}
 
 		if (want_inhibit != chip->charger_inhibited) {
 			x120x_gpio_set(chip->gpio_chrg, want_inhibit ? 1 : 0);
@@ -2998,7 +3077,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.13");
+MODULE_VERSION("0.5.14");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

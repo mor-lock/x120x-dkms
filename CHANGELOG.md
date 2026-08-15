@@ -14,6 +14,32 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.14 — Extended-OCV observer (SoC>100%) + charge-IC self-termination detector
+
+**Kernel driver — experimental, on-hardware trial**
+- **OCV tables extended above 100%.** Both branches now extrapolate past the
+  top point along the top-segment slope (charge ~15.3 mV/%, discharge
+  ~13.5 mV/%) up to `X120X_SOC_MAX_256` (110%), instead of clamping. The
+  observer can now *track* the CV-charge overpotential region as SoC > 100%
+  rather than railing at the 100% energy clamp — which is what masked the real
+  top-off charge power as 0 W (and corrupted powerd's `pi = c3 − bat`). The OCV
+  feedback self-limits the overshoot to ~101–102% at the CV terminal, so the
+  110% cap is only a fault backstop. Internal SoC/energy may exceed 100%; the
+  **reported CAPACITY %/256 stay clamped to 100** (display unchanged for now).
+- **Charge-IC self-termination detector.** GPIO16 only enables a charger IC
+  that runs its own CC/CV/terminate; at full it stops itself while the GPIO is
+  still asserted, dropping the terminal by the vanished IR (~15–30 mV). New
+  detector (voltage model, 100% target, on grid, charger on): track the peak
+  EMA terminal V; once it exceeds `X120X_CHG_VDROP_ARM_UV` (4.20 V, CV zone) a
+  drop of ≥ `X120X_CHG_VDROP_UV` (12 mV) off that peak → the IC self-terminated
+  → **inhibit at the real full**, ahead of the gauge=100 debounce (kept as a
+  backstop). Gated on `ac_online` so a grid loss can't look like "full"; the
+  EMA (τ≈16 s) rejects load transients.
+- On grid loss the observer switches to the (now-extended) discharge branch
+  automatically via the `charging` flag — covering "grid drops while internal
+  SoC > 100%" with no kink. The charger is deliberately **not** force-enabled on
+  grid loss (an enabled IC draws quiescent from the pack during an outage).
+
 #### v0.5.13 — Gauge=100 anchor at startup only (drop the runtime pin)
 
 **Kernel driver**

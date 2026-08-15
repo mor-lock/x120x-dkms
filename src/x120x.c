@@ -1158,6 +1158,17 @@ static void x120x_poll_work(struct work_struct *work)
 		p_uw = div_s64(i_ua * chip->ocv_ema_uv, 1000000LL);
 		p_uw = clamp_t(s64, p_uw, -(s64)X120X_POWER_MAX_UW,
 			       -(s64)X120X_POWER_MIN_UW);
+		/*
+		 * Charger off on grid (float): the pack physically cannot be
+		 * charging, so a negative (charge) p_uw is the post-cut terminal
+		 * relaxation — the surface charge decaying — misread as a charge
+		 * current.  Clamp charge power to 0 so it neither integrates a
+		 * phantom top-up (SoC creeping up while resting) nor reports one
+		 * (which powerd subtracts from c3, under-reading the Pi).  A real
+		 * parasitic discharge (p_uw > 0) still integrates normally.
+		 */
+		if (new_ac && chip->charger_inhibited && p_uw < 0)
+			p_uw = 0;
 		/* dE (µWh) = P(µW) × dt(µs) / 3.6e9 ; discharge (P>0) lowers E.
 		 * div64_s64: the divisor 3.6e9 exceeds s32, so div_s64 (32-bit
 		 * divisor) would wrap it — use the 64-bit-divisor variant. */
@@ -1816,10 +1827,12 @@ static int x120x_battery_get_property(struct power_supply *psy,
 		/*
 		 * energy_now in µWh.  The power_supply ABI uses µWh as the
 		 * unit for energy properties (confusingly named _NOW/_FULL).
-		 * Clamp to [energy_empty, energy_full] to avoid impossible
-		 * values from rounding.
+		 * Reported up to the observer's 110 % overshoot cap (not clamped
+		 * at energy_full) so the CV-charge overshoot above 100 % is
+		 * visible in userspace; UPower clamps its own icon at 100 %.
 		 */
-		val->intval = (int)clamp(energy_now_uwh, (s64)0, energy_full_uwh);
+		val->intval = (int)clamp(energy_now_uwh, (s64)0,
+			div_s64(energy_full_uwh * X120X_SOC_MAX_256, 25600));
 		break;
 
 	case POWER_SUPPLY_PROP_ENERGY_FULL:
@@ -3077,7 +3090,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.14");
+MODULE_VERSION("0.5.15");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

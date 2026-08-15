@@ -14,6 +14,19 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.15 — Extended-OCV trial fixes: visible overshoot + no-charge-when-off
+
+**Kernel driver — experimental (follows v0.5.14 on-hardware trial)**
+- `ENERGY_NOW` is no longer clamped at `energy_full` — it reports up to the
+  110% overshoot cap, so the CV-charge overshoot above 100% is now visible in
+  userspace (powerd `soc_pct`); UPower clamps its own icon at 100%.
+- No phantom charge while the charger is off.  On grid with the charger
+  inhibited (float) the pack cannot charge, so a negative (charge) observer
+  power is the post-cut terminal relaxation (surface charge decaying) misread
+  as current.  Clamp charge power to 0 there, so it neither integrates a
+  phantom top-up nor reports one — fixing the Pi power being under-read (via
+  powerd's `pi = c3 - bat`) for the minute or two after the charger cuts.
+
 #### v0.5.14 — Extended-OCV observer (SoC>100%) + charge-IC self-termination detector
 
 **Kernel driver — experimental, on-hardware trial**

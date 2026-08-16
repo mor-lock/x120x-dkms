@@ -14,6 +14,24 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.18 — Float reseed (kill the quantization sawtooth)
+
+**Kernel driver — experimental**
+- On grid with the charger inhibited (float), the pack is resting and the
+  only current is the sub-LSB parasitic, so integrating `I=(OCV-V)/R` there
+  just chases ADC quantization: each ~1 LSB (1.25 mV) terminal step becomes
+  a ~0.15 W blip that decays over ~20 min (the float 'sawtooth').  In the
+  float the observer now reseeds SoC from the discharge-branch OCV and
+  reports 0 W — the same OCV-trust the boot settle uses — so SoC tracks the
+  terminal smoothly and the sawtooth is gone.
+- Gated strictly on grid-present + charger-inhibited, so charging (charger
+  enabled, terminal IR-lifted) and outage (grid off) both integrate normally
+  and are untouched.  Simulation: reseed-in-float drives the reported power
+  p2p from ~220 mW to 0; slower voltage/output EMAs barely helped (the blip
+  is a ~20 min observer transient, not fast noise) and a naive deadband made
+  it worse.  SoC is **not** clamped (the top-of-charge level is a separate
+  decision) — the float still reads its true voltage-derived value.
+
 #### v0.5.17 — Active boot charge-probe (retire the gauge=100 anchor)
 
 **Kernel driver — experimental**

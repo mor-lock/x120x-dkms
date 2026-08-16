@@ -1022,6 +1022,7 @@ static void x120x_poll_work(struct work_struct *work)
 	int new_uv, new_pct, new_256, new_ac, ret;
 	bool seeding = false;	/* true during the boot seed-settle window (charger held off) */
 	bool probing = false;	/* true during the boot charge-probe (charger toggled to detect full) */
+	bool floating = false;	/* true on grid + charger inhibited: reseed from OCV, report 0 W */
 	bool new_present;
 	bool bat_changed = false, ac_changed = false, chrg_changed = false;
 	/* Snapshots of shared chip state taken under the lock and used
@@ -1182,6 +1183,20 @@ static void x120x_poll_work(struct work_struct *work)
 		 */
 		probing = chip->probe_until != 0;
 
+		/*
+		 * Float reseed.  On grid with the charger inhibited the pack is
+		 * resting (grid carries the load; the only current is the sub-LSB
+		 * parasitic).  Integrating I=(OCV-V)/R there just chases ADC
+		 * quantization — a ~1 LSB terminal step becomes a ~0.15 W blip
+		 * that takes ~20 min to decay (the float sawtooth).  So in the
+		 * float, trust the terminal directly: reseed SoC from OCV(V) and
+		 * report 0 W, exactly as the boot settle does.  Charging (charger
+		 * enabled) and outage (grid off) both fall out of this and
+		 * integrate normally, so real events are untouched.
+		 */
+		floating = new_ac && chip->charger_inhibited &&
+			   !seeding && !probing;
+
 		/* dt since last step; guard gaps (resume, missed polls). */
 		dt_us = obs_now_us - chip->obs_prev_us;
 		chip->obs_prev_us = obs_now_us;
@@ -1262,16 +1277,18 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->energy_rate_uw = clamp((int)-p_uw, X120X_POWER_MIN_UW,
 					     X120X_POWER_MAX_UW);
 
-		if (seeding || probing) {
+		if (seeding || probing || floating) {
 			/*
-			 * Seed settle / boot probe: override the integral with a
-			 * fresh OCV seed.  The charger is held off (settle) or
-			 * toggled (probe); either way seed from the discharge-
-			 * branch OCV — on grid from the rested terminal, off grid
-			 * add the nominal drain IR back.  Report 0 W (not
-			 * integrating).  During the probe reveal phase the terminal
-			 * is briefly charge-lifted so the seed reads a touch high,
-			 * but it lands on the true rested SoC by the probe's end.
+			 * Seed settle / boot probe / float: override the integral
+			 * with a fresh OCV seed.  The charger is held off (settle),
+			 * toggled (probe), or inhibited on grid (float); either way
+			 * seed from the discharge-branch OCV — on grid from the
+			 * rested terminal, off grid add the nominal drain IR back.
+			 * Report 0 W (not integrating).  During the probe reveal
+			 * phase the terminal is briefly charge-lifted so the seed
+			 * reads a touch high, but it lands on the true rested SoC by
+			 * the probe's end.  In the float this tracks the terminal
+			 * smoothly and kills the quantization sawtooth.
 			 */
 			int seed_uv = new_ac ? chip->ocv_ema_uv
 				: chip->ocv_ema_uv + (int)div_s64(
@@ -3190,7 +3207,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.17");
+MODULE_VERSION("0.5.18");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

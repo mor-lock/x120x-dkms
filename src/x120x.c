@@ -1150,8 +1150,16 @@ static void x120x_poll_work(struct work_struct *work)
 				 * => inhibit; a drop => was charging => top up and let
 				 * the V-drop terminate it.  SoC is re-seeded from the
 				 * discharge-branch OCV across the probe (accurate once
-				 * the terminal rests at the end).
+				 * the terminal rests at the end).  The reveal phase runs
+				 * the normal observer loop on the charge branch, so seed
+				 * energy from the current terminal on that same branch
+				 * (I=0 at the seed, no phantom): a real top-up then lifts
+				 * the terminal above OCV and is measured; a full pack
+				 * stays at OCV and reads ~0 W.
 				 */
+				chip->energy_now_uwh = div_s64(e_full *
+					x120x_voltage_soc256(chip->ocv_ema_uv, charging),
+					25600);
 				chip->probe_until   = jiffies +
 					msecs_to_jiffies(X120X_PROBE_CHG_MS);
 				chip->probe_resting = false;
@@ -1277,18 +1285,19 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->energy_rate_uw = clamp((int)-p_uw, X120X_POWER_MIN_UW,
 					     X120X_POWER_MAX_UW);
 
-		if (seeding || probing || floating) {
+		if (seeding || (probing && chip->probe_resting) || floating) {
 			/*
-			 * Seed settle / boot probe / float: override the integral
-			 * with a fresh OCV seed.  The charger is held off (settle),
-			 * toggled (probe), or inhibited on grid (float); either way
-			 * seed from the discharge-branch OCV — on grid from the
-			 * rested terminal, off grid add the nominal drain IR back.
-			 * Report 0 W (not integrating).  During the probe reveal
-			 * phase the terminal is briefly charge-lifted so the seed
-			 * reads a touch high, but it lands on the true rested SoC by
-			 * the probe's end.  In the float this tracks the terminal
-			 * smoothly and kills the quantization sawtooth.
+			 * Seed settle / probe measure phase / float: override the
+			 * integral with a fresh OCV seed and report 0 W.  The charger
+			 * is inhibited in all three (held off in the settle, toggled
+			 * off during the probe's measure phase, inhibited on grid in
+			 * the float), so there is no real current — seed from the
+			 * discharge-branch OCV (on grid from the rested terminal, off
+			 * grid add the nominal drain IR back).  In the float this
+			 * tracks the terminal smoothly and kills the quantization
+			 * sawtooth.  The probe *reveal* phase is deliberately NOT here
+			 * — the charger is on and topping up, so that runs the normal
+			 * observer loop and the charge power is measured, not zeroed.
 			 */
 			int seed_uv = new_ac ? chip->ocv_ema_uv
 				: chip->ocv_ema_uv + (int)div_s64(
@@ -3207,7 +3216,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.18");
+MODULE_VERSION("0.5.19");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

@@ -14,6 +14,19 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.19 — Measure charge power during the probe reveal phase
+
+**Kernel driver — experimental**
+- Fix: the probe *reveal* phase holds the charger **on** and tops the pack
+  up, but v0.5.18 zeroed the observer power for the whole probe, so that
+  top-up charge was reported as 0 W and powerd mis-attributed all of it to
+  the Pi (`pi = c3 - bat`).  The OCV-reseed/0 W override now applies only to
+  the probe **measure** phase (charger toggled off) — the reveal phase runs
+  the normal observer loop, so real top-up power is measured.  Energy is
+  seeded at boot from the current terminal on the charge branch (I=0 at the
+  seed, no phantom); a genuine top-up lifts the terminal and is measured, a
+  full pack stays at OCV and reads ~0 W.
+
 #### v0.5.18 — Float reseed (kill the quantization sawtooth)
 
 **Kernel driver — experimental**

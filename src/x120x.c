@@ -333,6 +333,7 @@ MODULE_PARM_DESC(pack_resistance_mohm,
  * ~16 s EMA tau so the drop settles; _DROP_UV sits below the CV surface-charge
  * relaxation so a genuine charge is never missed (erring toward a small top-off).
  */
+#define X120X_EDGE_BLANK_MS	 1500	/* after a charger/grid edge, freeze V̄ this long then snap (IR step settle) */
 #define X120X_PROBE_CHG_MS	40000	/* hold charger on to reveal charging */
 #define X120X_PROBE_REST_MS	25000	/* then inhibit and watch for the drop */
 #define X120X_PROBE_DROP_UV	 10000	/* >=10 mV drop over the rest = was charging */
@@ -729,7 +730,10 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
  * @work:		delayed work item driving the polling loop
  * @heartbeat_ticks:	poll ticks left until a forced power_supply_changed()
  * @hwmon_dev:		hwmon device exposing voltage/power to sensors
- * @seed_settle_until:	jiffies to hold charger off and seed SoC from OCV; 0 = not settling
+ * @seed_settle_until:	jiffies to hold charger off and OCV-pin SoC (boot re-anchor); 0 = not settling
+ * @prev_ac:		last poll's ac_online, for detecting a grid control-edge
+ * @prev_chg_inh:	last poll's charger_inhibited, for detecting a charger control-edge
+ * @blank_until:	jiffies to freeze V̄ and hold SoC after a control-edge (IR-step settle); 0 = none
  * @soc_src:		SoC source: voltage OCV observer vs raw fuel gauge
  * @ocv_ema_uv:		EMA of cell voltage feeding the OCV lookup (0 = uninit)
  * @ocv_model_uv:	observer OCV(SoC) estimate in uV, exposed as hwmon in1 (0 = n/a)
@@ -766,7 +770,10 @@ struct x120x_chip {
 	bool			 conservation_mode;	/* true = Long life, threshold hysteresis active */
 	bool			 charger_inhibited;	/* cached GPIO16 state: true = high (stopped) */
 	unsigned long		 charge_full_since;	/* jiffies the gauge first read full (100%-target debounce); 0 = not full */
-	unsigned long		 seed_settle_until;	/* jiffies: hold charger off & seed from OCV until here; 0 = not settling */
+	unsigned long		 seed_settle_until;	/* jiffies: boot OCV-pin settle until here; 0 = not settling */
+	bool			 prev_ac;		/* last poll's ac_online, for control-edge detection */
+	bool			 prev_chg_inh;		/* last poll's charger_inhibited, for control-edge detection */
+	unsigned long		 blank_until;		/* jiffies: post-edge settle blank (freeze V̄, hold) until here; 0 = none */
 	bool			 present;
 	int			 i2c_errors;
 
@@ -1020,9 +1027,10 @@ static void x120x_poll_work(struct work_struct *work)
 		container_of(work, struct x120x_chip, work.work);
 	unsigned int vcell_raw, soc_raw;
 	int new_uv, new_pct, new_256, new_ac, ret;
-	bool seeding = false;	/* true during the boot seed-settle window (charger held off) */
-	bool probing = false;	/* true during the boot charge-probe (charger toggled to detect full) */
-	bool floating = false;	/* true on grid + charger inhibited: reseed from OCV, report 0 W */
+	bool seeding = false;	/* true during the boot OCV-pin settle (charger held off) */
+	bool floating = false;	/* true on grid + charger inhibited (running): hold SoC, report 0 W */
+	bool edge = false;	/* true this poll: charger/grid state just changed */
+	bool blanking = false;	/* true during the post-edge settle blank (V̄ frozen, hold) */
 	bool new_present;
 	bool bat_changed = false, ac_changed = false, chrg_changed = false;
 	/* Snapshots of shared chip state taken under the lock and used
@@ -1114,14 +1122,32 @@ static void x120x_poll_work(struct work_struct *work)
 		bool charging = new_ac && !chip->charger_inhibited;
 
 		/*
-		 * Warm the voltage EMA every poll (τ ≈ 16 s, α = 1/32).  The
-		 * +16 (half-LSB) rounds the truncating shift to nearest, so the
-		 * EMA settles on the true voltage instead of stalling up to
-		 * ~31 µV below it.  Equivalent to (31*V̄ + V + 16) >> 5.
+		 * Known control edge: the charger toggled or the grid flipped
+		 * since last poll.  The terminal steps by I·R about a poll later
+		 * (the command precedes the physics), so blank a short window
+		 * then snap V̄ to the settled terminal — the IR step lands in the
+		 * current immediately, not 16 s later via the EMA.  Between edges
+		 * the EMA (τ ≈ 16 s, α = 1/32; +16 rounds the shift to nearest)
+		 * smooths the quantised MAX17043 reading.
 		 */
+		edge = (new_ac != chip->prev_ac) ||
+		       (chip->charger_inhibited != chip->prev_chg_inh);
+		chip->prev_ac      = new_ac;
+		chip->prev_chg_inh = chip->charger_inhibited;
+		if (edge)
+			chip->blank_until = jiffies +
+				msecs_to_jiffies(X120X_EDGE_BLANK_MS);
+		blanking = chip->blank_until &&
+			   time_before(jiffies, chip->blank_until);
+
 		if (chip->ocv_ema_uv == 0)
 			chip->ocv_ema_uv = new_uv;
-		else
+		else if (blanking)
+			;			/* freeze V̄ through the command→IR skew */
+		else if (chip->blank_until) {	/* blank just expired: snap */
+			chip->ocv_ema_uv  = new_uv;
+			chip->blank_until = 0;
+		} else
 			chip->ocv_ema_uv += (new_uv - chip->ocv_ema_uv + 16) >> 5;
 
 		/*
@@ -1132,78 +1158,47 @@ static void x120x_poll_work(struct work_struct *work)
 		 * rested pack reads true SoC and a wrong seed can't trip a charge.
 		 */
 		if (!chip->obs_primed) {
-			if (chip->ocv_ema_uv <= X120X_SEED_EMPTY_UV) {
-				/*
-				 * Near-empty: seed 0% and let it charge at once —
-				 * never hold the charger off on a critical pack.
-				 */
-				chip->energy_now_uwh    = 0;
-				chip->seed_settle_until = 0;
-			} else if (new_ac &&
-				   (!chip->conservation_mode ||
-				    conservation_end >= 100)) {
-				/*
-				 * Full-target on grid: don't trust the gauge — run
-				 * the active charge-probe.  Hold the charger on to
-				 * reveal whether it's actually charging, then toggle
-				 * off and watch for the drop: no drop => already full
-				 * => inhibit; a drop => was charging => top up and let
-				 * the V-drop terminate it.  SoC is re-seeded from the
-				 * discharge-branch OCV across the probe (accurate once
-				 * the terminal rests at the end).  The reveal phase runs
-				 * the normal observer loop on the charge branch, so seed
-				 * energy from the current terminal on that same branch
-				 * (I=0 at the seed, no phantom): a real top-up then lifts
-				 * the terminal above OCV and is measured; a full pack
-				 * stays at OCV and reads ~0 W.
-				 */
-				chip->energy_now_uwh = div_s64(e_full *
-					x120x_voltage_soc256(chip->ocv_ema_uv, charging),
+			/*
+			 * Boot re-anchor.  Always seed SoC from the terminal's
+			 * discharge OCV so a boot in any state (including off grid)
+			 * starts sane.  If not near-empty, also arm a 5-min settle:
+			 * on grid it holds the charger off and OCV-pins SoC while
+			 * the terminal relaxes to its true rested OCV — an accurate
+			 * re-anchor for a partial pack.  Off grid the seed stands
+			 * and the discharge OCV feedback self-corrects.  No probe.
+			 * (A full pack's terminal stays rail-high and reads a touch
+			 * over 100 %; the next V-drop anchors it exactly.)
+			 */
+			chip->energy_now_uwh =
+				chip->ocv_ema_uv <= X120X_SEED_EMPTY_UV ? 0 :
+				div_s64(e_full *
+					x120x_voltage_soc256(chip->ocv_ema_uv, false),
 					25600);
-				chip->probe_until   = jiffies +
-					msecs_to_jiffies(X120X_PROBE_CHG_MS);
-				chip->probe_resting = false;
-				chip->probe_peak_uv = 0;
-				chip->seed_settle_until = 0;
-			} else {
-				/*
-				 * Off grid, or a sub-100 target: settle — hold the
-				 * charger off and seed from OCV (the probe needs the
-				 * charger, so it doesn't apply here).
-				 */
+			if (chip->ocv_ema_uv > X120X_SEED_EMPTY_UV)
 				chip->seed_settle_until = jiffies +
 					msecs_to_jiffies(X120X_SEED_SETTLE_MS);
-			}
 			chip->obs_prev_us = obs_now_us;
 			chip->obs_primed  = true;
 		}
 
+		/*
+		 * Boot settle window: OCV-pin only while on grid.  If grid is
+		 * absent at boot or drops during the window, seeding falls false
+		 * and we integrate the discharge normally (self-correcting and
+		 * stable) instead of pinning — the settle then stays aborted.
+		 */
 		seeding = chip->seed_settle_until &&
-			  time_before(jiffies, chip->seed_settle_until);
+			  time_before(jiffies, chip->seed_settle_until) && new_ac;
 		if (!seeding)
 			chip->seed_settle_until = 0;
 
 		/*
-		 * The boot charge-probe also holds the observer on an OCV seed
-		 * (report 0 W, don't integrate) while it toggles the charger, so
-		 * the SoC isn't corrupted by the reveal-phase charge lift; it
-		 * lands on the rested discharge-branch OCV at the end.
+		 * Regime hold (float): running, on grid, charger inhibited — the
+		 * pack rests, so hold SoC and report 0 W (no quantization
+		 * sawtooth, no post-charge phantom).  Charging and outage fall
+		 * out and integrate normally.  The boot settle takes precedence.
 		 */
-		probing = chip->probe_until != 0;
-
-		/*
-		 * Float reseed.  On grid with the charger inhibited the pack is
-		 * resting (grid carries the load; the only current is the sub-LSB
-		 * parasitic).  Integrating I=(OCV-V)/R there just chases ADC
-		 * quantization — a ~1 LSB terminal step becomes a ~0.15 W blip
-		 * that takes ~20 min to decay (the float sawtooth).  So in the
-		 * float, trust the terminal directly: reseed SoC from OCV(V) and
-		 * report 0 W, exactly as the boot settle does.  Charging (charger
-		 * enabled) and outage (grid off) both fall out of this and
-		 * integrate normally, so real events are untouched.
-		 */
-		floating = new_ac && chip->charger_inhibited &&
-			   !seeding && !probing;
+		floating = new_ac && chip->charger_inhibited && !seeding;
 
 		/* dt since last step; guard gaps (resume, missed polls). */
 		dt_us = obs_now_us - chip->obs_prev_us;
@@ -1226,15 +1221,14 @@ static void x120x_poll_work(struct work_struct *work)
 		p_uw = clamp_t(s64, p_uw, -(s64)X120X_POWER_MAX_UW,
 			       -(s64)X120X_POWER_MIN_UW);
 		/*
-		 * Charger off on grid (float): the pack physically cannot be
-		 * charging, so a negative (charge) p_uw is the post-cut terminal
-		 * relaxation — the surface charge decaying — misread as a charge
-		 * current.  Clamp charge power to 0 so it neither integrates a
-		 * phantom top-up (SoC creeping up while resting) nor reports one
-		 * (which powerd subtracts from c3, under-reading the Pi).  A real
-		 * parasitic discharge (p_uw > 0) still integrates normally.
+		 * Regime hold: in the float (resting on grid), during an edge
+		 * blank (terminal mid-step), or in the boot settle there is no
+		 * real current to integrate.  Force p=0 so SoC is held (dE=0)
+		 * and the reported power is 0 — no quantisation sawtooth, no
+		 * post-charge phantom, no half-stepped-terminal glitch.  Real
+		 * charge and outage discharge (none of these) integrate normally.
 		 */
-		if (new_ac && chip->charger_inhibited && p_uw < 0)
+		if (floating || blanking || seeding)
 			p_uw = 0;
 		/* dE (µWh) = P(µW) × dt(µs) / 3.6e9 ; discharge (P>0) lowers E.
 		 * div64_s64: the divisor 3.6e9 exceeds s32, so div_s64 (32-bit
@@ -1285,25 +1279,15 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->energy_rate_uw = clamp((int)-p_uw, X120X_POWER_MIN_UW,
 					     X120X_POWER_MAX_UW);
 
-		if (seeding || (probing && chip->probe_resting) || floating) {
+		if (seeding) {
 			/*
-			 * Seed settle / probe measure phase / float: override the
-			 * integral with a fresh OCV seed and report 0 W.  The charger
-			 * is inhibited in all three (held off in the settle, toggled
-			 * off during the probe's measure phase, inhibited on grid in
-			 * the float), so there is no real current — seed from the
-			 * discharge-branch OCV (on grid from the rested terminal, off
-			 * grid add the nominal drain IR back).  In the float this
-			 * tracks the terminal smoothly and kills the quantization
-			 * sawtooth.  The probe *reveal* phase is deliberately NOT here
-			 * — the charger is on and topping up, so that runs the normal
-			 * observer loop and the charge power is measured, not zeroed.
+			 * Boot settle: OCV-pin.  The charger is held off (charge
+			 * control), so the terminal relaxes toward its true rested
+			 * OCV over the window — pin SoC to the discharge-branch OCV
+			 * of the terminal each poll (seeding is on-grid only).  This
+			 * is the re-anchor; it reports 0 W and holds no phantom.
 			 */
-			int seed_uv = new_ac ? chip->ocv_ema_uv
-				: chip->ocv_ema_uv + (int)div_s64(
-					(s64)X120X_SEED_DIS_UW * chip->r_uohm,
-					max(chip->ocv_ema_uv, 1));
-			int seed = x120x_voltage_soc256(seed_uv, false);
+			int seed = x120x_voltage_soc256(chip->ocv_ema_uv, false);
 
 			chip->energy_now_uwh = div_s64(e_full * seed, 25600);
 			new_256 = clamp((int)div_s64(chip->energy_now_uwh *
@@ -1681,6 +1665,14 @@ static void x120x_poll_work(struct work_struct *work)
 			want_inhibit = true;
 			chip->charge_full_since = 0;
 			chip->charge_peak_uv    = 0;
+			/*
+			 * V-drop = the IC declared full = the one on-grid SoC
+			 * reference we trust.  Anchor the observer integral to
+			 * 100% here (the coulomb counter's top re-calibration);
+			 * the discharge OCV feedback handles the bottom.
+			 */
+			if (chip->soc_src == X120X_SOC_SRC_VOLTAGE)
+				chip->energy_now_uwh = chip->energy_full_uwh;
 		}
 
 		/*
@@ -3216,7 +3208,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.19");
+MODULE_VERSION("0.5.20");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

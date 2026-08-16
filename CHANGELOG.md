@@ -14,6 +14,29 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.20 — Event-triggered observer (regime-hold + edge-snap + V-drop anchor)
+
+**Kernel driver — experimental (major observer/charge rework)**
+- SoC is now a pure continuous coulomb integral that never reseeds at
+  runtime (so it cannot jump), with the regime taken from the known control
+  state:
+  - **float** (on grid + charger inhibited): current is known ~0, so SoC is
+    held and power reported 0 — no quantization sawtooth, no post-charge
+    phantom.
+  - **charge / outage**: integrate `I=(OCV-V)/R` normally.
+- **Edge-snap + settle-blank**: at each known charger/grid edge, freeze V̄ for
+  `X120X_EDGE_BLANK_MS` (1.5 s, the command→IR-step skew) then snap it to the
+  settled terminal — the IR step lands in the current immediately instead of
+  lagging 16 s through the EMA.
+- **V-drop anchor**: the IC self-termination (`vdrop_full`) is the one trusted
+  on-grid reference — anchor the integral to 100% there (top re-calibration);
+  discharge OCV feedback handles the bottom, the 3.0 V floor stays the safety.
+- **Boot re-anchor**: seed SoC from the terminal OCV (sane in any state incl.
+  off grid); if not near-empty, arm a 5-min settle that holds the charger off
+  and OCV-pins SoC while the terminal relaxes to its true rested OCV. Grid
+  absent/lost during the settle → fall through to normal discharge. Removes
+  the boot charge-probe (probe machinery now dead code, to be excised).
+
 #### v0.5.19 — Measure charge power during the probe reveal phase
 
 **Kernel driver — experimental**

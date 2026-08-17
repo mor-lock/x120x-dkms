@@ -320,6 +320,7 @@ MODULE_PARM_DESC(pack_resistance_mohm,
  */
 #define X120X_CHG_VDROP_ARM_UV	4200000	/* V must exceed 4.20 V (near-full CV) to arm */
 #define X120X_CHG_VDROP_UV	  12000	/* >=12 mV drop off the charge peak = full     */
+#define X120X_VDROP_INHIBIT_DELAY_MS 1800000 /* keep charging 30 min after the V-drop before inhibiting */
 
 /*
  * Boot charge-probe.  Rather than trust the gauge to say "full" at reload, on a
@@ -734,6 +735,7 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
  * @prev_ac:		last poll's ac_online, for detecting a grid control-edge
  * @prev_chg_inh:	last poll's charger_inhibited, for detecting a charger control-edge
  * @blank_until:	jiffies to freeze V̄ and hold SoC after a control-edge (IR-step settle); 0 = none
+ * @vdrop_since:	jiffies of the first V-drop this charge cycle; 0 = none (delays the charger inhibit)
  * @soc_src:		SoC source: voltage OCV observer vs raw fuel gauge
  * @ocv_ema_uv:		EMA of cell voltage feeding the OCV lookup (0 = uninit)
  * @ocv_model_uv:	observer OCV(SoC) estimate in uV, exposed as hwmon in1 (0 = n/a)
@@ -774,6 +776,7 @@ struct x120x_chip {
 	bool			 prev_ac;		/* last poll's ac_online, for control-edge detection */
 	bool			 prev_chg_inh;		/* last poll's charger_inhibited, for control-edge detection */
 	unsigned long		 blank_until;		/* jiffies: post-edge settle blank (freeze V̄, hold) until here; 0 = none */
+	unsigned long		 vdrop_since;		/* jiffies of the first V-drop this charge; 0 = none (delays inhibit) */
 	bool			 present;
 	int			 i2c_errors;
 
@@ -1028,7 +1031,6 @@ static void x120x_poll_work(struct work_struct *work)
 	unsigned int vcell_raw, soc_raw;
 	int new_uv, new_pct, new_256, new_ac, ret;
 	bool seeding = false;	/* true during the boot OCV-pin settle (charger held off) */
-	bool floating = false;	/* true on grid + charger inhibited (running): hold SoC, report 0 W */
 	bool edge = false;	/* true this poll: charger/grid state just changed */
 	bool blanking = false;	/* true during the post-edge settle blank (V̄ frozen, hold) */
 	bool new_present;
@@ -1192,13 +1194,6 @@ static void x120x_poll_work(struct work_struct *work)
 		if (!seeding)
 			chip->seed_settle_until = 0;
 
-		/*
-		 * Regime hold (float): running, on grid, charger inhibited — the
-		 * pack rests, so hold SoC and report 0 W (no quantization
-		 * sawtooth, no post-charge phantom).  Charging and outage fall
-		 * out and integrate normally.  The boot settle takes precedence.
-		 */
-		floating = new_ac && chip->charger_inhibited && !seeding;
 
 		/* dt since last step; guard gaps (resume, missed polls). */
 		dt_us = obs_now_us - chip->obs_prev_us;
@@ -1221,14 +1216,15 @@ static void x120x_poll_work(struct work_struct *work)
 		p_uw = clamp_t(s64, p_uw, -(s64)X120X_POWER_MAX_UW,
 			       -(s64)X120X_POWER_MIN_UW);
 		/*
-		 * Regime hold: in the float (resting on grid), during an edge
-		 * blank (terminal mid-step), or in the boot settle there is no
-		 * real current to integrate.  Force p=0 so SoC is held (dE=0)
-		 * and the reported power is 0 — no quantisation sawtooth, no
-		 * post-charge phantom, no half-stepped-terminal glitch.  Real
-		 * charge and outage discharge (none of these) integrate normally.
+		 * Hold only during an edge blank (terminal mid-step) or the boot
+		 * settle — force p=0 so a half-stepped terminal or the settle
+		 * can't inject a bogus current.  The float now runs normal
+		 * discharge integration (self-correcting via OCV feedback); the
+		 * edge-snap already gives it the regime-transition step directly,
+		 * so the power reflects the IR step, not the EMA lag.  A better
+		 * dedicated float scheme is still TODO.
 		 */
-		if (floating || blanking || seeding)
+		if (blanking || seeding)
 			p_uw = 0;
 		/* dE (µWh) = P(µW) × dt(µs) / 3.6e9 ; discharge (P>0) lowers E.
 		 * div64_s64: the divisor 3.6e9 exceeds s32, so div_s64 (32-bit
@@ -1661,18 +1657,27 @@ static void x120x_poll_work(struct work_struct *work)
 		 * (and independent of) the gauge=100 band edge.  Clear the gauge
 		 * debounce so a later gauge=100 doesn't re-arm anything.
 		 */
-		if (vdrop_full) {
-			want_inhibit = true;
+		/*
+		 * Latch the V-drop.  The IC self-termination is the one on-grid
+		 * "full" reference we trust.  Latch it (it survives the detector
+		 * re-arming across the hold) until the pack drains back to the
+		 * resume band = a new charge cycle.
+		 */
+		if (vdrop_full && !chip->vdrop_since)
+			chip->vdrop_since = jiffies;
+		if (soc_band_256 <= start_thr * 256)
+			chip->vdrop_since = 0;
+		if (chip->vdrop_since) {
 			chip->charge_full_since = 0;
-			chip->charge_peak_uv    = 0;
 			/*
-			 * V-drop = the IC declared full = the one on-grid SoC
-			 * reference we trust.  Anchor the observer integral to
-			 * 100% here (the coulomb counter's top re-calibration);
-			 * the discharge OCV feedback handles the bottom.
+			 * Keep the charger on until >=30 min past the drop, then
+			 * inhibit.  No hard SoC pin: during the saturation hold the
+			 * observer integrates up to ~full on the (near-CV) terminal
+			 * smoothly — no jump — and the float then integrates on from
+			 * there.  Overrides any band cut for the duration.
 			 */
-			if (chip->soc_src == X120X_SOC_SRC_VOLTAGE)
-				chip->energy_now_uwh = chip->energy_full_uwh;
+			want_inhibit = time_after_eq(jiffies, chip->vdrop_since +
+				msecs_to_jiffies(X120X_VDROP_INHIBIT_DELAY_MS));
 		}
 
 		/*
@@ -3208,7 +3213,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.20");
+MODULE_VERSION("0.5.21");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

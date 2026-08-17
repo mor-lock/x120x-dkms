@@ -32,17 +32,17 @@ Copy exactly what DKMS needs — `dkms.conf`, the `Makefile`, and
 documentation along):
 
 ```bash
-sudo install -d /usr/src/x120x-0.5.20/src
-sudo cp dkms.conf Makefile LICENSE /usr/src/x120x-0.5.20/
-sudo cp src/x120x.c src/Kbuild /usr/src/x120x-0.5.20/src/
+sudo install -d /usr/src/x120x-0.5.21/src
+sudo cp dkms.conf Makefile LICENSE /usr/src/x120x-0.5.21/
+sudo cp src/x120x.c src/Kbuild /usr/src/x120x-0.5.21/src/
 ```
 
 #### Step 3 — Build and install the kernel module
 
 ```bash
-sudo dkms add x120x/0.5.20
-sudo dkms build x120x/0.5.20
-sudo dkms install x120x/0.5.20
+sudo dkms add x120x/0.5.21
+sudo dkms build x120x/0.5.21
+sudo dkms install x120x/0.5.21
 ```
 
 You will see compiler output scroll past — this is normal.  The build
@@ -55,7 +55,7 @@ Verify the module is installed:
 dkms status
 ```
 
-You should see `x120x/0.5.20, <kernel-version>, aarch64: installed`.
+You should see `x120x/0.5.21, <kernel-version>, aarch64: installed`.
 
 #### Step 4 — Write the battery configuration
 

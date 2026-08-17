@@ -14,6 +14,26 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.21 — Delayed post-full inhibit + integrating float
+
+**Kernel driver — experimental (observer tuning)**
+- **Delay the charger inhibit ≥30 min past the V-drop**
+  (`X120X_VDROP_INHIBIT_DELAY_MS`). The IC self-termination now *latches*
+  (`vdrop_since`, cleared when the pack drains back to the resume band); for
+  the 30 min after it, the charger is held on to saturate the pack at CV,
+  then the charger is inhibited.
+- **Dropped the hard V-drop SoC anchor.** During the saturation hold the
+  observer integrates up to ~full on the near-CV terminal *smoothly*, so the
+  top re-cal no longer needs a `energy_now = energy_full` snap — this removes
+  the ~2% jump at the V-drop. The observer's own OCV feedback (self-anchoring)
+  plus the 3.0 V floor keep it bounded. (The boot OCV re-seed on reload — the
+  only remaining discontinuity — stays; a reload loses the integral.)
+- **Float now runs normal discharge integration** instead of the SoC-freeze
+  hold. It self-corrects via OCV feedback; the edge-snap already delivers the
+  regime-transition IR step directly to the current, so power tracks the step
+  rather than lagging the EMA. (Only the edge-blank and the boot settle still
+  force `p=0`.) A better dedicated float scheme remains TODO.
+
 #### v0.5.20 — Event-triggered observer (regime-hold + edge-snap + V-drop anchor)
 
 **Kernel driver — experimental (major observer/charge rework)**

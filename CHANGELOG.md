@@ -4,7 +4,7 @@ Release history of [x120x-dkms](README.md), newest first.
 
 ### Unreleased — v0.5.x voltage-observer series
 
-A single **unreleased** development series; the last tagged release is v0.4.8.
+A single **unreleased** development series; the last tagged release is v0.4.9.
 The v0.5.x SoC work was developed 2026-08-06…08-11 while the version string
 still read 0.4.8. **v0.5.0** and **v0.5.1** were exploratory dead ends —
 voltage-derivative (dSoC/dt) power estimation, then a voltage↔gauge fusion
@@ -459,6 +459,10 @@ release.
   (e.g. a pre-`board` conf on upgrade) aborted the installer because a no-match
   `grep` in the per-key extraction propagated failure. All four extractions now
   tolerate a missing key.
+
+### v0.4.9 — Ubuntu install support
+
+**Installer**
 - Ubuntu for Raspberry Pi is now supported. `install.sh` detected the firmware
   partition at `/boot/firmware` but hardcoded the overlays subdirectory as
   `overlays/`, whereas Ubuntu's flash-kernel layout keeps the active kernel's

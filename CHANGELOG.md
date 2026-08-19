@@ -460,6 +460,30 @@ release.
   `grep` in the per-key extraction propagated failure. All four extractions now
   tolerate a missing key.
 
+### Unreleased — installer robustness
+
+**Installer**
+- Ubuntu package updates no longer break the driver. On Ubuntu's flash-kernel
+  layout, `apt upgrade` repopulates `…/current/overlays` from the kernel/firmware
+  packages and deletes the out-of-tree `x120x.dtbo`; `config.txt` keeps its
+  `dtoverlay=x120x` line, so the reference dangled and the driver silently failed
+  to load after the next reboot (issue #5). The installer now stashes the compiled
+  overlay and registers an apt hook (`/etc/apt/apt.conf.d/99-x120x-overlay`,
+  calling `/usr/local/lib/x120x-restore-overlay.sh`) that restores it at the end
+  of any transaction that removed it. The helper always exits 0 and is a no-op
+  unless the overlay is configured but missing. Installed **only** on the
+  `current/overlays` (Ubuntu) layout — Raspberry Pi OS installs are byte-for-byte
+  unchanged. `uninstall.sh` removes the hook, helper, and stash. Written up as
+  Incident 4 in [docs/incidents.md](docs/incidents.md).
+- `install.sh` no longer aborts when the DKMS tree already contains this version
+  (e.g. a prior run that failed after `dkms add`). It now tolerates an
+  already-registered tree and continues to build/install; previously the abort
+  happened before the overlay step, so a recovery reinstall died without
+  restoring the overlay.
+- `uninstall.sh` now detects the Ubuntu `current/overlays` layout the same way
+  `install.sh` does, so it removes the overlay from the right place on Ubuntu (it
+  previously only looked in `…/overlays`).
+
 ### v0.4.9 — Ubuntu install support
 
 **Installer**

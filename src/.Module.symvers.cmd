@@ -1,1 +1,0 @@
-savedcmd_/home/fafnir/scripts/x120x-dkms/src/Module.symvers :=  scripts/mod/modpost -M -m -a      -o /home/fafnir/scripts/x120x-dkms/src/Module.symvers -T /home/fafnir/scripts/x120x-dkms/src/modules.order -i Module.symvers -e 

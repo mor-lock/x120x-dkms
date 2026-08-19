@@ -1110,10 +1110,14 @@ x120x-dkms/
 │   ├── incidents.md          — the field incident write-ups
 │   ├── manual-install.md     — step-by-step install without install.sh
 │   ├── migration.md          — replacing direct-GPIO scripts with sysfs
-│   └── images/               — README screenshots
+│   ├── soc-model.md          — the voltage-observer SoC model & calibration
+│   └── images/               — README and docs figures
 │       ├── battery-tray.png       — panel battery icon
 │       ├── upower-info.png        — upower -i output
-│       └── power-statistics.png   — GNOME Power Statistics window
+│       ├── power-statistics.png   — GNOME Power Statistics window
+│       ├── observer-runtime.png   — gauge-vs-observer runtime replay
+│       ├── soc-cycle.png          — observer SoC vs gauge over a cycle
+│       └── destruction-run.png    — the 2026-03-05 deep-discharge run
 ├── .gitignore                — build-artifact ignore rules
 ├── Makefile                  — DKMS build entry point
 ├── dkms.conf                 — DKMS package definition

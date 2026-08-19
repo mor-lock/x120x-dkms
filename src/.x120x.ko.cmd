@@ -1,1 +1,0 @@
-savedcmd_/home/fafnir/scripts/x120x-dkms/src/x120x.ko := aarch64-linux-gnu-ld -r -EL  -maarch64elf -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T arch/arm64/module.lds -o /home/fafnir/scripts/x120x-dkms/src/x120x.ko /home/fafnir/scripts/x120x-dkms/src/x120x.o /home/fafnir/scripts/x120x-dkms/src/x120x.mod.o /home/fafnir/scripts/x120x-dkms/src/.module-common.o

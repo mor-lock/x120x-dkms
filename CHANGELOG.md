@@ -4,7 +4,7 @@ Release history of [x120x-dkms](README.md), newest first.
 
 ### Unreleased — v0.5.x voltage-observer series
 
-A single **unreleased** development series; the last tagged release is v0.4.9.
+A single **unreleased** development series; the last tagged release is v0.4.10.
 The v0.5.x SoC work was developed 2026-08-06…08-11 while the version string
 still read 0.4.8. **v0.5.0** and **v0.5.1** were exploratory dead ends —
 voltage-derivative (dSoC/dt) power estimation, then a voltage↔gauge fusion
@@ -476,29 +476,46 @@ release.
   `grep` in the per-key extraction propagated failure. All four extractions now
   tolerate a missing key.
 
-### Unreleased — installer robustness
+### v0.4.10 — Ubuntu package-update survival
 
 **Installer**
-- Ubuntu package updates no longer break the driver. On Ubuntu's flash-kernel
-  layout, `apt upgrade` repopulates `…/current/overlays` from the kernel/firmware
-  packages and deletes the out-of-tree `x120x.dtbo`; `config.txt` keeps its
-  `dtoverlay=x120x` line, so the reference dangled and the driver silently failed
-  to load after the next reboot (issue #5). The installer now stashes the compiled
-  overlay and registers an apt hook (`/etc/apt/apt.conf.d/99-x120x-overlay`,
-  calling `/usr/local/lib/x120x-restore-overlay.sh`) that restores it at the end
-  of any transaction that removed it. The helper always exits 0 and is a no-op
-  unless the overlay is configured but missing. Installed **only** on the
-  `current/overlays` (Ubuntu) layout — Raspberry Pi OS installs are byte-for-byte
-  unchanged. `uninstall.sh` removes the hook, helper, and stash. Written up as
-  Incident 4 in [docs/incidents.md](docs/incidents.md).
-- `install.sh` no longer aborts when the DKMS tree already contains this version
-  (e.g. a prior run that failed after `dkms add`). It now tolerates an
-  already-registered tree and continues to build/install; previously the abort
-  happened before the overlay step, so a recovery reinstall died without
-  restoring the overlay.
-- `uninstall.sh` now detects the Ubuntu `current/overlays` layout the same way
-  `install.sh` does, so it removes the overlay from the right place on Ubuntu (it
-  previously only looked in `…/overlays`).
+- Ubuntu package updates no longer break the driver.  On Ubuntu's
+  flash-kernel layout, `apt upgrade` repopulates `…/current/overlays` from
+  the kernel/firmware packages and deletes the out-of-tree `x120x.dtbo`;
+  `config.txt` keeps its `dtoverlay=x120x` line, so the reference dangled
+  and the driver silently failed to load after the next reboot (issue #5).
+  The installer now stashes the compiled overlay and registers an apt hook
+  (`/etc/apt/apt.conf.d/99-x120x-overlay`, calling
+  `/usr/local/lib/x120x-restore-overlay.sh`) that restores it at the end of
+  any transaction that removed it.  The helper always exits 0 and is a
+  no-op unless the overlay is configured but missing.  Installed **only**
+  on the `current/overlays` (Ubuntu) layout — Raspberry Pi OS installs are
+  byte-for-byte unchanged.  `uninstall.sh` removes the hook, helper, and
+  stash.
+- `install.sh` no longer aborts when the DKMS tree already contains this
+  version (e.g. a prior run that failed after `dkms add`).  It now
+  tolerates an already-registered tree and continues to build/install;
+  previously the abort happened before the overlay step, so a recovery
+  reinstall died without restoring the overlay.
+- `uninstall.sh` now detects the Ubuntu `current/overlays` layout the same
+  way `install.sh` does, so it removes the overlay from the right place on
+  Ubuntu (it previously only looked in `…/overlays`).
+
+  Confirmed end-to-end by the issue #5 reporter on Ubuntu 26.04 LTS / Pi 5 /
+  X1201: a fresh install followed by an `apt upgrade` (kernel/firmware) and a
+  reboot, with the driver still loading.
+
+**Testing / CI**
+- The README "repository layout" tree check — every tracked file must appear
+  in the layout diagram — is now `tools/check-layout-tree.sh` (CI calls the
+  script instead of an inline step), and `make test` runs it alongside
+  `check-versions.sh` and `check-links.sh`.  The unprivileged consistency
+  checks CI enforces are now reproducible with a single local `make test`.
+
+**Documentation**
+- New **Incident 4** in [docs/incidents.md](docs/incidents.md) documents the
+  Ubuntu package-update overlay wipe: the symptom, the `flash-kernel` root
+  cause, the proof that Raspberry Pi OS is unaffected, and the fix.
 
 ### v0.4.9 — Ubuntu install support
 

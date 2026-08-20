@@ -14,6 +14,22 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.22 — Asymmetric charge/discharge R + recharacterized OCV tables
+
+**Kernel driver — experimental (SoC observer)**
+- **Direction-dependent pack resistance.** The observer's current estimate
+  `I = (OCV − V)/R` now picks R by direction — `X120X_R_CHG_UOHM` (16 mΩ)
+  while charging (terminal above OCV), `X120X_R_DIS_UOHM` (24 mΩ) while
+  discharging — since charging lifts the terminal ~1.5× fewer mV/A than
+  discharging (IR-step/coulomb measured). Both legs previously shared
+  `X120X_R_UOHM` (30 mΩ). An explicit `pack_resistance_mohm` module param
+  still pins both directions to that single value; only the built-in default
+  is the asymmetric pair. Probe logs `pack resistance: 16/24 mohm chg/dis`.
+- **Recharacterized OCV tables.** Both OCV branches (discharge and charge)
+  were re-measured and replaced across the full 0–100 % range, refining the
+  voltage↔SoC mapping (charge branch tops near 4.208 V, discharge near
+  4.206 V).
+
 #### v0.5.21 — Delayed post-full inhibit + integrating float
 
 **Kernel driver — experimental (observer tuning)**

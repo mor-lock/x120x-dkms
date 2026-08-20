@@ -440,6 +440,8 @@ struct x120x_ocv_point {
 #define X120X_NOMINAL_MV          3600   /* datasheet nominal cell voltage, mV */
 #define X120X_USABLE_PERMILLE      900   /* usable (4.20→3.2 V) ÷ rated, ×1000 (coulomb-measured: 64.8/72.0 Wh) */
 #define X120X_R_UOHM            30000   /* pack DC resistance, uohm (R_cell 19 + R1 11, GITT-measured) */
+#define X120X_R_CHG_UOHM        16000   /* charge-direction R, uohm (IR-step/coulomb; cell lifts ~1.5x fewer mV/A charging) */
+#define X120X_R_DIS_UOHM        24000   /* discharge-direction R, uohm (IR-step/coulomb) */
 /*
  * Cold-boot seed: on the first sample the observer holds the charger OFF for
  * X120X_SEED_SETTLE_MS and seeds SoC continuously from the terminal voltage via
@@ -490,56 +492,56 @@ static const struct x120x_ocv_point x120x_ocv_discharge[] = {
 	{ 3269438,   3 * 256 },
 	{ 3292276,   4 * 256 },
 	{ 3313208,   5 * 256 },
-	{ 3330662,   6 * 256 },
-	{ 3342521,   7 * 256 },
-	{ 3352964,   8 * 256 },
-	{ 3364393,   9 * 256 },
-	{ 3376690,  10 * 256 },
-	{ 3402578,  12 * 256 },
-	{ 3428700,  14 * 256 },
-	{ 3455008,  16 * 256 },
-	{ 3480457,  18 * 256 },
-	{ 3502744,  20 * 256 },
-	{ 3523060,  22 * 256 },
-	{ 3542247,  24 * 256 },
-	{ 3561078,  26 * 256 },
-	{ 3580329,  28 * 256 },
-	{ 3600754,  30 * 256 },
-	{ 3621939,  32 * 256 },
-	{ 3643511,  34 * 256 },
-	{ 3665636,  36 * 256 },
-	{ 3688478,  38 * 256 },
-	{ 3712200,  40 * 256 },
-	{ 3738433,  42 * 256 },
-	{ 3765267,  44 * 256 },
-	{ 3788218,  46 * 256 },
-	{ 3808419,  48 * 256 },
-	{ 3827242,  50 * 256 },
-	{ 3845642,  52 * 256 },
-	{ 3863595,  54 * 256 },
-	{ 3880949,  56 * 256 },
-	{ 3898063,  58 * 256 },
-	{ 3915300,  60 * 256 },
-	{ 3932702,  62 * 256 },
-	{ 3950095,  64 * 256 },
-	{ 3967516,  66 * 256 },
-	{ 3984964,  68 * 256 },
-	{ 4002400,  70 * 256 },
-	{ 4019942,  72 * 256 },
-	{ 4037459,  74 * 256 },
-	{ 4054547,  76 * 256 },
-	{ 4073085,  78 * 256 },
-	{ 4087000,  80 * 256 },
-	{ 4093175,  82 * 256 },
-	{ 4097400,  84 * 256 },
-	{ 4100440,  86 * 256 },
-	{ 4103800,  88 * 256 },
-	{ 4110475,  90 * 256 },
-	{ 4120200,  92 * 256 },
-	{ 4133547,  94 * 256 },
-	{ 4151000,  96 * 256 },
-	{ 4172966,  98 * 256 },
-	{ 4200000, 100 * 256 },
+	{ 3353747,   6 * 256 },
+	{ 3368042,   7 * 256 },
+	{ 3382337,   8 * 256 },
+	{ 3391339,   9 * 256 },
+	{ 3400340,  10 * 256 },
+	{ 3412620,  12 * 256 },
+	{ 3434801,  14 * 256 },
+	{ 3466452,  16 * 256 },
+	{ 3482517,  18 * 256 },
+	{ 3497110,  20 * 256 },
+	{ 3508801,  22 * 256 },
+	{ 3528638,  24 * 256 },
+	{ 3564820,  26 * 256 },
+	{ 3579528,  28 * 256 },
+	{ 3580028,  30 * 256 },
+	{ 3583796,  32 * 256 },
+	{ 3610730,  34 * 256 },
+	{ 3621047,  36 * 256 },
+	{ 3636515,  38 * 256 },
+	{ 3650968,  40 * 256 },
+	{ 3678177,  42 * 256 },
+	{ 3694833,  44 * 256 },
+	{ 3717506,  46 * 256 },
+	{ 3747281,  48 * 256 },
+	{ 3780706,  50 * 256 },
+	{ 3799321,  52 * 256 },
+	{ 3814820,  54 * 256 },
+	{ 3827400,  56 * 256 },
+	{ 3849048,  58 * 256 },
+	{ 3869174,  60 * 256 },
+	{ 3887933,  62 * 256 },
+	{ 3888433,  64 * 256 },
+	{ 3888933,  66 * 256 },
+	{ 3913395,  68 * 256 },
+	{ 3944255,  70 * 256 },
+	{ 3970094,  72 * 256 },
+	{ 3994260,  74 * 256 },
+	{ 4016096,  76 * 256 },
+	{ 4024820,  78 * 256 },
+	{ 4037907,  80 * 256 },
+	{ 4055756,  82 * 256 },
+	{ 4064806,  84 * 256 },
+	{ 4080038,  86 * 256 },
+	{ 4080538,  88 * 256 },
+	{ 4097000,  90 * 256 },
+	{ 4109000,  92 * 256 },
+	{ 4115000,  94 * 256 },
+	{ 4138000,  96 * 256 },
+	{ 4160000,  98 * 256 },
+	{ 4206000, 100 * 256 },
 };
 
 static const struct x120x_ocv_point x120x_ocv_charge[] = {
@@ -557,48 +559,48 @@ static const struct x120x_ocv_point x120x_ocv_charge[] = {
 	{ 3517578,  12 * 256 },
 	{ 3543700,  14 * 256 },
 	{ 3570008,  16 * 256 },
-	{ 3595457,  18 * 256 },
-	{ 3617744,  20 * 256 },
-	{ 3637804,  22 * 256 },
-	{ 3656479,  24 * 256 },
-	{ 3674905,  26 * 256 },
-	{ 3693852,  28 * 256 },
-	{ 3713754,  30 * 256 },
-	{ 3731510,  32 * 256 },
-	{ 3746690,  34 * 256 },
-	{ 3762571,  36 * 256 },
-	{ 3778694,  38 * 256 },
-	{ 3795200,  40 * 256 },
-	{ 3813841,  42 * 256 },
-	{ 3832551,  44 * 256 },
-	{ 3846469,  46 * 256 },
-	{ 3856201,  48 * 256 },
-	{ 3866242,  50 * 256 },
-	{ 3878106,  52 * 256 },
-	{ 3891032,  54 * 256 },
-	{ 3906133,  56 * 256 },
-	{ 3922191,  58 * 256 },
-	{ 3938300,  60 * 256 },
-	{ 3953925,  62 * 256 },
-	{ 3969193,  64 * 256 },
-	{ 3984400,  66 * 256 },
-	{ 3999483,  68 * 256 },
-	{ 4014400,  70 * 256 },
-	{ 4028968,  72 * 256 },
-	{ 4043541,  74 * 256 },
-	{ 4058766,  76 * 256 },
-	{ 4076085,  78 * 256 },
-	{ 4088842,  80 * 256 },
-	{ 4094175,  82 * 256 },
-	{ 4097911,  84 * 256 },
-	{ 4100584,  86 * 256 },
-	{ 4103800,  88 * 256 },
-	{ 4111102,  90 * 256 },
-	{ 4122342,  92 * 256 },
-	{ 4137547,  94 * 256 },
-	{ 4157302,  96 * 256 },
-	{ 4182339,  98 * 256 },
-	{ 4213000, 100 * 256 },
+	{ 3570508,  18 * 256 },
+	{ 3571008,  20 * 256 },
+	{ 3571508,  22 * 256 },
+	{ 3592583,  24 * 256 },
+	{ 3617150,  26 * 256 },
+	{ 3639276,  28 * 256 },
+	{ 3661034,  30 * 256 },
+	{ 3681921,  32 * 256 },
+	{ 3701039,  34 * 256 },
+	{ 3721132,  36 * 256 },
+	{ 3740720,  38 * 256 },
+	{ 3757885,  40 * 256 },
+	{ 3772947,  42 * 256 },
+	{ 3789241,  44 * 256 },
+	{ 3805304,  46 * 256 },
+	{ 3819244,  48 * 256 },
+	{ 3834572,  50 * 256 },
+	{ 3848818,  52 * 256 },
+	{ 3860559,  54 * 256 },
+	{ 3873465,  56 * 256 },
+	{ 3887996,  58 * 256 },
+	{ 3904520,  60 * 256 },
+	{ 3923515,  62 * 256 },
+	{ 3941217,  64 * 256 },
+	{ 3955809,  66 * 256 },
+	{ 3972176,  68 * 256 },
+	{ 3989805,  70 * 256 },
+	{ 4007910,  72 * 256 },
+	{ 4027157,  74 * 256 },
+	{ 4045896,  76 * 256 },
+	{ 4060336,  78 * 256 },
+	{ 4074194,  80 * 256 },
+	{ 4081769,  82 * 256 },
+	{ 4089052,  84 * 256 },
+	{ 4093102,  86 * 256 },
+	{ 4098340,  88 * 256 },
+	{ 4104284,  90 * 256 },
+	{ 4113137,  92 * 256 },
+	{ 4125844,  94 * 256 },
+	{ 4143683,  96 * 256 },
+	{ 4176539,  98 * 256 },
+	{ 4207671, 100 * 256 },
 };
 
 /**
@@ -791,6 +793,8 @@ struct x120x_chip {
 	int			 ocv_ema_uv;
 	int			 ocv_model_uv;
 	int			 r_uohm;
+	int			 r_chg_uohm;		/* charge-direction pack R, uohm (asymmetric) */
+	int			 r_dis_uohm;		/* discharge-direction pack R, uohm (asymmetric) */
 	int			 charge_peak_uv;	/* V-drop full-detect: peak EMA V while charging */
 	unsigned long		 probe_until;		/* boot charge-probe: current phase end (0 = no probe) */
 	bool			 probe_resting;		/* probe: false = reveal (charger on), true = measure (off) */
@@ -1208,9 +1212,12 @@ static void x120x_poll_work(struct work_struct *work)
 		ocv_uv = x120x_soc256_to_ocv(soc256, charging);
 		ocv_model_uv = ocv_uv;		/* cache for hwmon in1 (committed under lock) */
 
-		/* I (µA) = (OCV - V)/R : (µV / µΩ) = A, ×1e6 = µA. */
+		/* I (µA) = (OCV - V)/R : (µV / µΩ) = A, ×1e6 = µA.  R is
+		 * direction-dependent (asymmetric): charging (terminal above
+		 * OCV) lifts ~1.5× fewer mV/A than discharging. */
 		i_ua = div_s64((s64)(ocv_uv - chip->ocv_ema_uv) * 1000000LL,
-			       chip->r_uohm);
+			       ocv_uv < chip->ocv_ema_uv ? chip->r_chg_uohm
+							 : chip->r_dis_uohm);
 		/* P (µW) = I(µA) × V(µV) / 1e6 ; bound to physical limits. */
 		p_uw = div_s64(i_ua * chip->ocv_ema_uv, 1000000LL);
 		p_uw = clamp_t(s64, p_uw, -(s64)X120X_POWER_MAX_UW,
@@ -2823,8 +2830,20 @@ static int x120x_probe(struct i2c_client *client)
 			 pack_resistance_mohm, X120X_R_UOHM / 1000);
 		chip->r_uohm = X120X_R_UOHM;
 	}
-	dev_info(dev, "pack resistance: %d mohm (%s)\n", chip->r_uohm / 1000,
-		 pack_resistance_mohm ? "module param" : "built-in default");
+	/*
+	 * Asymmetric R: an explicit pack_resistance_mohm param pins both
+	 * directions to that single value; otherwise use the direction-
+	 * dependent IR-step/coulomb-measured pair (charge lower than discharge).
+	 */
+	if (pack_resistance_mohm) {
+		chip->r_chg_uohm = chip->r_dis_uohm = chip->r_uohm;
+	} else {
+		chip->r_chg_uohm = X120X_R_CHG_UOHM;
+		chip->r_dis_uohm = X120X_R_DIS_UOHM;
+	}
+	dev_info(dev, "pack resistance: %d/%d mohm chg/dis (%s)\n",
+		 chip->r_chg_uohm / 1000, chip->r_dis_uohm / 1000,
+		 pack_resistance_mohm ? "module param" : "built-in asymmetric");
 
 	/* -- GPIO6: AC present -------------------------------------------- */
 	chip->gpio_ac = devm_gpiod_get_optional(dev, "ac-present", GPIOD_IN);
@@ -3213,7 +3232,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.21");
+MODULE_VERSION("0.5.22");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

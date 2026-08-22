@@ -176,7 +176,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install dtschema
-        run: pip3 install dtschema
+        # pylibfdt (a dtschema dependency) ships no wheel; its sdist
+        # builds a _libfdt that links the Python 2 symbol PyInt_AsLong
+        # under the runner's Python 3.12, so dt-doc-validate crashes on
+        # import (broke 2026-08).  Take libfdt from the distro's prebuilt
+        # python3-libfdt and install dtschema's remaining deps explicitly.
+        run: |
+          sudo apt-get update && sudo apt-get install -y python3-libfdt
+          pip3 install --no-deps dtschema==2026.6
+          pip3 install "ruamel.yaml>0.15.69" "jsonschema>=4.18" rfc3987
 
       - name: Validate binding (dt-doc-validate)
         run: dt-doc-validate suptronics,x120x.yaml

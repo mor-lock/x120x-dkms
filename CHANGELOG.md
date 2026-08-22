@@ -14,6 +14,23 @@ removed in v0.5.4). The first version stamp is therefore 0.5.2. Broken out
 below by version bump, newest first; at tag time these reconcile into one
 release section per the versioning convention.
 
+#### v0.5.23 — Kernel-side undervoltage poweroff (ported from main v0.4.11)
+
+**Kernel driver**
+- The hard voltage floor now calls `orderly_poweroff()` directly when it
+  latches, independent of the UPower/logind userspace chain (which is
+  unreliable on systemd < 255 / when UPower is D-Bus-inactive — see
+  main's v0.4.11 entry and Incident 1).  On battery, a raw terminal
+  voltage at/below `vmin_critical_mv` (**now 3100 mV**, up from the old
+  3.00 V fixed floor) held 20 s triggers a one-shot kernel poweroff;
+  `capacity_level=CRITICAL` is still asserted so a healthy userspace
+  chain acts first.  New params `vfloor_poweroff`, `vmin_critical_mv`,
+  `vfloor_poweroff_dry_run`.  The hwmon `in0_lcrit` floor now reports
+  the effective `vmin_critical_mv`.
+- Documented the two asymmetric-R struct fields (`r_chg_uohm`,
+  `r_dis_uohm`) that v0.5.22 left without kernel-doc, restoring the
+  W=1 build.
+
 #### v0.5.22 — Asymmetric charge/discharge R + recharacterized OCV tables
 
 **Kernel driver — experimental (SoC observer)**

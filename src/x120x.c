@@ -213,6 +213,37 @@ MODULE_PARM_DESC(conservation_mode_default,
 	"udev rule persists it to modprobe.d), not this read-only param.");
 
 /*
+ * Kernel-side undervoltage poweroff.  When the hard voltage floor
+ * latches, the driver calls orderly_poweroff() directly rather than
+ * relying on the UPower/logind userspace chain, which is unreliable on
+ * common targets (systemd < 255 ignores logind's HandleLowBattery;
+ * UPower may be D-Bus-inactive).  capacity_level=CRITICAL is asserted
+ * regardless, so a healthy userspace chain still acts first (earlier,
+ * at the 5 %% SoC line).
+ */
+static int vfloor_poweroff = 1;
+module_param(vfloor_poweroff, int, 0444);
+MODULE_PARM_DESC(vfloor_poweroff,
+	"Call orderly_poweroff() when the on-battery voltage floor latches "
+	"(1 = default/enabled, 0 = leave shutdown to userspace UPower/logind). "
+	"capacity_level=CRITICAL is asserted either way.");
+
+static int vmin_critical_mv = 3100;
+module_param(vmin_critical_mv, int, 0444);
+MODULE_PARM_DESC(vmin_critical_mv,
+	"On-battery terminal-voltage floor in mV (default 3100).  Held for "
+	"20 s it forces CRITICAL and, unless vfloor_poweroff=0, a kernel "
+	"poweroff.  Clamped to [2500, 4100] at load.");
+
+static int vfloor_poweroff_dry_run;
+module_param(vfloor_poweroff_dry_run, int, 0444);
+MODULE_PARM_DESC(vfloor_poweroff_dry_run,
+	"1 = log the poweroff decision at emerg instead of calling "
+	"orderly_poweroff(), to test the trigger path without shutting down "
+	"(default 0).  Test: modprobe ... vmin_critical_mv=4300 "
+	"vfloor_poweroff_dry_run=1, unplug AC, watch dmesg, replug.");
+
+/*
  * soc_source — where state-of-charge is derived from.
  *
  *   "voltage" (default): derive SoC from cell voltage via a generic NMC
@@ -300,7 +331,6 @@ MODULE_PARM_DESC(pack_resistance_mohm,
  * SoC estimate — the last-ditch backstop against an over-reading SoC.  The
  * confirm window rejects transient load-spike sags (raw V, not EMA).
  */
-#define X120X_VMIN_CRITICAL_UV		3000000	/* 3.00 V absolute on-battery floor        */
 #define X120X_VMIN_CONFIRM_US		(20LL * USEC_PER_SEC) /* 20 s sustained before firing */
 
 #define X120X_SOC_CRITICAL_PCT	 5	/* CRITICAL below this % → logind poweroff */
@@ -742,6 +772,8 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
  * @ocv_ema_uv:		EMA of cell voltage feeding the OCV lookup (0 = uninit)
  * @ocv_model_uv:	observer OCV(SoC) estimate in uV, exposed as hwmon in1 (0 = n/a)
  * @r_uohm:		resolved pack DC resistance in uohm (param or built-in default)
+ * @r_chg_uohm:		charge-direction pack DC resistance in uohm (asymmetric model)
+ * @r_dis_uohm:		discharge-direction pack DC resistance in uohm (asymmetric model)
  * @charge_peak_uv:	peak EMA terminal V while charging, for the V-drop full-detect (0 = not charging)
  * @probe_until:	boot charge-probe: end of the current phase in jiffies (0 = no probe running)
  * @probe_resting:	boot charge-probe phase — false = reveal (charger on), true = measure (charger off)
@@ -753,6 +785,7 @@ static int x120x_soc256_to_ocv(int soc256, bool charging)
  * @raw_capacity_256:	raw MAX17043 SoC in 1/256 units, for the fractional band compare
  * @vfloor_start_us:	ktime the cell first fell to/below VMIN on battery; 0 = above
  * @vfloor_critical:	true once VMIN held long enough to force SoC-independent CRITICAL
+ * @vfloor_poweroff_fired:	one-shot guard: kernel orderly_poweroff() already triggered
  */
 struct x120x_chip {
 	struct i2c_client	*client;
@@ -840,6 +873,7 @@ struct x120x_chip {
 	bool			 battery_dead;		/* confirmed dead battery       */
 	s64			 vfloor_start_us;	/* ktime V first <= VMIN on battery; 0 = above */
 	bool			 vfloor_critical;	/* VMIN held → SoC-independent CRITICAL */
+	bool			 vfloor_poweroff_fired;	/* one-shot: kernel poweroff already triggered */
 
 	struct delayed_work	 work;
 	int			 heartbeat_ticks;	/* counts down to forced notify */
@@ -1044,6 +1078,7 @@ static void x120x_poll_work(struct work_struct *work)
 	 */
 	bool conservation_mode_snap = false;
 	int  capacity_pct_snap = 0;
+	int  poweroff_req = 0;	/* 0=none 1=real 2=dry — decided under lock, acted after unlock */
 	int  raw_soc_snap      = 0;
 	int  capacity_256_snap = 0;
 	int  raw_soc_256_snap  = 0;
@@ -1492,31 +1527,42 @@ static void x120x_poll_work(struct work_struct *work)
 
 		/*
 		 * Hard voltage floor (SoC-independent safety backstop): on
-		 * battery, a raw terminal voltage at/below X120X_VMIN_CRITICAL_UV
+		 * battery, a raw terminal voltage at/below the floor (vmin_critical_mv)
 		 * held for X120X_VMIN_CONFIRM_US forces CRITICAL regardless of the
 		 * SoC estimate — the last line of defence if the observer ever
 		 * reads high while the pack is genuinely empty.  The confirm
 		 * window rejects transient load-spike sags.
 		 */
-		if (!new_ac && new_uv > 0 && new_uv <= X120X_VMIN_CRITICAL_UV) {
-			if (chip->vfloor_start_us == 0) {
-				chip->vfloor_start_us = now_us;
-			} else if (now_us - chip->vfloor_start_us >=
-					X120X_VMIN_CONFIRM_US &&
-				   !chip->vfloor_critical) {
-				chip->vfloor_critical = true;
-				dev_warn(&chip->client->dev,
-					 "terminal %d mV <= %d mV on battery for %lld s — CRITICAL (SoC-independent floor)\n",
-					 new_uv / 1000,
-					 X120X_VMIN_CRITICAL_UV / 1000,
-					 div_s64(now_us - chip->vfloor_start_us,
-						 USEC_PER_SEC));
+		{
+			int vmin_uv = vmin_critical_mv * 1000;
+
+			if (!new_ac && new_uv > 0 && new_uv <= vmin_uv) {
+				if (chip->vfloor_start_us == 0) {
+					chip->vfloor_start_us = now_us;
+				} else if (now_us - chip->vfloor_start_us >=
+						X120X_VMIN_CONFIRM_US &&
+					   !chip->vfloor_critical) {
+					chip->vfloor_critical = true;
+					bat_changed = true;
+					dev_warn(&chip->client->dev,
+						 "terminal %d mV <= %d mV on battery for %lld s — CRITICAL (SoC-independent floor)\n",
+						 new_uv / 1000, vmin_critical_mv,
+						 div_s64(now_us - chip->vfloor_start_us,
+							 USEC_PER_SEC));
+					if (vfloor_poweroff) {
+						if (vfloor_poweroff_dry_run)
+							poweroff_req = 2;
+						else if (!chip->vfloor_poweroff_fired) {
+							chip->vfloor_poweroff_fired = true;
+							poweroff_req = 1;
+						}
+					}
+				}
+			} else if (chip->vfloor_start_us || chip->vfloor_critical) {
+				chip->vfloor_start_us = 0;
+				chip->vfloor_critical = false;
 				bat_changed = true;
 			}
-		} else if (chip->vfloor_start_us || chip->vfloor_critical) {
-			chip->vfloor_start_us = 0;
-			chip->vfloor_critical = false;
-			bat_changed = true;
 		}
 	} /* end chip state update and rate estimation */
 
@@ -1780,6 +1826,23 @@ notify:
 	if (bat_changed || --chip->heartbeat_ticks <= 0) {
 		power_supply_changed(chip->battery);
 		chip->heartbeat_ticks = X120X_HEARTBEAT_TICKS;
+	}
+
+	/*
+	 * Kernel-side undervoltage poweroff, decided under the lock above.
+	 * Called here (never under chip->lock) because orderly_poweroff()
+	 * runs the OS shutdown; on x728 the sys-off handler then pulses the
+	 * power-off GPIO, on x120x the EEPROM POWER_OFF_ON_HALT cuts the
+	 * rail at halt.  force=false keeps it graceful — the floor leaves
+	 * margin before boost-UVLO, and a clean unmount protects the disk.
+	 */
+	if (poweroff_req == 1) {
+		dev_emerg(&chip->client->dev,
+			  "undervoltage floor reached on battery — initiating orderly poweroff\n");
+		orderly_poweroff(false);
+	} else if (poweroff_req == 2) {
+		dev_emerg(&chip->client->dev,
+			  "DRY RUN: undervoltage floor reached — would call orderly_poweroff()\n");
 	}
 
 	schedule_delayed_work(&chip->work, msecs_to_jiffies(X120X_POLL_MS));
@@ -2532,7 +2595,7 @@ static int x120x_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 			return 0;
 		case hwmon_in_lcrit:
 			/* on-battery critical floor (SoC-independent backstop) */
-			*val = X120X_VMIN_CRITICAL_UV / 1000;	/* 3.00 V */
+			*val = vmin_critical_mv;	/* mV; default 3100 */
 			return 0;
 		case hwmon_in_min:
 			/* design-minimum / empty (0 % SoC) operating voltage */
@@ -2762,6 +2825,18 @@ static int x120x_probe(struct i2c_client *client)
 		dev_warn(dev, "battery_mah=%d out of range [1, 500000]; clamping\n",
 			 battery_mah);
 		battery_mah = clamp(battery_mah, 1, 500000);
+	}
+
+	/*
+	 * Clamp the undervoltage floor: comfortably above boost-UVLO and
+	 * below a full cell, so neither a typo nor a hostile modprobe.d
+	 * value can disable protection (too low) or power the box off at
+	 * rest (too high).
+	 */
+	if (vmin_critical_mv < 2500 || vmin_critical_mv > 4100) {
+		dev_warn(dev, "vmin_critical_mv=%d out of range [2500, 4100]; clamping\n",
+			 vmin_critical_mv);
+		vmin_critical_mv = clamp(vmin_critical_mv, 2500, 4100);
 	}
 
 	/*
@@ -3232,7 +3307,7 @@ module_exit(x120x_exit);
 
 MODULE_AUTHOR("Edvard Fielding <mor-lock@users.noreply.github.com>");
 MODULE_DESCRIPTION("SupTronics UPS HAT power supply driver (X120x, X728, X708, X729)");
-MODULE_VERSION("0.5.22");
+MODULE_VERSION("0.5.23");
 /*
  * "GPL" is the canonical MODULE_LICENSE string for GPL-compatible
  * modules; the precise license (GPL-2.0-or-later) is expressed by the

@@ -34,6 +34,14 @@ Release history of [x120x-dkms](README.md), newest first.
 - The README shutdown-chain section and Incident 1 now call out the
   systemd < 255 logind gap explicitly and document the kernel-side
   backstop.
+- Documentation audit for Ubuntu support and code consistency: the
+  Getting-started requirements, the uninstall list, and the architecture
+  note now state Ubuntu for Raspberry Pi as a supported platform (not just
+  Raspberry Pi OS); the manual-install walkthrough warns Ubuntu users that
+  the overlay-persistence apt hook is installer-only; the module-parameter
+  table documents `vfloor_poweroff`, `vmin_critical_mv`, and
+  `vfloor_poweroff_dry_run`; and the manual-install and migration shutdown
+  sections note the kernel-side voltage-floor backstop.
 
 ### v0.4.10 — Ubuntu package-update survival
 

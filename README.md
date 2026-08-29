@@ -26,12 +26,16 @@ loops.
 If you just want to get up and running quickly, here is everything you
 need in one place.
 
-**Requirements:** Raspberry Pi OS Bookworm or later (64-bit
-recommended), fully updated — run `sudo apt update && sudo apt
-full-upgrade` first.  You need kernel 6.3 or newer; check with `uname
--r` (a fully-updated Bookworm is on 6.6 or 6.12).  The driver builds via
-DKMS against your running kernel, so there are no pre-built binaries to
-match.  (For maintainers: the 6.3 floor comes from the driver's use of
+**Requirements:** Raspberry Pi OS Bookworm or later, or Ubuntu for
+Raspberry Pi 24.04 LTS or later (64-bit recommended), fully updated —
+run `sudo apt update && sudo apt full-upgrade` first.  You need kernel
+6.3 or newer; check with `uname -r` (a fully-updated Raspberry Pi OS
+Bookworm is on 6.6 or 6.12; recent Ubuntu LTS is on 6.8+).  The
+installer handles both distributions — including Ubuntu's `flash-kernel`
+boot layout and keeping the overlay in place across `apt upgrade` (see
+[Incident 4](docs/incidents.md#incident-4--driver-vanishes-after-an-ubuntu-update-2026-08)).
+The driver builds via DKMS against your running kernel, so there are no
+pre-built binaries to match.  (For maintainers: the 6.3 floor comes from the driver's use of
 the modern one-arg i2c `.probe`, the sys-off handler framework, and the
 `void` i2c `.remove`.)
 
@@ -343,7 +347,9 @@ Board variants understood by the driver: `x120x` (default), `x728v2`,
   feedback from users with this hardware are very welcome.
 
 **Architecture note:** The driver has been developed and tested on
-Raspberry Pi OS 64-bit (`aarch64`).  The X1209 also supports Pi 4B,
+Raspberry Pi OS 64-bit (`aarch64`), and is also field-confirmed on
+Ubuntu for Raspberry Pi (aarch64, [issue #5](https://github.com/mor-lock/x120x-dkms/issues/5)).
+The X1209 also supports Pi 4B,
 Pi 3B+, and Pi 3B, which can run 32-bit Raspberry Pi OS (`armhf`).
 The driver contains no architecture-specific code and should build and
 run correctly on `armhf` — the DKMS build system will compile for
@@ -933,10 +939,15 @@ The uninstall script removes:
 
 - The DKMS kernel module (all installed kernel versions)
 - The DKMS source tree from `/usr/src/`
-- The device tree overlay from `/boot/firmware/overlays/`
+- The device tree overlay from the active overlays directory
+  (`/boot/firmware/overlays/` on Raspberry Pi OS, `/boot/firmware/current/overlays/`
+  on Ubuntu)
 - The `dtoverlay=x120x` and `gpio=6=pu` lines from `config.txt`
 - `/etc/modprobe.d/x120x.conf`
 - The charge mode persistence script and udev rule
+- On Ubuntu: the overlay-persistence apt hook
+  (`/etc/apt/apt.conf.d/99-x120x-overlay`), its helper
+  (`/usr/local/lib/x120x-restore-overlay.sh`), and the stashed overlay copy
 - The logind drop-in `/etc/systemd/logind.conf.d/90-x120x.conf` (and
   the `logind.conf.d` directory itself, if empty afterwards)
 - The marker-wrapped block that the installer added to
@@ -1048,6 +1059,9 @@ echo "Fast"      | sudo tee /sys/class/power_supply/x120x-charger/charge_type
 | `conservation_end`          | `80`  | SoC % at which charging stops in Long Life mode   |
 | `conservation_mode_default` | `0`   | Start in Long Life mode (`1`) or Fast mode (`0`). Updated automatically on every `charge_type` sysfs write and persisted to `modprobe.d` by a udev rule. |
 | `board`                     | `x120x` | Board variant: `x120x`, `x728v2`, `x728v1`, `x708`, `x729`. Set by installer. Variants other than `x120x` are experimental. |
+| `vfloor_poweroff`           | `1`     | Call the kernel's `orderly_poweroff()` when the on-battery voltage floor latches (`0` = leave the shutdown to userspace only). See *systemd-logind shutdown*. |
+| `vmin_critical_mv`          | `3100`  | On-battery terminal-voltage floor in mV. Held for 20 s, it forces `capacity_level=Critical` and (unless `vfloor_poweroff=0`) a kernel-side poweroff. Clamped to 2500–4100 at load. |
+| `vfloor_poweroff_dry_run`   | `0`     | `1` logs the poweroff decision at `emerg` instead of powering off — exercises the whole trigger path for testing without shutting the box down. |
 
 The install script writes these to `/etc/modprobe.d/x120x.conf`.  To
 change them after installation, edit that file and reboot:

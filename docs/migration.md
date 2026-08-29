@@ -80,4 +80,9 @@ can be removed entirely.  The driver reports `capacity_level=Critical`
 below 5% SoC, and UPower's `PercentageAction` (set to 2% SoC by the
 installer) then causes systemd-logind to initiate a clean shutdown
 automatically — no script required.  This works identically on headless
-and desktop installations.
+and desktop installations.  As a last-ditch backstop when that userspace
+chain is absent (e.g. systemd < 255, which ignores `HandleLowBattery`, or
+a headless box with UPower D-Bus-inactive), the driver itself powers off
+the machine on a calibration-immune terminal-voltage floor (default
+3100 mV held 20 s on battery) — so removing the old scripts never leaves
+the pack unprotected.

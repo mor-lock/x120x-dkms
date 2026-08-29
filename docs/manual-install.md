@@ -106,6 +106,17 @@ sudo cp x120x.dtbo /boot/overlays/
 sudo cp x120x.dtbo /boot/firmware/current/overlays/
 ```
 
+> **Ubuntu note:** on Ubuntu's `flash-kernel` layout, `apt upgrade`
+> repopulates `/boot/firmware/current/overlays/` from the kernel/firmware
+> packages and deletes this overlay, so the driver silently stops loading
+> after the next reboot (see
+> [Incident 4](incidents.md#incident-4--driver-vanishes-after-an-ubuntu-update-2026-08)).
+> `install.sh` guards against this by stashing the overlay and installing an
+> apt hook (`/etc/apt/apt.conf.d/99-x120x-overlay`) that restores it after
+> any package transaction that removes it.  A manual install does **not**
+> set that up — so on Ubuntu either run `install.sh` instead, or replicate
+> the hook and helper yourself.
+
 #### Step 7 — Enable the overlay at boot
 
 Open the boot configuration file:
@@ -173,6 +184,15 @@ To disable this behaviour at any time, delete the file (or override
 `systemd-logind`.
 
 The install script does this automatically.
+
+> **Note:** this userspace chain is not the last line of defence.  The
+> driver also enforces a kernel-side voltage-floor poweroff — a raw
+> terminal voltage at/below `vmin_critical_mv` (default 3100 mV) held for
+> 20 s on battery makes the driver call `orderly_poweroff()` itself,
+> independent of UPower and logind (which are unreliable on some targets:
+> systemd < 255 ignores `HandleLowBattery`, and UPower is often D-Bus-inactive
+> on a headless box).  It is a calibration-immune backstop; disable it with
+> `vfloor_poweroff=0`.  See the README shutdown-chain section.
 
 #### Step 10 — Configure UPower
 

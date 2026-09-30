@@ -606,6 +606,109 @@ static int x120x_do_poweroff(struct sys_off_data *data)
 	return NOTIFY_DONE;
 }
 
+/*
+ * x120x_dead_battery_update() - dead-battery detection, run under chip->lock.
+ *
+ * On grid with the terminal voltage stuck below X120X_DEAD_BAT_UV for at
+ * least X120X_DEAD_BAT_CONFIRM_US and no meaningful rise, and only while SoC
+ * is very low (<= X120X_DEAD_BAT_SOC_MAX %) to avoid false positives on a
+ * healthy resting pack, latch chip->battery_dead; clear it once the
+ * condition no longer holds.  Returns true if the flag changed.
+ */
+static bool x120x_dead_battery_update(struct x120x_chip *chip, int new_ac,
+				      int new_uv, int new_pct, s64 now_us)
+{
+	s64 window, window_s, rise_uv_h, delta_uv;
+
+	if (!(new_ac && new_uv > 0 && new_uv < X120X_DEAD_BAT_UV &&
+	      new_pct <= X120X_DEAD_BAT_SOC_MAX)) {
+		/* Condition no longer met — reset candidate window */
+		if (chip->dead_cand_start_us == 0 && !chip->battery_dead)
+			return false;
+		chip->dead_cand_start_us = 0;
+		chip->dead_cand_uv       = 0;
+		if (!chip->battery_dead)
+			return false;
+		chip->battery_dead = false;
+		dev_info(&chip->client->dev, "battery dead flag cleared\n");
+		return true;
+	}
+
+	if (chip->dead_cand_start_us == 0) {
+		/* Start candidate window */
+		chip->dead_cand_start_us = now_us;
+		chip->dead_cand_uv       = new_uv;
+		return false;
+	}
+
+	window = now_us - chip->dead_cand_start_us;
+	if (window < X120X_DEAD_BAT_CONFIRM_US)
+		return false;
+
+	delta_uv  = (s64)new_uv - chip->dead_cand_uv;
+	window_s  = div_s64(window, USEC_PER_SEC);
+	rise_uv_h = window_s > 0 ? div_s64(delta_uv * 3600LL, window_s) : 0;
+	if (rise_uv_h >= X120X_DEAD_BAT_MAX_RISE_UV_H || chip->battery_dead)
+		return false;
+
+	chip->battery_dead = true;
+	dev_warn(&chip->client->dev,
+		 "battery appears dead: %d mV on grid for %lld s with <10 mV/h rise\n",
+		 new_uv / 1000, div_s64(window, USEC_PER_SEC));
+	return true;
+}
+
+/*
+ * x120x_vfloor_update() - hard voltage-floor backstop, run under chip->lock.
+ *
+ * On battery, a raw terminal voltage at/below vmin_critical_mv held for
+ * X120X_VMIN_CONFIRM_US forces a SoC-independent CRITICAL.  The one-shot
+ * poweroff decision is taken here but acted on by the caller after the
+ * unlock, since orderly_poweroff() must not run under chip->lock: on a real
+ * trigger *poweroff_req is set to 1, or to 2 for a dry run.  Returns true if
+ * the voltage-floor state changed.
+ */
+static bool x120x_vfloor_update(struct x120x_chip *chip, int new_ac,
+				int new_uv, s64 now_us, int *poweroff_req)
+{
+	int vmin_uv = vmin_critical_mv * 1000;
+	bool on_batt_below = !new_ac && new_uv > 0 && new_uv <= vmin_uv;
+
+	if (!on_batt_below) {
+		/* Above the floor (or on grid) — clear any pending latch */
+		if (!chip->vfloor_start_us && !chip->vfloor_critical)
+			return false;
+		chip->vfloor_start_us = 0;
+		chip->vfloor_critical = false;
+		return true;
+	}
+
+	if (chip->vfloor_start_us == 0) {
+		chip->vfloor_start_us = now_us;
+		return false;
+	}
+
+	if (now_us - chip->vfloor_start_us < X120X_VMIN_CONFIRM_US ||
+	    chip->vfloor_critical)
+		return false;
+
+	chip->vfloor_critical = true;
+	dev_warn(&chip->client->dev,
+		 "terminal %d mV <= %d mV on battery for %lld s — CRITICAL (SoC-independent floor)\n",
+		 new_uv / 1000, vmin_critical_mv,
+		 div_s64(now_us - chip->vfloor_start_us, USEC_PER_SEC));
+
+	if (vfloor_poweroff) {
+		if (vfloor_poweroff_dry_run)
+			*poweroff_req = 2;
+		else if (!chip->vfloor_poweroff_fired) {
+			chip->vfloor_poweroff_fired = true;
+			*poweroff_req = 1;
+		}
+	}
+	return true;
+}
+
 /**
  * x120x_poll_work() - periodic poll: read the gauge, drive the charger
  * @work: the work_struct embedded in struct x120x_chip
@@ -783,94 +886,11 @@ static void x120x_poll_work(struct work_struct *work)
 		chip->energy_empty_uwh = 0;
 		chip->energy_now_uwh   = e_now;
 
-		/*
-		 * Dead battery detection: on grid, voltage stuck below
-		 * X120X_DEAD_BAT_UV for ≥ X120X_DEAD_BAT_CONFIRM_US with
-		 * no meaningful voltage rise.  Only applies when SoC is
-		 * very low (≤ X120X_DEAD_BAT_SOC_MAX %) to avoid false
-		 * positives on healthy batteries at rest.
-		 */
-		if (new_ac && new_uv > 0 &&
-		    new_uv < X120X_DEAD_BAT_UV &&
-		    new_pct <= X120X_DEAD_BAT_SOC_MAX) {
-			if (chip->dead_cand_start_us == 0) {
-				/* Start candidate window */
-				chip->dead_cand_start_us = now_us;
-				chip->dead_cand_uv       = new_uv;
-			} else {
-				s64 window = now_us - chip->dead_cand_start_us;
+		if (x120x_dead_battery_update(chip, new_ac, new_uv, new_pct, now_us))
+			bat_changed = true;
 
-				if (window >= X120X_DEAD_BAT_CONFIRM_US) {
-					s64 delta_uv = (s64)new_uv - chip->dead_cand_uv;
-					s64 window_s = div_s64(window, USEC_PER_SEC);
-					s64 rise_uv_h = window_s > 0
-						? div_s64(delta_uv * 3600LL, window_s)
-						: 0;
-					if (rise_uv_h < X120X_DEAD_BAT_MAX_RISE_UV_H) {
-						if (!chip->battery_dead) {
-							chip->battery_dead = true;
-							dev_warn(&chip->client->dev,
-								"battery appears dead: %d mV on grid for %lld s with <10 mV/h rise\n",
-								new_uv / 1000,
-								div_s64(window, USEC_PER_SEC));
-							bat_changed = true;
-						}
-					}
-				}
-			}
-		} else {
-			/* Condition no longer met — reset candidate window */
-			if (chip->dead_cand_start_us != 0 || chip->battery_dead) {
-				chip->dead_cand_start_us = 0;
-				chip->dead_cand_uv       = 0;
-				if (chip->battery_dead) {
-					chip->battery_dead = false;
-					dev_info(&chip->client->dev,
-						 "battery dead flag cleared\n");
-					bat_changed = true;
-				}
-			}
-		}
-
-		/*
-		 * Hard voltage floor (SoC-independent safety backstop): on
-		 * battery, a raw terminal voltage at/below the floor held for
-		 * X120X_VMIN_CONFIRM_US forces CRITICAL regardless of the SoC
-		 * estimate.  The poweroff decision is taken here under the lock
-		 * (one-shot) and acted on after the unlock — orderly_poweroff()
-		 * must not run under chip->lock.
-		 */
-		{
-			int vmin_uv = vmin_critical_mv * 1000;
-
-			if (!new_ac && new_uv > 0 && new_uv <= vmin_uv) {
-				if (chip->vfloor_start_us == 0) {
-					chip->vfloor_start_us = now_us;
-				} else if (now_us - chip->vfloor_start_us >=
-						X120X_VMIN_CONFIRM_US &&
-					   !chip->vfloor_critical) {
-					chip->vfloor_critical = true;
-					bat_changed = true;
-					dev_warn(&chip->client->dev,
-						 "terminal %d mV <= %d mV on battery for %lld s — CRITICAL (SoC-independent floor)\n",
-						 new_uv / 1000, vmin_critical_mv,
-						 div_s64(now_us - chip->vfloor_start_us,
-							 USEC_PER_SEC));
-					if (vfloor_poweroff) {
-						if (vfloor_poweroff_dry_run)
-							poweroff_req = 2;
-						else if (!chip->vfloor_poweroff_fired) {
-							chip->vfloor_poweroff_fired = true;
-							poweroff_req = 1;
-						}
-					}
-				}
-			} else if (chip->vfloor_start_us || chip->vfloor_critical) {
-				chip->vfloor_start_us = 0;
-				chip->vfloor_critical = false;
-				bat_changed = true;
-			}
-		}
+		if (x120x_vfloor_update(chip, new_ac, new_uv, now_us, &poweroff_req))
+			bat_changed = true;
 	} /* end chip state update and rate estimation */
 
 	conservation_mode_snap = chip->conservation_mode;

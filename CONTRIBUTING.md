@@ -98,8 +98,7 @@ Every push and pull request runs (see `.github/workflows/ci.yml`):
   Raspberry Pi OS actually ships
 - `make W=1` and sparse (`make C=1`), both required clean
 - `checkpatch.pl --no-tree` over `src/x120x.c` (fetched pinned from
-  kernel.org), with one documented ignore (`DEEP_INDENTATION`) listed in
-  the checkpatch job in `ci.yml`
+  kernel.org), clean with no ignores
 - dtschema validation of the DT binding (`dt-doc-validate`)
 - device tree overlay compilation
 - two documentation consistency checks that are easy to trip:
@@ -120,8 +119,7 @@ Every push and pull request runs (see `.github/workflows/ci.yml`):
 - **C** (`src/x120x.c`): Linux kernel coding style.  The driver
   follows the conventions of `drivers/power/supply/max17040_battery.c`
   in mainline, with upstreaming as a future goal — keep changes
-  upstreamable.  CI enforces `checkpatch.pl` (with one documented
-  ignore, `DEEP_INDENTATION` — see the checkpatch job in `ci.yml`),
+  upstreamable.  CI enforces `checkpatch.pl` (clean with no ignores),
   `W=1`, and sparse cleanliness.
 - **Shell** (`install.sh`, `uninstall.sh`, `lib/`, `tools/`, `tests/`):
   bash, clean under `shellcheck -S warning`.  Match the existing

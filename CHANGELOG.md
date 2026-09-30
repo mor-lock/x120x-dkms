@@ -29,6 +29,14 @@ Release history of [x120x-dkms](README.md), newest first.
 - The `binding` job installs `swig` before `pip install dtschema`:
   pylibfdt has no wheel and its sdist otherwise fell back to stale
   Python 2 bindings, crashing `dt-doc-validate` on import.
+- `src/x120x.c` is now checkpatch-clean with no ignores.  The three
+  former house-style ignores were cleared toward upstreamability, all
+  without behaviour change: user-visible strings rejoined
+  (`SPLIT_STRING`) and multi-line block-comment closers moved onto their
+  own line (`BLOCK_COMMENT_STYLE`), both mechanical; and the
+  dead-battery and voltage-floor state machines extracted into
+  `x120x_dead_battery_update()` / `x120x_vfloor_update()` helpers to
+  flatten the nesting the poll loop had grown (`DEEP_INDENTATION`).
 
 **Documentation**
 - The README shutdown-chain section and Incident 1 now call out the

@@ -193,10 +193,8 @@ jobs:
 
   # Kernel style check.  checkpatch.pl is fetched pinned to a kernel
   # tag from GitHub's mirror of torvalds/linux — no kernel tree
-  # checkout needed (--no-tree).  One message type is ignored; clearing
-  # it needs a real refactor rather than a mechanical sweep, so it is
-  # deferred to the upstream-submission prep:
-  #   DEEP_INDENTATION — dead-battery state machine nesting
+  # checkout needed (--no-tree).  src/x120x.c is checkpatch-clean with
+  # no ignores; keep it that way.
   checkpatch:
     runs-on: ubuntu-latest
     env:
@@ -219,10 +217,9 @@ jobs:
               "${base}/${f}" -o "${RUNNER_TEMP}/${f}"
           done
 
-      - name: checkpatch (--no-tree, documented ignore)
+      - name: checkpatch (--no-tree)
         run: |
           perl "${RUNNER_TEMP}/checkpatch.pl" --no-tree \
-            --ignore DEEP_INDENTATION \
             -f src/x120x.c
 
   # Compile the module against the kernel Raspberry Pi OS actually

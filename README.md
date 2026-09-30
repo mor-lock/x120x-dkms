@@ -1091,6 +1091,7 @@ x120x-dkms/
 │   ├── incidents.md          — the field incident write-ups
 │   ├── manual-install.md     — step-by-step install without install.sh
 │   ├── migration.md          — replacing direct-GPIO scripts with sysfs
+│   ├── upstreaming.md        — why the driver is kept out-of-tree
 │   └── images/               — README screenshots
 │       ├── battery-tray.png       — panel battery icon
 │       ├── upower-info.png        — upower -i output
@@ -1147,9 +1148,18 @@ whatever safety policy is needed.
 ## Upstreaming
 
 This driver follows the conventions of
-`drivers/power/supply/max17040_battery.c` in the mainline kernel.
-Upstreaming is a future goal once the driver has proven itself in
-production use.
+`drivers/power/supply/max17040_battery.c` in the mainline kernel, and its
+code is kept to mainline quality — `checkpatch` clean with no ignores,
+`W=1`/sparse clean, with a validated device-tree binding — so that
+upstreaming stays an open long-term goal.
+
+It is, deliberately, not being pursued yet. A mainline submission would
+require decomposing the driver across the fuel-gauge, charger, and
+userspace layers, and dropping the kernel-side undervoltage poweroff —
+the safety backstop that protects the cells when the userspace shutdown
+chain fails (which, on common targets, it does). That restructuring is
+not currently a good trade for the usability and safety of the driver.
+The full reasoning is in [docs/upstreaming.md](docs/upstreaming.md).
 
 ## Contributing
 

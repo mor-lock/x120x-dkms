@@ -111,7 +111,8 @@
 
 /* -------------------------------------------------------------------------
  * Module parameters
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 static int i2c_bus = 1;
 module_param(i2c_bus, int, 0444);
@@ -131,8 +132,7 @@ MODULE_PARM_DESC(gpio_ac,
 static int gpio_charge_ctrl = 16;
 module_param(gpio_charge_ctrl, int, 0444);
 MODULE_PARM_DESC(gpio_charge_ctrl,
-	"BCM GPIO for charge control: low=enabled high=disabled (default 16). "
-	"Ignored on X708 where GPIO16 is fan speed.");
+	"BCM GPIO for charge control: low=enabled high=disabled (default 16). Ignored on X708 where GPIO16 is fan speed.");
 
 /*
  * board — selects the board variant.  Controls which GPIOs are claimed
@@ -150,8 +150,7 @@ MODULE_PARM_DESC(gpio_charge_ctrl,
 static char *board = "x120x";
 module_param(board, charp, 0444);
 MODULE_PARM_DESC(board,
-	"Board variant: x120x (default), x728v2, x728v1, x708, x729. "
-	"Boards other than x120x are EXPERIMENTAL.");
+	"Board variant: x120x (default), x728v2, x728v1, x708, x729. Boards other than x120x are EXPERIMENTAL.");
 
 /* Power-off GPIO numbers per board variant (BCM) */
 #define X728V2_GPIO_POWEROFF	26
@@ -183,18 +182,12 @@ MODULE_PARM_DESC(battery_mah,
 static int conservation_start = 75;
 module_param(conservation_start, int, 0444);
 MODULE_PARM_DESC(conservation_start,
-	"SoC %% at which charging resumes in Long Life mode (default 75). "
-	"Set at load time via modprobe.d; change it at runtime through the "
-	"charge_control_start_threshold sysfs property, which validates "
-	"and locks the update.");
+	"SoC %% at which charging resumes in Long Life mode (default 75). Set at load time via modprobe.d; change it at runtime through the charge_control_start_threshold sysfs property, which validates and locks the update.");
 
 static int conservation_end = 80;
 module_param(conservation_end, int, 0444);
 MODULE_PARM_DESC(conservation_end,
-	"SoC %% at which charging stops in Long Life mode (default 80). "
-	"Set at load time via modprobe.d; change it at runtime through the "
-	"charge_control_end_threshold sysfs property, which validates "
-	"and locks the update.");
+	"SoC %% at which charging stops in Long Life mode (default 80). Set at load time via modprobe.d; change it at runtime through the charge_control_end_threshold sysfs property, which validates and locks the update.");
 
 /*
  * conservation_mode_default — persists charge mode across reboots.
@@ -206,10 +199,7 @@ MODULE_PARM_DESC(conservation_end,
 static int conservation_mode_default;
 module_param(conservation_mode_default, int, 0444);
 MODULE_PARM_DESC(conservation_mode_default,
-	"Start in Long Life mode (1) or Fast mode (0, default). "
-	"Set at load time via modprobe.d; at runtime the mode follows "
-	"charge_type sysfs writes (the driver updates this internally and a "
-	"udev rule persists it to modprobe.d), not this read-only param.");
+	"Start in Long Life mode (1) or Fast mode (0, default). Set at load time via modprobe.d; at runtime the mode follows charge_type sysfs writes (the driver updates this internally and a udev rule persists it to modprobe.d), not this read-only param.");
 
 /*
  * Kernel-side undervoltage poweroff.  When the hard voltage floor
@@ -223,31 +213,25 @@ MODULE_PARM_DESC(conservation_mode_default,
 static int vfloor_poweroff = 1;
 module_param(vfloor_poweroff, int, 0444);
 MODULE_PARM_DESC(vfloor_poweroff,
-	"Call orderly_poweroff() when the on-battery voltage floor latches "
-	"(1 = default/enabled, 0 = leave shutdown to userspace UPower/logind). "
-	"capacity_level=CRITICAL is asserted either way.");
+	"Call orderly_poweroff() when the on-battery voltage floor latches (1 = default/enabled, 0 = leave shutdown to userspace UPower/logind). capacity_level=CRITICAL is asserted either way.");
 
 static int vmin_critical_mv = 3100;
 module_param(vmin_critical_mv, int, 0444);
 MODULE_PARM_DESC(vmin_critical_mv,
-	"On-battery terminal-voltage floor in mV (default 3100).  Held for "
-	"20 s it forces CRITICAL and, unless vfloor_poweroff=0, a kernel "
-	"poweroff.  Clamped to [2500, 4100] at load.");
+	"On-battery terminal-voltage floor in mV (default 3100).  Held for 20 s it forces CRITICAL and, unless vfloor_poweroff=0, a kernel poweroff.  Clamped to [2500, 4100] at load.");
 
 static int vfloor_poweroff_dry_run;
 module_param(vfloor_poweroff_dry_run, int, 0444);
 MODULE_PARM_DESC(vfloor_poweroff_dry_run,
-	"1 = log the poweroff decision at emerg instead of calling "
-	"orderly_poweroff(), to test the trigger path without shutting down "
-	"(default 0).  Test: modprobe ... vmin_critical_mv=4300 "
-	"vfloor_poweroff_dry_run=1, unplug AC, watch dmesg, replug.");
+	"1 = log the poweroff decision at emerg instead of calling orderly_poweroff(), to test the trigger path without shutting down (default 0).  Test: modprobe ... vmin_critical_mv=4300 vfloor_poweroff_dry_run=1, unplug AC, watch dmesg, replug.");
 
 /* -------------------------------------------------------------------------
  * MAX17043 register definitions (X120x board layout)
  *
  * These offsets match SupTronics' published software for all X120x boards
  * and differ from the MAX17043 datasheet by one register pair.
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 #define MAX17043_REG_VCELL		0x02
 #define MAX17043_REG_SOC		0x04
@@ -275,7 +259,8 @@ MODULE_PARM_DESC(vfloor_poweroff_dry_run,
 
 /* Trigger a quick-start if initial SoC is outside this range (%) */
 /* NOTE: 0% is a valid real reading after deep discharge — do not
- * treat it as implausible.  Only values >100 are truly impossible. */
+ * treat it as implausible.  Only values >100 are truly impossible.
+ */
 #define MAX17043_SOC_MIN_PLAUSIBLE	0
 #define MAX17043_SOC_MAX_PLAUSIBLE	100
 
@@ -286,7 +271,8 @@ MODULE_PARM_DESC(vfloor_poweroff_dry_run,
  * and PercentageCritical settings so the full chain works consistently:
  * low SoC → capacity_level=Critical → UPower warning-level=action →
  * logind → systemctl poweroff.
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 /* Dead battery detection thresholds (mirrors Fafnir powerd.py defaults) */
 #define X120X_DEAD_BAT_UV		3100000	/* 3.10 V in µV                            */
@@ -341,7 +327,8 @@ MODULE_PARM_DESC(vfloor_poweroff_dry_run,
 
 /* -------------------------------------------------------------------------
  * Driver private state
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 /**
  * struct x120x_chip - per-device driver state
@@ -387,8 +374,7 @@ struct x120x_chip {
 	struct power_supply	*ac;
 	struct power_supply	*charger;
 	struct gpio_desc	*gpio_ac;
-	struct gpio_desc	*gpio_chrg;	/* NULL on X708 (GPIO16=fan) and boards
-					 * without charge control */
+	struct gpio_desc	*gpio_chrg;	/* NULL on X708 (GPIO16=fan) or boards w/o charge ctrl */
 	struct gpio_desc	*gpio_poweroff;	/* NULL on X120x; pulsed on shutdown */
 	bool			 has_charge_ctrl;	/* false = Fast only, no Long Life  */
 
@@ -451,7 +437,8 @@ struct x120x_chip {
  *
  * MAX17043: 8-bit addresses, 16-bit big-endian values, no caching
  * (all registers reflect live hardware state).
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 static const struct regmap_config x120x_regmap_config = {
 	.reg_bits		= 8,
@@ -463,7 +450,8 @@ static const struct regmap_config x120x_regmap_config = {
 
 /* -------------------------------------------------------------------------
  * Chip helpers
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 /**
  * x120x_quick_start() - restart SoC estimation from open-circuit voltage
@@ -521,7 +509,8 @@ static int x120x_clear_alert(struct x120x_chip *chip)
  * device tree (use the supplied overlay) or via gpiod lookups.
  * gpiod_get/set_value_cansleep() may sleep and must not be called
  * under a spinlock.  We use a mutex for chip->lock so this is safe.
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 /**
  * x120x_gpio_get() - read a GPIO through the descriptor API
@@ -554,7 +543,8 @@ static void x120x_gpio_set(struct gpio_desc *desc, int val)
 
 /* -------------------------------------------------------------------------
  * Polling work item
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 /* -------------------------------------------------------------------------
  * Power-off hook (X728 / X708 / X729 only)
@@ -584,7 +574,8 @@ static void x120x_gpio_set(struct gpio_desc *desc, int val)
  *
  * EXPERIMENTAL: this entire path is only reached on x728/x708/x729
  * boards, which the author has not tested.
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 /**
  * x120x_do_poweroff() - sys-off handler: pulse the UPS power-off GPIO
@@ -645,7 +636,8 @@ static void x120x_poll_work(struct work_struct *work)
 	 * Read fuel gauge.  On failure, increment the error counter and
 	 * mark battery absent once the threshold is exceeded so userspace
 	 * is not left reading stale values indefinitely.
-	 * -------------------------------------------------------------- */
+	 * --------------------------------------------------------------
+	 */
 	ret = regmap_read(chip->regmap, MAX17043_REG_VCELL, &vcell_raw);
 	if (ret) {
 		dev_warn_ratelimited(&chip->client->dev,
@@ -818,9 +810,7 @@ static void x120x_poll_work(struct work_struct *work)
 						if (!chip->battery_dead) {
 							chip->battery_dead = true;
 							dev_warn(&chip->client->dev,
-								"battery appears dead: "
-								"%d mV on grid for %lld s "
-								"with <10 mV/h rise\n",
+								"battery appears dead: %d mV on grid for %lld s with <10 mV/h rise\n",
 								new_uv / 1000,
 								div_s64(window, USEC_PER_SEC));
 							bat_changed = true;
@@ -1013,7 +1003,8 @@ notify:
 
 /* -------------------------------------------------------------------------
  * power_supply callbacks - battery
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 static enum power_supply_property x120x_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
@@ -1142,7 +1133,8 @@ static int x120x_battery_get_property(struct power_supply *psy,
 			/* Only report CRITICAL on battery — on AC the battery is
 			 * charging and shutting down would cause a livelock after
 			 * a deep discharge event.  vfloor_critical is the hard
-			 * voltage backstop for when the SoC estimate reads high. */
+			 * voltage backstop for when the SoC estimate reads high.
+			 */
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
 		} else if (capacity_pct < X120X_SOC_LOW_PCT) {
 			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_LOW;
@@ -1255,7 +1247,8 @@ static void x120x_battery_external_power_changed(struct power_supply *psy)
 
 /* -------------------------------------------------------------------------
  * power_supply callbacks - AC adapter
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 static enum power_supply_property x120x_ac_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
@@ -1298,7 +1291,8 @@ static int x120x_ac_get_property(struct power_supply *psy,
  * D-Bus method and the battery preservation UI in GNOME 48+ and KDE
  * Plasma.  UPower writes LONGLIFE to enable conservation mode and
  * FAST to disable it.
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 static enum power_supply_property x120x_charger_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
@@ -1446,8 +1440,7 @@ static int x120x_charger_set_property(struct power_supply *psy,
 	case POWER_SUPPLY_CHARGE_TYPE_LONGLIFE:
 		if (!chip->has_charge_ctrl) {
 			dev_warn(&chip->client->dev,
-				 "Long Life mode not supported on this board "
-				 "(no charge control GPIO)\n");
+				 "Long Life mode not supported on this board (no charge control GPIO)\n");
 			return -EOPNOTSUPP;
 		}
 		disable = true;
@@ -1518,7 +1511,8 @@ static int x120x_charger_property_is_writeable(struct power_supply *psy,
 
 /* -------------------------------------------------------------------------
  * power_supply descriptors
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 static const char * const x120x_ac_supplied_to[] = { "x120x-battery" };
 static const char * const x120x_charger_supplied_to[] = { "x120x-battery" };
@@ -1591,7 +1585,8 @@ static const struct power_supply_desc x120x_charger_desc = {
  *   node_hwmon_curr_amps{chip="x120x",sensor="curr1"}
  *   node_hwmon_power_watt{chip="x120x",sensor="power1"}
  *   node_hwmon_energy_joules{chip="x120x",sensor="energy1"}
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 /**
  * x120x_hwmon_is_visible() - select which hwmon channels exist
@@ -1797,7 +1792,8 @@ static const struct hwmon_chip_info x120x_hwmon_chip_info = {
 
 /* -------------------------------------------------------------------------
  * PM ops
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 /**
  * x120x_suspend() - PM callback: stop polling before suspend
@@ -1835,7 +1831,8 @@ static DEFINE_SIMPLE_DEV_PM_OPS(x120x_pm_ops, x120x_suspend, x120x_resume);
 
 /* -------------------------------------------------------------------------
  * Probe / remove
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 /*
  * Set true by probe() on success; consulted by x120x_init() to decide
@@ -1954,8 +1951,7 @@ static int x120x_probe(struct i2c_client *client)
 	}
 	if (!chip->gpio_ac)
 		dev_warn(dev,
-			 "ac-present GPIO not found - ac_online will always be 0\n"
-			 "Install the device tree overlay: dtoverlay=x120x\n");
+			 "ac-present GPIO not found - ac_online will always be 0\nInstall the device tree overlay: dtoverlay=x120x\n");
 
 	/* -- GPIO16: charge control --------------------------------------- */
 	/*
@@ -1974,9 +1970,7 @@ static int x120x_probe(struct i2c_client *client)
 
 		if (!is_x120x) {
 			dev_warn(dev,
-				 "EXPERIMENTAL: board=%s support is untested.\n"
-				 "Validate correct operation before relying on "
-				 "this driver for any purpose.\n", board);
+				 "EXPERIMENTAL: board=%s support is untested.\nValidate correct operation before relying on this driver for any purpose.\n", board);
 		}
 
 		if (!strcmp(board, "x728v2") || !strcmp(board, "x729"))
@@ -1984,8 +1978,7 @@ static int x120x_probe(struct i2c_client *client)
 		else if (!strcmp(board, "x728v1") || is_x708)
 			poweroff_gpio = X728V1_GPIO_POWEROFF;
 		else if (!is_x120x)
-			dev_warn(dev, "unknown board variant \"%s\" — "
-				 "treating as x120x\n", board);
+			dev_warn(dev, "unknown board variant \"%s\" — treating as x120x\n", board);
 
 		/*
 		 * X708 GPIO16 is fan speed, not charge control.
@@ -2028,9 +2021,7 @@ static int x120x_probe(struct i2c_client *client)
 				dev_info(dev, "power-off handler registered\n");
 			} else {
 				dev_warn(dev,
-					 "power-off GPIO not found — UPS may not "
-					 "cut power after shutdown\n"
-					 "Install the board device tree overlay\n");
+					 "power-off GPIO not found — UPS may not cut power after shutdown\nInstall the board device tree overlay\n");
 			}
 		}
 	}
@@ -2056,8 +2047,7 @@ static int x120x_probe(struct i2c_client *client)
 	}
 	if (chip->has_charge_ctrl && !chip->gpio_chrg) {
 		dev_warn(dev,
-			 "charge-ctrl GPIO not found - charge_type will be read-only\n"
-			 "Install the device tree overlay: dtoverlay=x120x\n");
+			 "charge-ctrl GPIO not found - charge_type will be read-only\nInstall the device tree overlay: dtoverlay=x120x\n");
 		/*
 		 * Demote to a board without charge control: the write paths
 		 * gate on has_charge_ctrl, so leaving it set would let
@@ -2098,8 +2088,7 @@ static int x120x_probe(struct i2c_client *client)
 		if (soc_pct < MAX17043_SOC_MIN_PLAUSIBLE ||
 		    soc_pct > MAX17043_SOC_MAX_PLAUSIBLE) {
 			dev_info(dev,
-				 "initial SoC %d%% is implausible, "
-				 "issuing quick-start\n", soc_pct);
+				 "initial SoC %d%% is implausible, issuing quick-start\n", soc_pct);
 			x120x_quick_start(chip);
 			msleep(150);
 		}
@@ -2201,7 +2190,8 @@ static void x120x_remove(struct i2c_client *client)
 
 /* -------------------------------------------------------------------------
  * I2C and OF tables
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 static const struct i2c_device_id x120x_id[] = {
 	{ "x120x", 0 },
@@ -2249,7 +2239,8 @@ static struct i2c_driver x120x_driver = {
  * After i2c_add_driver() returns, if the flag is set we know a DT
  * binding already happened and there is nothing for the manual
  * fallback to do.
- * ---------------------------------------------------------------------- */
+ * ----------------------------------------------------------------------
+ */
 
 static struct i2c_client *x120x_i2c_client;
 
@@ -2304,8 +2295,7 @@ static int __init x120x_init(void)
 	i2c_put_adapter(adapter);
 
 	if (!x120x_i2c_client)
-		pr_info("x120x: no fuel gauge found on i2c-%d "
-			"(tried %d candidate address(es))\n",
+		pr_info("x120x: no fuel gauge found on i2c-%d (tried %d candidate address(es))\n",
 			i2c_bus, i2c_addrs_count);
 
 	return 0;

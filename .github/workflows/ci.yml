@@ -193,12 +193,10 @@ jobs:
 
   # Kernel style check.  checkpatch.pl is fetched pinned to a kernel
   # tag from GitHub's mirror of torvalds/linux — no kernel tree
-  # checkout needed (--no-tree).  Three message types are ignored as
-  # accepted house style; remove them from the ignore list (and sweep
-  # the file) when preparing the upstream submission:
-  #   BLOCK_COMMENT_STYLE — the /* ---- banner ---- */ section comments
-  #   SPLIT_STRING        — user-visible strings split for 80 columns
-  #   DEEP_INDENTATION    — dead-battery state machine nesting
+  # checkout needed (--no-tree).  One message type is ignored; clearing
+  # it needs a real refactor rather than a mechanical sweep, so it is
+  # deferred to the upstream-submission prep:
+  #   DEEP_INDENTATION — dead-battery state machine nesting
   checkpatch:
     runs-on: ubuntu-latest
     env:
@@ -221,10 +219,10 @@ jobs:
               "${base}/${f}" -o "${RUNNER_TEMP}/${f}"
           done
 
-      - name: checkpatch (--no-tree, documented ignores)
+      - name: checkpatch (--no-tree, documented ignore)
         run: |
           perl "${RUNNER_TEMP}/checkpatch.pl" --no-tree \
-            --ignore BLOCK_COMMENT_STYLE,SPLIT_STRING,DEEP_INDENTATION \
+            --ignore DEEP_INDENTATION \
             -f src/x120x.c
 
   # Compile the module against the kernel Raspberry Pi OS actually
